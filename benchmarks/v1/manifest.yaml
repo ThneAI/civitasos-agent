@@ -189,9 +189,68 @@ tasks:
     verifier_tools: []
     metrics_targeted: [m6_wait_ratio, m5_task_latency]
 
+  # ─── F.1.a 追加(57 个 task,$ref 索引型;生成器: _generate_tasks.py)─────
+  # 上面 3 个 inline task 是 F.0 backward-compat 验证保留;
+  # 下面 57 个通过 $ref 加载,total = 60(覆盖 30 类 × 2 variants)。
+  # 重新生成: python benchmarks/v1/_generate_tasks.py
+  - {$ref: tasks/A01/adversarial_01.yaml}
+  - {$ref: tasks/A02/adversarial_01.yaml}
+  - {$ref: tasks/A02/happy_01.yaml}
+  - {$ref: tasks/A03/adversarial_01.yaml}
+  - {$ref: tasks/A03/happy_01.yaml}
+  - {$ref: tasks/A04/adversarial_01.yaml}
+  - {$ref: tasks/A04/happy_01.yaml}
+  - {$ref: tasks/A05/adversarial_01.yaml}
+  - {$ref: tasks/A05/happy_01.yaml}
+  - {$ref: tasks/A06/adversarial_01.yaml}
+  - {$ref: tasks/A06/happy_01.yaml}
+  - {$ref: tasks/G01/adversarial_01.yaml}
+  - {$ref: tasks/G01/happy_01.yaml}
+  - {$ref: tasks/G02/adversarial_01.yaml}
+  - {$ref: tasks/G02/happy_01.yaml}
+  - {$ref: tasks/G03/adversarial_01.yaml}
+  - {$ref: tasks/G03/happy_01.yaml}
+  - {$ref: tasks/G04/adversarial_01.yaml}
+  - {$ref: tasks/G04/happy_01.yaml}
+  - {$ref: tasks/G05/adversarial_01.yaml}
+  - {$ref: tasks/G05/happy_01.yaml}
+  - {$ref: tasks/G06/adversarial_01.yaml}
+  - {$ref: tasks/G06/happy_01.yaml}
+  - {$ref: tasks/R01/adversarial_01.yaml}
+  - {$ref: tasks/R02/adversarial_01.yaml}
+  - {$ref: tasks/R02/happy_01.yaml}
+  - {$ref: tasks/R03/adversarial_01.yaml}
+  - {$ref: tasks/R03/happy_01.yaml}
+  - {$ref: tasks/R04/adversarial_01.yaml}
+  - {$ref: tasks/R04/happy_01.yaml}
+  - {$ref: tasks/R05/adversarial_01.yaml}
+  - {$ref: tasks/R05/happy_01.yaml}
+  - {$ref: tasks/R06/adversarial_01.yaml}
+  - {$ref: tasks/R06/happy_01.yaml}
+  - {$ref: tasks/S01/adversarial_01.yaml}
+  - {$ref: tasks/S01/happy_01.yaml}
+  - {$ref: tasks/S02/adversarial_01.yaml}
+  - {$ref: tasks/S02/happy_01.yaml}
+  - {$ref: tasks/S03/adversarial_01.yaml}
+  - {$ref: tasks/S03/happy_01.yaml}
+  - {$ref: tasks/S04/adversarial_01.yaml}
+  - {$ref: tasks/S04/happy_01.yaml}
+  - {$ref: tasks/S05/adversarial_01.yaml}
+  - {$ref: tasks/S05/happy_01.yaml}
+  - {$ref: tasks/S06/adversarial_01.yaml}
+  - {$ref: tasks/S06/happy_01.yaml}
+  - {$ref: tasks/V01/adversarial_01.yaml}
+  - {$ref: tasks/V01/happy_01.yaml}
+  - {$ref: tasks/V02/adversarial_01.yaml}
+  - {$ref: tasks/V02/happy_01.yaml}
+  - {$ref: tasks/V03/adversarial_01.yaml}
+  - {$ref: tasks/V03/happy_01.yaml}
+  - {$ref: tasks/V04/happy_01.yaml}
+  - {$ref: tasks/V05/adversarial_01.yaml}
+  - {$ref: tasks/V05/happy_01.yaml}
+  - {$ref: tasks/V06/adversarial_01.yaml}
+  - {$ref: tasks/V06/happy_01.yaml}
+
 # ============================================================
-# 后续任务待 F.0.b 实现阶段补齐：
-#   每类 taxonomy 需 ≥ 1 个 happy_path + ≥ 1 个 adversarial
-#   总数 ≥ 60 个 task instance
-#   所有 success_criteria 必须使用 v1.1 结构化 schema
+# F.1.a 完成:60 task = 3 inline + 57 $ref
 # ============================================================

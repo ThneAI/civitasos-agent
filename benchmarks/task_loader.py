@@ -90,12 +90,36 @@ def load_manifest(path: str | Path) -> Manifest:
         raise ManifestError("manifest.tasks must be a non-empty list")
 
     seen_ids: set[str] = set()
+    seen_refs: set[Path] = set()
     tasks: list[TaskSpec] = []
     for i, raw_task in enumerate(raw_tasks):
-        try:
-            t = _parse_task(raw_task, taxonomy_ids, set(allowed_codes), p.parent)
-        except ManifestError as e:
-            raise ManifestError(f"task[{i}] ({raw_task.get('id', '?')}): {e}") from e
+        # v1.1.1: $ref support — referenced file must contain a single task mapping.
+        # Inline mappings still supported (backward compat with F.0 manifest).
+        if isinstance(raw_task, dict) and "$ref" in raw_task and len(raw_task) == 1:
+            ref_str = str(raw_task["$ref"])
+            ref_path = (p.parent / ref_str).resolve()
+            if ref_path in seen_refs:
+                raise ManifestError(f"task[{i}]: $ref cycle / duplicate reference: {ref_str}")
+            seen_refs.add(ref_path)
+            if not ref_path.is_file():
+                raise ManifestError(f"task[{i}]: $ref target does not exist: {ref_str}")
+            try:
+                ref_raw = yaml.safe_load(ref_path.read_text(encoding="utf-8"))
+            except yaml.YAMLError as e:
+                raise ManifestError(f"task[{i}]: $ref {ref_str} yaml parse error: {e}") from e
+            if not isinstance(ref_raw, dict):
+                raise ManifestError(f"task[{i}]: $ref {ref_str} must contain a single task mapping")
+            # Fixture paths inside referenced file are resolved relative to the referenced
+            # file's directory, NOT the manifest dir — keeps task files self-contained.
+            try:
+                t = _parse_task(ref_raw, taxonomy_ids, set(allowed_codes), ref_path.parent)
+            except ManifestError as e:
+                raise ManifestError(f"task[{i}] ($ref={ref_str}): {e}") from e
+        else:
+            try:
+                t = _parse_task(raw_task, taxonomy_ids, set(allowed_codes), p.parent)
+            except ManifestError as e:
+                raise ManifestError(f"task[{i}] ({raw_task.get('id', '?')}): {e}") from e
         if t.id in seen_ids:
             raise ManifestError(f"duplicate task id: {t.id}")
         seen_ids.add(t.id)

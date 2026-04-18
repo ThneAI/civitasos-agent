@@ -110,3 +110,91 @@ def test_duplicate_task_id_rejected(tmp_path: Path) -> None:
 """
     with pytest.raises(ManifestError, match="duplicate task id"):
         load_manifest(_write(tmp_path, body))
+
+
+# ─── F.1.a: $ref support tests ────────────────────────────────────────
+
+REF_TASK_BODY = """\
+id: R01_happy_42
+category_id: R01
+category_name: x
+targets_disease: R
+variant: happy_path
+description: x
+briefing: x
+telos: x
+success_criteria: [{kind: regex, body: "x"}]
+max_ticks: 5
+metrics_targeted: [m1_result_deviation_rate]
+"""
+
+
+def _ref_manifest(ref_target: str) -> str:
+    return f"""
+schema:
+  version: "1.1"
+allowed_metric_codes: [m1_result_deviation_rate]
+taxonomy:
+  - {{id: R01, name: x, targets: R}}
+tasks:
+  - {{$ref: {ref_target}}}
+"""
+
+
+def test_ref_loads_external_file(tmp_path: Path) -> None:
+    sub = tmp_path / "tasks" / "R01"
+    sub.mkdir(parents=True)
+    (sub / "happy_42.yaml").write_text(REF_TASK_BODY, encoding="utf-8")
+    p = _write(tmp_path, _ref_manifest("tasks/R01/happy_42.yaml"))
+    m = load_manifest(p)
+    assert len(m.tasks) == 1
+    assert m.tasks[0].id == "R01_happy_42"
+
+
+def test_ref_missing_file_rejected(tmp_path: Path) -> None:
+    p = _write(tmp_path, _ref_manifest("tasks/does_not_exist.yaml"))
+    with pytest.raises(ManifestError, match="does not exist"):
+        load_manifest(p)
+
+
+def test_ref_duplicate_rejected(tmp_path: Path) -> None:
+    sub = tmp_path / "tasks" / "R01"
+    sub.mkdir(parents=True)
+    (sub / "happy_42.yaml").write_text(REF_TASK_BODY, encoding="utf-8")
+    body = f"""
+schema:
+  version: "1.1"
+allowed_metric_codes: [m1_result_deviation_rate]
+taxonomy:
+  - {{id: R01, name: x, targets: R}}
+tasks:
+  - {{$ref: tasks/R01/happy_42.yaml}}
+  - {{$ref: tasks/R01/happy_42.yaml}}
+"""
+    with pytest.raises(ManifestError, match="cycle / duplicate"):
+        load_manifest(_write(tmp_path, body))
+
+
+def test_ref_with_extra_keys_treated_as_inline(tmp_path: Path) -> None:
+    """$ref + other keys (len != 1) is NOT a $ref — falls through to inline parse,
+    which fails because the dict isn't a valid task."""
+    body = """
+schema:
+  version: "1.1"
+allowed_metric_codes: [m1_result_deviation_rate]
+taxonomy:
+  - {id: R01, name: x, targets: R}
+tasks:
+  - {$ref: tasks/foo.yaml, id: extra_key}
+"""
+    with pytest.raises(ManifestError):
+        load_manifest(_write(tmp_path, body))
+
+
+def test_ref_target_must_be_mapping(tmp_path: Path) -> None:
+    sub = tmp_path / "tasks"
+    sub.mkdir()
+    (sub / "scalar.yaml").write_text("just a string\n", encoding="utf-8")
+    p = _write(tmp_path, _ref_manifest("tasks/scalar.yaml"))
+    with pytest.raises(ManifestError, match="single task mapping"):
+        load_manifest(p)
