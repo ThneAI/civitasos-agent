@@ -30,9 +30,13 @@ AGENT_IDS_FILE="$RUNS_ROOT/agent_ids.json"
 
 # Speed knobs (benchmark-only; production agents unaffected):
 #   LLM_DISABLE_THINKING=1  → ollama qwen3/deepseek-r1 skip <think> chain
+#                             (default OFF: F.1.c baseline needs reasoning to
+#                              expose disease-③ aspect_gap signal; A/B showed
+#                              ON is actually ~2s/tick faster on qwen3:8B Q4
+#                              because it answers more concisely after thinking)
 #   BENCHMARK_TICK_INTERVAL_S=0.1  → inter-tick sleep (default ACTIVE=10s)
 #   BENCHMARK_IDLE_INTERVAL_S=1.0  → inter-tick sleep when IDLE (default 45s)
-export LLM_DISABLE_THINKING="${LLM_DISABLE_THINKING:-1}"
+export LLM_DISABLE_THINKING="${LLM_DISABLE_THINKING:-0}"
 export BENCHMARK_TICK_INTERVAL_S="${BENCHMARK_TICK_INTERVAL_S:-0.1}"
 export BENCHMARK_IDLE_INTERVAL_S="${BENCHMARK_IDLE_INTERVAL_S:-1.0}"
 
