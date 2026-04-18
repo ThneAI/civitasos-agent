@@ -437,19 +437,43 @@ def _write_summary(run_dir: Path, run: RunResult) -> None:
 
 def _build_backend_client(
     *, backend_url: str, orch_agent_id: str | None, orch_agent_name: str,
+    orch_identity_path: str | None = None,
 ) -> BackendTaskClient:
     """Construct a real CivitasAgent SDK + wrap it as BackendTaskClient.
+
+    Registers the orchestrator via ``a2a_quickstart`` (giving it a default
+    1000 CIV balance to escrow per-task rewards). The legacy ``register()``
+    /agents endpoint is unsuitable because it ignores client-supplied IDs.
 
     Lazy import keeps the SDK off the unit-test import path.
     """
     from civitasos import CivitasAgent  # type: ignore[import-not-found]
 
-    sdk = CivitasAgent(base_url=backend_url, name=orch_agent_name)
-    if orch_agent_id:
-        try:
-            sdk.register(agent_id=orch_agent_id)  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("orchestrator agent register failed (may already exist): %s", exc)
+    sdk = CivitasAgent(base_url=backend_url)
+    # Persistent identity → idempotent DID across orchestrator restarts.
+    if orch_identity_path:
+        from pathlib import Path as _P
+        p = _P(orch_identity_path)
+        if p.exists():
+            sdk.load_identity(str(p))  # type: ignore[attr-defined]
+        else:
+            sdk.generate_keys()  # type: ignore[attr-defined]
+            p.parent.mkdir(parents=True, exist_ok=True)
+            sdk.save_identity(str(p))  # type: ignore[attr-defined]
+    else:
+        sdk.generate_keys()  # type: ignore[attr-defined]
+
+    try:
+        sdk.a2a_quickstart(  # type: ignore[attr-defined]
+            name=orch_agent_name,
+            endpoint=f"http://localhost:0/{orch_agent_name}",
+            description="F.1.c benchmark orchestrator (requester role)",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("orchestrator a2a_quickstart failed (may already exist): %s", exc)
+    if not sdk._agent_id and orch_agent_id:  # type: ignore[attr-defined]
+        sdk._agent_id = orch_agent_id  # type: ignore[attr-defined]
+    logger.info("orchestrator agent_id=%s", sdk._agent_id)  # type: ignore[attr-defined]
     return BackendTaskClient(sdk)
 
 
@@ -476,6 +500,8 @@ def _cli() -> int:
                         help="Backend base URL (used when --backend-mode=backend-tasks)")
     parser.add_argument("--orch-agent-id", help="Requester agent id to register on backend")
     parser.add_argument("--orch-agent-name", default="benchmark-orchestrator")
+    parser.add_argument("--orch-identity",
+                        help="Path to Ed25519 identity file for the orchestrator (idempotent DID)")
     parser.add_argument("--target-agent-id",
                         help="Agent id allowed to claim tasks (allowed_agents=[this])")
     parser.add_argument("--backend-capability", default="general")
@@ -493,6 +519,7 @@ def _cli() -> int:
             backend_url=args.backend_url,
             orch_agent_id=args.orch_agent_id,
             orch_agent_name=args.orch_agent_name,
+            orch_identity_path=args.orch_identity,
         )
 
     cfg = OrchestratorConfig(
