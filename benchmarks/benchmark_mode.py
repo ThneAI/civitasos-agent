@@ -78,10 +78,47 @@ def install(runner: Any) -> None:
             "no CollectorAdapter; raw_ticks.csv will not be written"
         )
 
+    # ── 3. tighten cognitive-loop intervals ──────────────────────────
+    # Production defaults (loop.py:_INTERVALS): ACTIVE=10s, IDLE=45s,
+    # SLEEPING=300s. In benchmark mode the orchestrator drives task
+    # creation and timeouts; the inter-tick sleep is dead weight that
+    # dominates wall-clock (~80% of m5_tick_latency in F.1.c). Override
+    # to a small fixed value so ticks fire back-to-back.
+    _install_fast_intervals()
+
     runner._benchmark_mode_installed = True  # type: ignore[attr-defined]
     logger.info(
         "benchmark_mode installed: task_id=%s backend_task_id=%s",
         task_id, backend_task_id,
+    )
+
+
+def _install_fast_intervals() -> None:
+    """Mutate civitasos_runtime.loop._INTERVALS for the current process.
+
+    Process-local override (orchestrator runs one agent per subprocess so
+    no cross-talk). Honors BENCHMARK_TICK_INTERVAL_S (default 0.1s) and
+    BENCHMARK_IDLE_INTERVAL_S (default 1.0s) env vars to keep an escape
+    hatch.
+    """
+    try:
+        from civitasos_runtime import loop as _loop_mod
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("benchmark_mode: cannot import loop module: %s", exc)
+        return
+    try:
+        active = float(os.getenv("BENCHMARK_TICK_INTERVAL_S", "0.1"))
+        idle = float(os.getenv("BENCHMARK_IDLE_INTERVAL_S", "1.0"))
+    except ValueError as exc:
+        logger.warning("benchmark_mode: bad interval env: %s", exc)
+        return
+    LM = _loop_mod.LoopMode
+    _loop_mod._INTERVALS[LM.ACTIVE] = active
+    _loop_mod._INTERVALS[LM.IDLE] = idle
+    # Leave SLEEPING/EVENT untouched.
+    logger.info(
+        "benchmark_mode: loop intervals overridden (ACTIVE=%.2fs, IDLE=%.2fs)",
+        active, idle,
     )
 
 
