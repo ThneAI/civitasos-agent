@@ -119,18 +119,21 @@ class Orchestrator:
         self._manifest = manifest
         self._cfg = config
 
-    def run(self, task_ids: list[str] | None = None, *, run_id: str | None = None) -> RunResult:
+    def run(self, task_ids: list[str] | None = None, *, run_id: str | None = None,
+            resume: bool = False) -> RunResult:
         run_id = run_id or _generate_run_id()
         run_dir = self._cfg.runs_root / run_id
-        if run_dir.exists():
+        if run_dir.exists() and not resume:
             archived = run_dir.with_suffix(f".archived-{int(time.time())}")
             shutil.move(str(run_dir), str(archived))
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "raw_ticks").mkdir(exist_ok=True)
         (run_dir / "tasks").mkdir(exist_ok=True)
 
-        # Snapshot manifest for reproducibility.
-        shutil.copy(self._manifest.path, run_dir / "manifest.yaml")
+        # Snapshot manifest for reproducibility (don't overwrite on resume).
+        snap = run_dir / "manifest.yaml"
+        if not snap.exists():
+            shutil.copy(self._manifest.path, snap)
 
         targets = (
             [self._manifest.task_by_id(tid) for tid in task_ids]
@@ -140,9 +143,19 @@ class Orchestrator:
 
         started = _now_iso()
         results: list[TaskResult] = []
+        skipped = 0
         for task in targets:
+            cached = _load_cached_result(run_dir, task.id) if resume else None
+            if cached is not None:
+                results.append(cached)
+                skipped += 1
+                logger.info("resume: skipping %s (cached: %s)", task.id, cached.sentinel_kind)
+                continue
             results.append(self._run_one(task, run_id=run_id, run_dir=run_dir))
         finished = _now_iso()
+
+        if resume and skipped:
+            logger.info("resume: skipped %d / %d tasks", skipped, len(results))
 
         run_result = RunResult(
             run_id=run_id,
@@ -285,7 +298,7 @@ class Orchestrator:
         else:
             self_reported = None
 
-        return TaskResult(
+        result = TaskResult(
             task_id=task.id,
             exit_code=exit_code if exit_code is not None else EXIT_ABNORMAL,
             tick_count=tick_count,
@@ -295,6 +308,11 @@ class Orchestrator:
             sentinel_kind=sentinel_kind,
             sentinel_reason=sentinel_reason,
         )
+        # Per-task checkpoint enables --resume.
+        (task_dir / "result.json").write_text(
+            json.dumps(asdict(result), default=str), encoding="utf-8",
+        )
+        return result
 
     # ---- F.1.b: backend-task state polling ---------------------------
 
@@ -348,6 +366,22 @@ def _generate_run_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     suffix = uuid.uuid4().hex[:4]
     return f"baseline-{ts}-{suffix}"
+
+
+def _load_cached_result(run_dir: Path, task_id: str) -> "TaskResult | None":
+    """Load a previously persisted per-task result for --resume mode.
+
+    Skips if the file is missing or unparseable; the task will be re-run.
+    """
+    p = run_dir / "tasks" / task_id / "result.json"
+    if not p.is_file():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return TaskResult(**d)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("resume: dropping unreadable result for %s: %s", task_id, exc)
+        return None
 
 
 def _read_sentinel(sentinel_dir: Path) -> tuple[str | None, str]:
@@ -486,6 +520,8 @@ def _cli() -> int:
     parser.add_argument("--wall-clock-per-tick-s", type=float, default=60.0)
     parser.add_argument("--task", action="append", help="Run only specified task id(s)")
     parser.add_argument("--run-id")
+    parser.add_argument("--resume", action="store_true",
+                        help="Reuse existing run-dir; skip tasks whose result.json is already present.")
     parser.add_argument(
         "--backend-mode",
         choices=_VALID_BACKEND_MODES,
@@ -534,7 +570,7 @@ def _cli() -> int:
         backend_deadline_secs=args.backend_deadline_secs,
     )
     o = Orchestrator(m, cfg)
-    result = o.run(task_ids=args.task, run_id=args.run_id)
+    result = o.run(task_ids=args.task, run_id=args.run_id, resume=args.resume)
     print(json.dumps({
         "run_id": result.run_id,
         "tasks_total": result.tasks_total,

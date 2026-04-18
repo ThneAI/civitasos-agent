@@ -110,6 +110,18 @@ else:
     export GATEWAY_PORT=0
 
     RUN_ID="baseline-${AGENT}-${TS}"
+    RESUME_FLAG=""
+    if [ "${RESUME:-0}" = "1" ]; then
+        # Reuse the most-recent existing baseline-<alias>-* run dir for this agent.
+        EXISTING="$(ls -dt "$RUNS_ROOT"/baseline-"${AGENT}"-*/ 2>/dev/null | head -1)"
+        if [ -n "$EXISTING" ]; then
+            RUN_ID="$(basename "${EXISTING%/}")"
+            RESUME_FLAG="--resume"
+            echo "  RESUME: reusing $RUN_ID"
+        else
+            echo "  RESUME=1 but no prior run for $AGENT — starting fresh"
+        fi
+    fi
     echo "  run_id=$RUN_ID"
 
     set +e
@@ -118,6 +130,7 @@ else:
         --agent-command "$PYTHON $ROOT/agent.py" \
         --runs-root "$RUNS_ROOT" \
         --run-id "$RUN_ID" \
+        $RESUME_FLAG \
         --wall-clock-per-tick-s "$WALL_CLOCK_PER_TICK_S" \
         --backend-mode backend-tasks \
         --backend-url "$BACKEND_URL" \

@@ -180,12 +180,21 @@ class BackendTaskClient:
             return False
 
     def force_fail(self, task_id: str) -> bool:
-        """Best-effort cleanup when orchestrator gave up (timeout)."""
+        """Best-effort cleanup when orchestrator gave up (timeout).
+
+        Backend rejects pool_fail unless the task is currently Claimed; that's
+        the common case here (task is already Open, Failed by deadline, or
+        terminal) so we downgrade those benign rejections to debug.
+        """
         try:
             self._sdk.pool_fail(task_id)
             return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("pool_fail cleanup failed for %s: %s", task_id, exc)
+            msg = str(exc)
+            if "not Claimed" in msg or "Task must be in Claimed state" in msg:
+                logger.debug("pool_fail noop for %s (state already terminal): %s", task_id, msg)
+            else:
+                logger.warning("pool_fail cleanup failed for %s: %s", task_id, exc)
             return False
 
 
