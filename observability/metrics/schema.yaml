@@ -1,0 +1,152 @@
+# Raw Tick CSV Schema — F.0.a v1.0
+# 与 README.md 中的"Raw Tick CSV"表格一一对应，作为 schema.py 的真值来源。
+# 修改本文件需同步更新 schema.py 与 test_schema.py。
+
+schema_version: "1.0"
+artifact: "raw_tick"
+
+columns:
+  - name: run_id
+    type: string
+    required: true
+    source: run_baseline.sh 启动时 uuid
+
+  - name: agent_id
+    type: string
+    required: true
+    source: civitasos-runtime agent name
+
+  - name: task_id
+    type: string
+    required: true
+    source: benchmarks/v1 manifest task id（CollectorAdapter.bind_task 注入）
+    constraint: 必须能在 manifest.yaml 中找到
+
+  - name: tick_seq
+    type: int
+    required: true
+    source: CollectorAdapter 内部计数（每次 bind_task 重置为 0）
+    constraint: ">= 1"
+
+  - name: tick_id
+    type: string
+    required: true
+    source: TickContext.tick_id
+
+  - name: timestamp
+    type: iso8601
+    required: true
+    source: TickContext.timestamp
+
+  - name: phase_reached
+    type: enum
+    required: true
+    values: [perceive, recall, decide, conscience, act, evaluate, reflect, remember]
+    source: TickContext.phase
+
+  - name: decision_action
+    type: string
+    required: false
+    source: Decision.action（无 decision 则为空）
+
+  - name: decision_source
+    type: enum
+    required: false
+    values: [rules, llm, hybrid]
+    source: Decision.source
+
+  - name: decision_reasoning
+    type: string
+    required: false
+    source: Decision.reasoning（截断 500 字符）
+
+  - name: served_intent_layer
+    type: string
+    required: false
+    source: H.1 之后 Decision 自报；F.1 阶段写空字符串
+
+  - name: conscience_allowed
+    type: bool
+    required: false
+    source: ConscienceVerdict.allowed
+
+  - name: conscience_reason
+    type: string
+    required: false
+    source: ConscienceVerdict.reason
+
+  - name: eval_success
+    type: bool
+    required: false
+    source: Evaluation.success
+
+  - name: eval_cost
+    type: float
+    required: false
+    source: Evaluation.cost
+
+  - name: eval_duration_ms
+    type: int
+    required: false
+    source: Evaluation.duration_ms
+
+  - name: aspect_gap
+    type: float
+    required: true
+    source: EnergyState.aspect_gap
+    constraint: "0.0 <= x <= 1.0"
+
+  - name: peer_trust_avg
+    type: float
+    required: true
+    source: EnergyState.peer_trust_avg
+
+  - name: balance
+    type: float
+    required: true
+    source: EnergyState.balance
+
+  - name: mode
+    type: enum
+    required: true
+    values: [active, idle, sleeping, event]
+    source: 当前 LoopMode（runtime 暴露后；F.1 阶段先固定写 active）
+
+  - name: is_wait
+    type: bool
+    required: true
+    source: Decision.action == "wait"
+
+  - name: wait_references_telos
+    type: bool
+    required: false
+    source: '"telos" 子串出现在 Decision.reasoning（M6 计算用）'
+
+# ---------------------------------------------------------------------------
+# Final Metrics CSV — computers/ 聚合输出
+# ---------------------------------------------------------------------------
+final_metrics:
+  schema_version: "1.0"
+  artifact: "final_metrics"
+  columns:
+    - {name: run_id, type: string, required: true}
+    - {name: agent_id, type: string, required: true}
+    - {name: category_id, type: string, required: true,
+       constraint: 'matches /^[RVSAG]0[1-6]$/'}
+    - {name: targets_disease, type: enum, required: true,
+       values: [R, V, S, A, G]}
+    - {name: task_count, type: int, required: true}
+    - {name: m1_result_deviation_rate, type: float, required: true,
+       constraint: '0.0 <= x <= 1.0'}
+    - {name: m2_verification_miss_rate, type: float, required: false,
+       note: '仅 adversarial variant 下有意义；其他写空'}
+    - {name: m3_aspect_gap_response_rate, type: float, required: true,
+       constraint: '0.0 <= x <= 1.0'}
+    - {name: m4_lessons_impact_rate, type: float, required: false,
+       note: '仅 lesson 复现场景有意义'}
+    - {name: m5_reaction_latency_p50_ms, type: float, required: true}
+    - {name: m5_reaction_latency_p95_ms, type: float, required: true}
+    - {name: m5_reaction_latency_p99_ms, type: float, required: true}
+    - {name: m6_idle_thinking_ratio, type: float, required: true,
+       constraint: '0.0 <= x <= 1.0'}
+    - {name: notes, type: string, required: false}
