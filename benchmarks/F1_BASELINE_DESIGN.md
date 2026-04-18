@@ -1,7 +1,7 @@
 # F.1 — 数据基线建立 设计文档
 
 > **关联文档**: [WISDOM_EVOLUTION_ROADMAP.md](../../civitasos/doc/plan/WISDOM_EVOLUTION_ROADMAP.md) Gate F.1
-> **状态**: DRAFT v1.1.1(R2' SDK 核对后微调;待评审)
+> **状态**: DRAFT v1.1.2(F.1.b 实施时 3 项代码层微调;v1.1.1 设计契约不变)
 >
 > **v1.1.1 变更摘要**(R2' 核对发现 4 项设计偏差,全部修):
 > - **D1**: backend `task_execute(success=True)` 进 Delivered(非 Completed),sentinel 在 Delivered 即写;orchestrator 加 `pool_confirm` 作为 settlement cleanup
@@ -594,6 +594,13 @@ F.1 完成 → 解锁 G.1(共识时间);所有 G/H/I 阶段必须能与 `benchma
 
 - **R2'**: SDK 核对完毕(2026-04-18)。全部 API 存在,无需 SDK 修改。4 项设计偏差(D1 Delivered 状态 / D2 failed-vs-give_up 区分 / D3 allowed_agents 防抢占 / D4 参数名 success) 已在 §3.2-3.3 修。
 
+### v1.1.2 关闭项 (F.1.b 实施)
+
+- **D5**: §3.2.2 中规则注册 `priority=999` 写错方向。`civitasos_runtime.rules.RuleEngine` 文档明确 "Lower priority number = evaluated first",所以 999 是 **最低**优先级,会被默认 `auto_claim_matching` (priority=30) 抢先。**修正**:`benchmark_prefer_target_task` 使用 `priority=1`,真实代码已按此实现。
+- **D6 (orchestrator API)**: SDK class 实际名称是 `CivitasAgent`(多 mixin 聚合),非伪码里的 `SyncClient`。`backend_task_client.py` 用 `_SDKLike` Protocol 抽象掉具体类名,既不绑定 SDK 又便于 fake 测试。
+- **D7 (lazy collector)**: §3.2.2 暗示在 `install()` 时构造 `CollectorAdapter`,但 `runner._loop` 在 `runner.start()` 之后才存在。改为在 `on_reflect` 回调内部首次触发时 lazily 构造,bind 整个进程生命周期(一进程一 task)。
+
 ### 仍开放的疑问(F.1.b 实施第一步处理)
 
-- **无**。原 R2' 已闭环。F.1.b 可直接起手。
+- **无**。原 R2' 已闭环;v1.1.2 的 3 项均为代码层微调,设计契约不变。
+

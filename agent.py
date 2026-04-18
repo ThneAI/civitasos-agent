@@ -81,6 +81,18 @@ def build_runner() -> AgentRunner:
     return runner
 
 
+def _install_benchmark_mode_if_present(runner) -> None:
+    """F.1.b hook: when BENCHMARK_TASK_ID is set, wire collector + target rule.
+
+    Pure no-op when env var absent — production behavior unchanged.
+    Import is local so production agents don't pay the import cost.
+    """
+    if not os.getenv("BENCHMARK_TASK_ID"):
+        return
+    from benchmarks.benchmark_mode import install
+    install(runner)
+
+
 def main():
     log_level = os.getenv("LOG_LEVEL", "INFO")
     logging.basicConfig(
@@ -89,6 +101,7 @@ def main():
     )
 
     runner = build_runner()
+    _install_benchmark_mode_if_present(runner)
     logger = logging.getLogger("civitasos_agent")
     logger.info(
         "Starting %s | backend=%s | llm=%s",

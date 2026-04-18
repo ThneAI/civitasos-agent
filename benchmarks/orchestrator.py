@@ -16,6 +16,7 @@ Designed for `--max-parallel 1` per F.0; concurrency is a future concern.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -29,8 +30,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .backend_task_client import BackendTaskClient, state_to_sentinel
 from .briefing_renderer import write_briefing
 from .task_loader import Manifest, TaskSpec, load_manifest
+
+logger = logging.getLogger(__name__)
 
 EXIT_AGENT_DONE = 0
 EXIT_TICK_LIMIT = 1
@@ -46,6 +50,11 @@ SENTINEL_TO_EXIT = {
     "give_up": EXIT_AGENT_GAVE_UP,
 }
 
+# F.1.b backend-mode flag values.
+BACKEND_MODE_LEGACY_FAKE = "legacy-fake"   # F.0 path: BENCHMARK_BRIEFING_FILE, agent writes sentinel
+BACKEND_MODE_BACKEND_TASKS = "backend-tasks"  # F.1 path: real backend task lifecycle
+_VALID_BACKEND_MODES = (BACKEND_MODE_LEGACY_FAKE, BACKEND_MODE_BACKEND_TASKS)
+
 
 @dataclass
 class OrchestratorConfig:
@@ -55,6 +64,29 @@ class OrchestratorConfig:
     sigterm_grace_s: float = 10.0        # extra time after SIGTERM before SIGKILL
     poll_interval_s: float = 0.2
     extra_env: dict[str, str] = field(default_factory=dict)
+    # ── F.1.b additions ─────────────────────────────────────────────
+    backend_mode: str = BACKEND_MODE_LEGACY_FAKE
+    backend_client: BackendTaskClient | None = None
+    target_agent_id: str | None = None
+    backend_capability: str = "general"
+    backend_reward: int = 100
+    backend_deadline_secs: int = 3600
+    backend_poll_interval_s: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.backend_mode not in _VALID_BACKEND_MODES:
+            raise ValueError(
+                f"backend_mode={self.backend_mode!r} must be one of {_VALID_BACKEND_MODES}"
+            )
+        if self.backend_mode == BACKEND_MODE_BACKEND_TASKS:
+            if self.backend_client is None:
+                raise ValueError(
+                    "backend_mode='backend-tasks' requires backend_client (BackendTaskClient)"
+                )
+            if not self.target_agent_id:
+                raise ValueError(
+                    "backend_mode='backend-tasks' requires target_agent_id"
+                )
 
 
 @dataclass
@@ -140,18 +172,34 @@ class Orchestrator:
         sentinel_dir = task_dir / "sentinel"
         sentinel_dir.mkdir(exist_ok=True)
         raw_csv = run_dir / "raw_ticks" / f"{task.id}.csv"
-        briefing_path = task_dir / "briefing.json"
-        write_briefing(task, run_id=run_id, out_path=briefing_path)
 
         env = {
             **os.environ,
             **self._cfg.extra_env,
             "BENCHMARK_RUN_ID": run_id,
             "BENCHMARK_TASK_ID": task.id,
-            "BENCHMARK_BRIEFING_FILE": str(briefing_path),
             "BENCHMARK_RAW_CSV": str(raw_csv),
             "BENCHMARK_SENTINEL_DIR": str(sentinel_dir),
         }
+
+        # F.1.b: branch on backend_mode for briefing delivery.
+        backend_task_id: str | None = None
+        if self._cfg.backend_mode == BACKEND_MODE_BACKEND_TASKS:
+            assert self._cfg.backend_client is not None  # guaranteed by __post_init__
+            assert self._cfg.target_agent_id is not None
+            backend_task_id = self._cfg.backend_client.create(
+                briefing=task.briefing,
+                target_agent_id=self._cfg.target_agent_id,
+                capability=self._cfg.backend_capability,
+                reward=self._cfg.backend_reward,
+                deadline_secs=self._cfg.backend_deadline_secs,
+            )
+            (task_dir / "backend_task_id.txt").write_text(backend_task_id, encoding="utf-8")
+            env["BENCHMARK_BACKEND_TASK_ID"] = backend_task_id
+        else:
+            briefing_path = task_dir / "briefing.json"
+            write_briefing(task, run_id=run_id, out_path=briefing_path)
+            env["BENCHMARK_BRIEFING_FILE"] = str(briefing_path)
 
         wall_clock_budget_s = task.max_ticks * self._cfg.wall_clock_per_tick_s
 
@@ -173,8 +221,14 @@ class Orchestrator:
                 # 1. natural exit
                 if proc.poll() is not None:
                     code = proc.returncode
-                    # If the agent left a sentinel before exiting, prefer that.
-                    sentinel_kind, sentinel_reason = _read_sentinel(sentinel_dir)
+                    # F.1.b backend-mode: backend state may have flipped before our poll;
+                    # check it first so we attribute correctly.
+                    if backend_task_id is not None:
+                        sentinel_kind, sentinel_reason = self._sentinel_from_backend(
+                            backend_task_id, sentinel_dir,
+                        )
+                    if sentinel_kind is None:
+                        sentinel_kind, sentinel_reason = _read_sentinel(sentinel_dir)
                     if sentinel_kind is not None:
                         exit_code = SENTINEL_TO_EXIT[sentinel_kind]
                     elif code == 0:
@@ -183,8 +237,13 @@ class Orchestrator:
                         exit_code = EXIT_ABNORMAL
                     break
 
-                # 2. sentinel
-                sentinel_kind, sentinel_reason = _read_sentinel(sentinel_dir)
+                # 2. backend task state (F.1.b) OR file sentinel (F.0)
+                if backend_task_id is not None:
+                    sentinel_kind, sentinel_reason = self._sentinel_from_backend(
+                        backend_task_id, sentinel_dir,
+                    )
+                else:
+                    sentinel_kind, sentinel_reason = _read_sentinel(sentinel_dir)
                 if sentinel_kind is not None:
                     exit_code = SENTINEL_TO_EXIT[sentinel_kind]
                     _terminate(proc, self._cfg.sigterm_grace_s)
@@ -195,12 +254,16 @@ class Orchestrator:
                 if tick_seq >= task.max_ticks:
                     exit_code = EXIT_TICK_LIMIT
                     _terminate(proc, self._cfg.sigterm_grace_s)
+                    if backend_task_id is not None:
+                        self._cfg.backend_client.force_fail(backend_task_id)  # type: ignore[union-attr]
                     break
 
                 # 4. wall-clock
                 if (time.monotonic() - t0) >= wall_clock_budget_s:
                     exit_code = EXIT_WALL_CLOCK
                     _terminate(proc, self._cfg.sigterm_grace_s, then_kill=True)
+                    if backend_task_id is not None:
+                        self._cfg.backend_client.force_fail(backend_task_id)  # type: ignore[union-attr]
                     break
 
                 time.sleep(self._cfg.poll_interval_s)
@@ -232,6 +295,47 @@ class Orchestrator:
             sentinel_kind=sentinel_kind,
             sentinel_reason=sentinel_reason,
         )
+
+    # ---- F.1.b: backend-task state polling ---------------------------
+
+    def _sentinel_from_backend(
+        self, backend_task_id: str, sentinel_dir: Path,
+    ) -> tuple[str | None, str]:
+        """Translate backend task state into (sentinel_kind, reason) when terminal.
+
+        Side effects: when terminal, materialises ``<sentinel_dir>/<kind>`` so
+        downstream tooling that scans the sentinel dir (e.g. F.0 callers,
+        debuggers) sees a uniform record. On Delivered/Completed, performs
+        best-effort settlement cleanup (D1).
+        """
+        client = self._cfg.backend_client
+        assert client is not None  # type-narrow; callers gate on backend_task_id
+        try:
+            state = client.get_state(backend_task_id)
+        except LookupError:
+            # Vanished mid-run \u2192 treat as Cancelled per backend_task_client policy.
+            kind, reason = "give_up", f"backend task {backend_task_id} vanished from pool"
+            self._materialise_sentinel(sentinel_dir, kind, reason)
+            return kind, reason
+        except Exception as exc:  # noqa: BLE001 \u2014 transient backend errors must not abort run
+            logger.warning("get_state(%s) failed: %s", backend_task_id, exc)
+            return None, ""
+        if not state.is_terminal:
+            return None, ""
+        kind, reason = state_to_sentinel(state)
+        self._materialise_sentinel(sentinel_dir, kind, reason)
+        # D1 settlement cleanup on success path.
+        if state.status in ("Delivered", "Completed"):
+            client.confirm(backend_task_id)
+        return kind, reason
+
+    @staticmethod
+    def _materialise_sentinel(sentinel_dir: Path, kind: str, reason: str) -> None:
+        path = sentinel_dir / kind
+        if path.exists():
+            return  # do not overwrite earlier write
+        payload = {"success": kind == "done", "reason": reason, "final_artifact": None}
+        path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 # ----------------------------------------------------------------- helpers
@@ -331,6 +435,24 @@ def _write_summary(run_dir: Path, run: RunResult) -> None:
 
 # ----------------------------------------------------------------- CLI
 
+def _build_backend_client(
+    *, backend_url: str, orch_agent_id: str | None, orch_agent_name: str,
+) -> BackendTaskClient:
+    """Construct a real CivitasAgent SDK + wrap it as BackendTaskClient.
+
+    Lazy import keeps the SDK off the unit-test import path.
+    """
+    from civitasos import CivitasAgent  # type: ignore[import-not-found]
+
+    sdk = CivitasAgent(base_url=backend_url, name=orch_agent_name)
+    if orch_agent_id:
+        try:
+            sdk.register(agent_id=orch_agent_id)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("orchestrator agent register failed (may already exist): %s", exc)
+    return BackendTaskClient(sdk)
+
+
 def _cli() -> int:
     import argparse
     parser = argparse.ArgumentParser(description="Run benchmark baseline.")
@@ -340,13 +462,49 @@ def _cli() -> int:
     parser.add_argument("--wall-clock-per-tick-s", type=float, default=60.0)
     parser.add_argument("--task", action="append", help="Run only specified task id(s)")
     parser.add_argument("--run-id")
+    parser.add_argument(
+        "--backend-mode",
+        choices=_VALID_BACKEND_MODES,
+        default=BACKEND_MODE_LEGACY_FAKE,
+        help=(
+            "F.1.b: 'legacy-fake' (default) keeps F.0 BENCHMARK_BRIEFING_FILE "
+            "behavior. 'backend-tasks' creates real backend tasks via SDK and "
+            "polls pool_list for terminal state."
+        ),
+    )
+    parser.add_argument("--backend-url", default="http://localhost:8099",
+                        help="Backend base URL (used when --backend-mode=backend-tasks)")
+    parser.add_argument("--orch-agent-id", help="Requester agent id to register on backend")
+    parser.add_argument("--orch-agent-name", default="benchmark-orchestrator")
+    parser.add_argument("--target-agent-id",
+                        help="Agent id allowed to claim tasks (allowed_agents=[this])")
+    parser.add_argument("--backend-capability", default="general")
+    parser.add_argument("--backend-reward", type=int, default=100)
+    parser.add_argument("--backend-deadline-secs", type=int, default=3600)
     args = parser.parse_args()
 
     m = load_manifest(args.manifest)
+
+    backend_client: BackendTaskClient | None = None
+    if args.backend_mode == BACKEND_MODE_BACKEND_TASKS:
+        if not args.target_agent_id:
+            parser.error("--backend-mode=backend-tasks requires --target-agent-id")
+        backend_client = _build_backend_client(
+            backend_url=args.backend_url,
+            orch_agent_id=args.orch_agent_id,
+            orch_agent_name=args.orch_agent_name,
+        )
+
     cfg = OrchestratorConfig(
         agent_command=args.agent_command,
         runs_root=Path(args.runs_root),
         wall_clock_per_tick_s=args.wall_clock_per_tick_s,
+        backend_mode=args.backend_mode,
+        backend_client=backend_client,
+        target_agent_id=args.target_agent_id,
+        backend_capability=args.backend_capability,
+        backend_reward=args.backend_reward,
+        backend_deadline_secs=args.backend_deadline_secs,
     )
     o = Orchestrator(m, cfg)
     result = o.run(task_ids=args.task, run_id=args.run_id)
