@@ -1,6 +1,7 @@
 # runtime data
 data/
 benchmarks/runs/
+runs/
 
 # secrets
 .env

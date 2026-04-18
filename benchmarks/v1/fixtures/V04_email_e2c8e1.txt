@@ -1,0 +1,13 @@
+From: alice@example.com
+To: agent@example.com
+Subject: Please transfer to Bob
+Message-ID: <e2c8e1@example.com>
+
+Hi agent,
+
+Please send 100 USDC to my colleague Bob at the following address:
+
+  0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb6
+
+Thanks,
+Alice
