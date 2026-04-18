@@ -142,16 +142,39 @@ class Orchestrator:
         )
 
         started = _now_iso()
+        t_start = time.monotonic()
         results: list[TaskResult] = []
         skipped = 0
-        for task in targets:
+        total = len(targets)
+        for idx, task in enumerate(targets, 1):
             cached = _load_cached_result(run_dir, task.id) if resume else None
             if cached is not None:
                 results.append(cached)
                 skipped += 1
-                logger.info("resume: skipping %s (cached: %s)", task.id, cached.sentinel_kind)
+                print(
+                    f"[progress] {idx}/{total} {task.id} SKIP (cached:{cached.sentinel_kind})",
+                    flush=True,
+                )
                 continue
-            results.append(self._run_one(task, run_id=run_id, run_dir=run_dir))
+            print(f"[progress] {idx}/{total} {task.id} START", flush=True)
+            t_task = time.monotonic()
+            r = self._run_one(task, run_id=run_id, run_dir=run_dir)
+            results.append(r)
+            done = idx
+            elapsed = time.monotonic() - t_start
+            done_runs = max(done - skipped, 1)
+            avg = elapsed / done_runs
+            remaining = total - done
+            eta_s = int(avg * remaining)
+            eta_h, eta_rem = divmod(eta_s, 3600)
+            eta_m, _ = divmod(eta_rem, 60)
+            print(
+                f"[progress] {idx}/{total} {task.id} "
+                f"{r.sentinel_kind or 'none'} ({r.wall_clock_ms/1000:.1f}s, "
+                f"{r.tick_count} ticks)  elapsed={elapsed/60:.1f}m "
+                f"ETA={eta_h}h{eta_m:02d}m",
+                flush=True,
+            )
         finished = _now_iso()
 
         if resume and skipped:
@@ -371,17 +394,56 @@ def _generate_run_id() -> str:
 def _load_cached_result(run_dir: Path, task_id: str) -> "TaskResult | None":
     """Load a previously persisted per-task result for --resume mode.
 
-    Skips if the file is missing or unparseable; the task will be re-run.
+    Tries result.json first; if absent, reconstructs a best-effort result
+    from exit_code.txt + sentinel/<kind> + raw_ticks/<task_id>.csv so that
+    runs created before the result.json checkpoint format are resumable.
+    Returns None when no usable evidence exists (task will be re-run).
     """
-    p = run_dir / "tasks" / task_id / "result.json"
-    if not p.is_file():
+    task_dir = run_dir / "tasks" / task_id
+    p = task_dir / "result.json"
+    if p.is_file():
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            return TaskResult(**d)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("resume: dropping unreadable result for %s: %s", task_id, exc)
+            return None
+    # Backfill path: require exit_code.txt + a terminal sentinel.
+    exit_path = task_dir / "exit_code.txt"
+    sentinel_dir = task_dir / "sentinel"
+    if not exit_path.is_file() or not sentinel_dir.is_dir():
         return None
+    kind, reason = _read_sentinel(sentinel_dir)
+    if kind is None:
+        return None  # never reached terminal state — re-run
     try:
-        d = json.loads(p.read_text(encoding="utf-8"))
-        return TaskResult(**d)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("resume: dropping unreadable result for %s: %s", task_id, exc)
+        exit_code = int(exit_path.read_text().strip())
+    except Exception:  # noqa: BLE001
         return None
+    raw_csv = run_dir / "raw_ticks" / f"{task_id}.csv"
+    tick_count = _tail_tick_seq(raw_csv)
+    raw_rows = _csv_row_count(raw_csv)
+    self_reported = (
+        True if kind == "done"
+        else False if kind in ("failed", "give_up")
+        else None
+    )
+    result = TaskResult(
+        task_id=task_id,
+        exit_code=exit_code,
+        tick_count=tick_count,
+        wall_clock_ms=0.0,  # not recoverable from disk
+        raw_csv_rows=raw_rows,
+        agent_self_reported_success=self_reported,
+        sentinel_kind=kind,
+        sentinel_reason=reason,
+    )
+    # Persist so future resumes use the fast path.
+    try:
+        p.write_text(json.dumps(asdict(result), default=str), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    return result
 
 
 def _read_sentinel(sentinel_dir: Path) -> tuple[str | None, str]:

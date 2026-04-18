@@ -70,10 +70,13 @@ if [ -n "$TASKS" ]; then
 fi
 
 orch_failures=0
+AGENT_TOTAL=$(echo $AGENTS | wc -w)
+AGENT_IDX=0
 
 for AGENT in $AGENTS; do
+    AGENT_IDX=$((AGENT_IDX + 1))
     echo
-    echo "── [$AGENT] starting ─────────────────────────────────────────────"
+    echo "── [$AGENT] (agent $AGENT_IDX/$AGENT_TOTAL) starting ──────────────"
     REC="$($PYTHON -c "
 import json, sys
 recs = json.load(open('$AGENT_IDS_FILE'))
