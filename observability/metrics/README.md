@@ -1,7 +1,16 @@
 # Observability Metrics — F.0.a 指标采集器
 
 > **关联文档**: [WISDOM_EVOLUTION_ROADMAP.md](../../../civitasos/doc/plan/WISDOM_EVOLUTION_ROADMAP.md) Gate F.0.a
-> **状态**: DRAFT design (schema + 接口已定，实现 + 单测待 F.0 实施)
+> **状态**: DRAFT v1.1 (自审后修订；schema + 接口已定，实现 + 单测待 F.0 实施)
+>
+> **v1.1 变更摘要**（自审 RCA 触发）:
+> - M3 操作化：阈值与「行为模式改变」给出可计算定义
+> - M4 标记 F.0 阶段空载（civitasos_runtime 当前无 `lessons` 数据结构，待 H.2 启用）
+> - M6 弱化为「wait 比率」+ 标注 H.1 上线后才能识别「有目的等待」
+> - M5 拆分 per-tick / per-task 两个层级
+> - schema 列 `mode` / `wait_references_telos` 改为 optional 并注明 F.0 默认值
+> - 新增 CSV 转义策略（RFC4180）
+> - F.0.a 通过标准从「6 项均可工作」改为「6 项均有可工作示例 OR 明确空载并标注启用阶段」
 
 ---
 
@@ -19,14 +28,14 @@
 
 来自 [WISDOM_EVOLUTION_ROADMAP Gate F.1](../../../civitasos/doc/plan/WISDOM_EVOLUTION_ROADMAP.md)：
 
-| ID | 指标 | 计算方式 | 输入字段 |
-|---|---|---|---|
-| **M1** | `result_deviation_rate` | `agent 自报 success` 但 task 的 `success_criteria` 未全满足 / 总任务数 | `Evaluation.success` + task `success_criteria` 验证 |
-| **M2** | `verification_miss_rate` | adversarial task 中未调用 verifier 工具 / adversarial task 总数 | `Decision.action` 序列 + task tool_allowed |
-| **M3** | `aspect_gap_response_rate` | `aspect_gap > 0.7` 之后 N 个 tick 内行为模式发生改变 / 触发次数 | `EnergyState.aspect_gap` 时序 + 后续 `Decision` 序列 |
-| **M4** | `lessons_impact_rate` | 失败 lesson 后再次遇到同情境时决策变化 / 同情境再现次数 | `agent.lessons_learned` + `Decision.reasoning` |
-| **M5** | `reaction_latency_dist` | 从 `briefing` 到达到 `action_result` 的 wall-clock 分布（P50/P95/P99） | `TickContext.timestamp` + `Evaluation.duration_ms` |
-| **M6** | `idle_thinking_ratio` | `Decision.action == "wait"` 且 `reasoning` 未引用 telos 的 tick / 总 tick | `Decision.action / reasoning` |
+| ID | 指标 | F.0 是否启用 | 计算方式（v1.1 操作化） | 输入字段 |
+|---|---|---|---|---|
+| **M1** | `result_deviation_rate` | ✅ | `count(agent 自报 success ∧ NOT all(machine_checkable_criteria)) / total_tasks`。仅统计 success_criteria 全部为 `regex` 或 `pyexpr` 类型的任务；`llm_judge` 类型的延后到 H.1 | `Evaluation.success` + task `success_criteria.kind ∈ {regex,pyexpr}` |
+| **M2** | `verification_miss_rate` | ✅ | adversarial task 中 `Decision.action` 序列与 task `verifier_tools` 集合交集为空的任务数 / adversarial task 总数。「verifier 工具」由 manifest 显式声明，不靠工具名猜 | `Decision.action` 序列 + task `verifier_tools` |
+| **M3** | `aspect_gap_response_rate` | ✅ | 遍历 tick 序列，找到首次 `aspect_gap` 跨越阈值 θ=0.7 的 tick t；定义前窗 W_pre = action 集合 of tick[t-3..t-1]，后窗 W_post = tick[t+1..t+3]；若 `Jaccard(W_pre, W_post) < 0.5` 记为 1 次 response。指标 = response 次数 / 触发次数。**θ=0.7 与 Jaccard<0.5 是 F.0 经验值，F.1 实施后用真实数据校准** | `EnergyState.aspect_gap` 时序 + 同窗 `Decision.action` |
+| **M4** | `lessons_impact_rate` | ⚠️ **F.0 空载** | 待 H.2「自审模块」上线后启用。F.0 阶段：computer 输出 `null` + notes 注明「pending H.2」。理由：civitasos_runtime 当前无 `agent.lessons` 数据结构（已核 models.py） | （未启用） |
+| **M5** | `reaction_latency_dist` | ✅ | **per-tick 层**：每 tick `Evaluation.duration_ms` 的 P50/P95/P99；**per-task 层**：从 task 开始（tick_seq=1）到首次 `Evaluation.success==True` 或 task 终止的 wall-clock 总耗时分布 | `TickContext.timestamp` + `Evaluation.duration_ms` |
+| **M6** | `wait_ratio` | ✅ 弱化 | F.0 阶段：`count(Decision.action=="wait") / total_ticks`，单纯比率。**真正的「无所事事 vs 有目的等待」需 H.1 `served_intent_layer` 字段上线后才能区分**，那时再分裂为 `idle_thinking_ratio` 与 `purposeful_wait_ratio` 两指标 | `Decision.action` |
 
 ---
 
@@ -43,9 +52,9 @@ observability/metrics/
 │   ├── m1_result_deviation.py
 │   ├── m2_verification_miss.py
 │   ├── m3_aspect_gap_response.py
-│   ├── m4_lessons_impact.py
-│   ├── m5_reaction_latency.py
-│   └── m6_idle_thinking.py
+│   ├── m4_lessons_impact.py    # F.0 空载占位，实际逻辑待 H.2
+│   ├── m5_reaction_latency.py  # 输出 per-tick + per-task 双层
+│   └── m6_wait_ratio.py        # F.0 弱化版；H.1 后拆为 idle_thinking + purposeful_wait
 └── tests/
     ├── test_schema.py          # schema 字段完备性
     ├── test_collector.py       # adapter 注入与 tick 解析
@@ -80,11 +89,19 @@ observability/metrics/
 | `aspect_gap` | float | EnergyState.aspect_gap | ✅ |
 | `peer_trust_avg` | float | EnergyState.peer_trust_avg | ✅ |
 | `balance` | float | EnergyState.balance | ✅ |
-| `mode` | enum | LoopMode (active/idle/sleeping/event) | ✅ |
+| `mode` | enum | LoopMode (active/idle/sleeping/event) — F.0 阶段 runtime 未暴露，固定写 `active` | optional |
 | `is_wait` | bool | Decision.action == "wait" | ✅ |
-| `wait_references_telos` | bool | "telos" 出现在 reasoning（M6 计算用） | optional |
+| `wait_references_telos` | bool | F.0 阶段固定 `false`（M6 已弱化为 wait_ratio）；H.1 后基于 `served_intent_layer` 重新计算 | optional |
 
 **Schema 版本**：v1.0。冻结后只允许追加新列，不允许修改/删除。
+
+### CSV 转义策略（v1.1 新增）
+
+所有 CSV 文件遵循 **RFC 4180**：
+- 字段含逗号 / 双引号 / 换行符 → 用双引号包裹
+- 字段内的双引号 → 重复一次（`"` → `""`）
+- `decision_reasoning` 在截断到 500 字符前先做 `\n` → `\\n` 转义，避免破坏行边界
+- writer 使用 Python 标准库 `csv.writer(quoting=csv.QUOTE_MINIMAL)`
 
 ---
 
@@ -102,12 +119,14 @@ observability/metrics/
 | `m1_result_deviation_rate` | float | 0~1 |
 | `m2_verification_miss_rate` | float | 0~1（仅 adversarial 类别有意义） |
 | `m3_aspect_gap_response_rate` | float | 0~1 |
-| `m4_lessons_impact_rate` | float | 0~1 |
-| `m5_reaction_latency_p50_ms` | float | |
-| `m5_reaction_latency_p95_ms` | float | |
-| `m5_reaction_latency_p99_ms` | float | |
-| `m6_idle_thinking_ratio` | float | 0~1 |
-| `notes` | string | 特殊情况说明（数据不足等） |
+| `m4_lessons_impact_rate` | float \| null | F.0 阶段固定 null（pending H.2） |
+| `m5_tick_latency_p50_ms` | float | per-tick 层 |
+| `m5_tick_latency_p95_ms` | float | per-tick 层 |
+| `m5_tick_latency_p99_ms` | float | per-tick 层 |
+| `m5_task_latency_p50_ms` | float | per-task 层 |
+| `m5_task_latency_p95_ms` | float | per-task 层 |
+| `m6_wait_ratio` | float | 0~1（F.0 弱化版；H.1 后会拆分） |
+| `notes` | string | 特殊情况说明（数据不足、指标空载等） |
 
 ---
 
@@ -161,12 +180,13 @@ class CollectorAdapter:
 
 ---
 
-## F.0.a 通过标准（roadmap 引用）
+## F.0.a 通过标准（v1.1 修订）
 
-- ✅ 6 项指标采集器对每项均有可工作示例（不是 mock）
-- ✅ Raw / Final 两个 schema 评审通过
-- ✅ 单元测试覆盖率 ≥ 80%（schema + collector + writer + 6 个 computers）
+- ✅ 6 项指标 computer **要么有可工作示例（不是 mock），要么明确标记空载并写明启用阶段**（M4 走空载路径）
+- ✅ Raw / Final 两个 schema 评审通过且与 schema.yaml 字面一致
+- ✅ 单元测试覆盖率 ≥ 80%（schema + collector + writer + 5 个启用 computer + M4 的「空载契约」单测）
 - ✅ CollectorAdapter 在真实 civitasos-runtime 上可工作（至少 1 个 minimal task 跑通输出 CSV）
+- ✅ M3 阈值/算法可被 F.1 校准结果覆盖（不锁死在文档）
 
 ---
 

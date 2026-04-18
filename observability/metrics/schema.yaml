@@ -1,8 +1,9 @@
-# Raw Tick CSV Schema — F.0.a v1.0
-# 与 README.md 中的"Raw Tick CSV"表格一一对应，作为 schema.py 的真值来源。
+# Raw Tick CSV Schema — F.0.a v1.1
+# 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
+# v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
 
-schema_version: "1.0"
+schema_version: "1.1"
 artifact: "raw_tick"
 
 columns:
@@ -14,7 +15,7 @@ columns:
   - name: agent_id
     type: string
     required: true
-    source: civitasos-runtime agent name
+    source: civitas-runtime agent name
 
   - name: task_id
     type: string
@@ -108,9 +109,9 @@ columns:
 
   - name: mode
     type: enum
-    required: true
+    required: false
     values: [active, idle, sleeping, event]
-    source: 当前 LoopMode（runtime 暴露后；F.1 阶段先固定写 active）
+    source: '当前 LoopMode；F.0 阶段 runtime 未暴露，采集器默认写 "active"，G.1 后启用真值'
 
   - name: is_wait
     type: bool
@@ -120,13 +121,13 @@ columns:
   - name: wait_references_telos
     type: bool
     required: false
-    source: '"telos" 子串出现在 Decision.reasoning（M6 计算用）'
+    source: 'F.0 阶段固定 false（M6 已弱化为 wait_ratio）；H.1 后基于 served_intent_layer 重新计算'
 
 # ---------------------------------------------------------------------------
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.0"
+  schema_version: "1.1"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
@@ -137,16 +138,23 @@ final_metrics:
        values: [R, V, S, A, G]}
     - {name: task_count, type: int, required: true}
     - {name: m1_result_deviation_rate, type: float, required: true,
-       constraint: '0.0 <= x <= 1.0'}
+       constraint: '0.0 <= x <= 1.0',
+       note: '仅统计 success_criteria 全为 regex/pyexpr 的任务；llm_judge 类型延到 H.1'}
     - {name: m2_verification_miss_rate, type: float, required: false,
-       note: '仅 adversarial variant 下有意义；其他写空'}
+       note: '仅 adversarial variant 有意义；依赖 task.verifier_tools 字段'}
     - {name: m3_aspect_gap_response_rate, type: float, required: true,
-       constraint: '0.0 <= x <= 1.0'}
-    - {name: m4_lessons_impact_rate, type: float, required: false,
-       note: '仅 lesson 复现场景有意义'}
-    - {name: m5_reaction_latency_p50_ms, type: float, required: true}
-    - {name: m5_reaction_latency_p95_ms, type: float, required: true}
-    - {name: m5_reaction_latency_p99_ms, type: float, required: true}
-    - {name: m6_idle_thinking_ratio, type: float, required: true,
-       constraint: '0.0 <= x <= 1.0'}
+       constraint: '0.0 <= x <= 1.0',
+       note: '阈值 θ=0.7、窗宽 N=3、Jaccard<0.5 为 F.0 经验值，F.1 后校准'}
+    - {name: m4_lessons_impact_rate, type: float, required: false, nullable: true,
+       note: 'F.0 阶段固定 null + notes="pending H.2"（civitasos_runtime 当前无 lessons 数据结构）'}
+    - {name: m5_tick_latency_p50_ms, type: float, required: true,
+       note: 'per-tick 层，Evaluation.duration_ms 的 P50'}
+    - {name: m5_tick_latency_p95_ms, type: float, required: true}
+    - {name: m5_tick_latency_p99_ms, type: float, required: true}
+    - {name: m5_task_latency_p50_ms, type: float, required: true,
+       note: 'per-task 层，task 开始到首次 success/终止的 wall-clock'}
+    - {name: m5_task_latency_p95_ms, type: float, required: true}
+    - {name: m6_wait_ratio, type: float, required: true,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'F.0 弱化版；H.1 后拆分为 idle_thinking_ratio + purposeful_wait_ratio'}
     - {name: notes, type: string, required: false}
