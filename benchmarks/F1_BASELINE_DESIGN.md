@@ -1,7 +1,13 @@
 # F.1 — 数据基线建立 设计文档
 
 > **关联文档**: [WISDOM_EVOLUTION_ROADMAP.md](../../civitasos/doc/plan/WISDOM_EVOLUTION_ROADMAP.md) Gate F.1
-> **状态**: DRAFT v1.1(自审后修订;待评审)
+> **状态**: DRAFT v1.1.1(R2' SDK 核对后微调;待评审)
+>
+> **v1.1.1 变更摘要**(R2' 核对发现 4 项设计偏差,全部修):
+> - **D1**: backend `task_execute(success=True)` 进 Delivered(非 Completed),sentinel 在 Delivered 即写;orchestrator 加 `pool_confirm` 作为 settlement cleanup
+> - **D2**: `task_execute(success=False)` 与 `pool_fail()` 在 backend 都进 Failed,**区分 failed vs give_up 必须看 `task.output is None`**
+> - **D3**: `pool_post` 必须传 `allowed_agents=[target_agent_id]` 防止 backend `try_auto_claim` 被其他 agent 抢走
+> - **D4**: SDK 参数是 `success`(不是 `done`),文档统一
 > **前置**: F.0 通过(commit 4ac62cb,49/49 tests + smoke 端到端 OK)
 > **目的**: 把 F.0 的"测试床"接到真 backend + 真 LLM + 真任务集,跑出**首份基线报告**
 >
@@ -138,7 +144,7 @@ Roadmap §F.1 写"100+ 真实任务",我们 F.1.a 下限定 60。**理由**:
 - B2: 同一 LLM 既决策又自评 → M1 deviation rate 因"LLM 自我肯定偏置"而失真
 - B3: F.0 的 `agent_self_reported_success` 语义在 v1.0 自评方案下漂移
 
-**v1.1 方案**: **不**注入 briefing,**不**让 LLM 自评。orchestrator 在启动 agent 之前,**先在 backend 创建一个真 task**(通过 `POST /v1/tasks` 之类的真实 SDK API),把 `task.briefing` 字段设成 manifest 里的内容。agent 通过正常 `agent.briefing()` perceive 拿到该 task,走真实 SDK 路径(pool_claim → execute → confirm),最后调 `task_execute(done=true)` 或类似 API 把 task 标记完成。orchestrator 轮询 backend task state,**当 task state 落入终态(done/failed/canceled)时**写出 sentinel,SIGTERM agent。
+**v1.1 方案**(v1.1.1 修正 D1+D3+D4): **不**注入 briefing,**不**让 LLM 自评。orchestrator 在启动 agent 之前,**先在 backend 创建一个真 task**(通过 `POST /api/v1/a2a/pool/post`,请求体必须包含 `allowed_agents=[target_agent_id]` 防 auto_claim 被其他 agent 抢走 — D3),`description` 字段放 manifest 的 briefing。返回体里取 `task_id` 作为 `BENCHMARK_BACKEND_TASK_ID`。agent 通过正常 `agent.briefing()` perceive 拿到该 task(全量服务 broadcast),走真实 SDK 路径(pool_claim → execute),最后调 `task_execute(task_id, output, success=True)`(D4: 参数名是 `success`不是 `done`)把 task 推到 **Delivered**。orchestrator 轮询 backend task state,**当 task state 落入终态(Delivered/Failed/Cancelled)时**写出 sentinel + SIGTERM agent + 调 `pool_confirm` 作 settlement cleanup(D1)。
 
 #### 3.2.1 5 个 BENCHMARK_* 环境变量(v1.1 修订)
 
@@ -191,41 +197,93 @@ def _install_benchmark_mode_if_present(runner):
 └────────────────┘                  └───────────┘         └────────────┘
 ```
 
-### 3.3 sentinel 由 orchestrator 写出 — 语义重定义(v1.1)
+### 3.3 sentinel 由 orchestrator 写出 — 语义重定义(v1.1.1 修正)
 
-v1.0 让 agent 写 sentinel。v1.1 改由 **orchestrator 写**(基于 backend task state):
+v1.0 让 agent 写 sentinel。v1.1 改由 **orchestrator 写**(基于 backend task state)。v1.1.1 根据 R2' 核对调整状态映射:
 
-| backend task state | sentinel kind | exit_code | M1.agent_self_reported_success |
+backend `PooledTaskStatus` 实际 7 状态: `Open / Claimed / Delivered / Disputed / Completed / Failed / Cancelled`。agent 行动 → 状态:
+- `task_execute(success=True, output=...)` → **Delivered**(需 requester 调 `pool_confirm` 才到 Completed)
+- `task_execute(success=False, output=...)` → **Failed**(有 output)
+- `pool_fail(task_id)` / `pool_abandon(task_id)` → **Failed**(**无** output)
+
+sentinel 映射(orchestrator poll 逻辑):
+
+| backend state 判断 | sentinel kind | exit_code | M1.agent_self_reported_success | orchestrator 后续动作 |
+|---|---|---|---|---|
+| **Delivered** 或 **Completed** | `done` | 0 | **true** — agent 调了 task_execute(success=True) | 调 `pool_confirm` 作 cleanup(允许失败,不影响 sentinel) |
+| **Failed** 且 `task.output 非 None非空` | `failed` | 3 | **false** — agent 明示说失败 | 无 |
+| **Failed** 且 `task.output is None` | `give_up` | 4 | **false** — agent 调 pool_abandon | 无 |
+| **Cancelled** | `give_up` | 4 | **false** | 无 |
+| 超时未变(仍在 Open/Claimed) | 不写 sentinel | 1 或 124 | **null** | 调 `pool_fail` 清理 escrow |
+
+**关键: M1 deviation 的语义现在变成 "agent 用真实 SDK action 表达完成" vs "用 verifier 客观验证是否达成"**。这是 F.0 设计本意的还原 — 当 agent 调 `task_execute(success=True)` 时,他/她**就**是在自报 success。
+
+**D2 说明**: backend 不区分 `task_execute(success=False)` 与 `pool_fail`,两者皆为 Failed。区分 failed vs give_up 全靠 `task.output` 是否为空。`pool_list` GET 返回的 `PooledTask.output: Option<Value>` 是判断依据。
+
+#### 3.3.1 SDK API 核对结果(v1.1.1 完成)
+
+R2' 核对完毕,**无需修改 SDK**:
+
+| 设计需求 | SDK 实际 API | backend 路由 | 状态 |
 |---|---|---|---|
-| `done` | `done` | 0 | **true** — agent 真实调用了 confirm/execute(done=true) |
-| `failed`(agent 主动调 fail API) | `failed` | 3 | **false** — agent 自己说失败 |
-| `canceled`(agent 调 abandon API) | `give_up` | 4 | **false** |
-| 超时未变(orchestrator 因 wall-clock/tick-limit 强杀) | 不写 sentinel | 1 或 124 | **null** — 无 agent 主观判断 |
+| 创建 task(orchestrator) | `pool_post(required_capability=, input_data=, reward=, allowed_agents=[…], deadline_secs=)` | `POST /api/v1/a2a/pool/post` | ✅ |
+| claim task(agent) | `pool_claim(task_id)` | `POST /api/v1/a2a/pool/claim` | ✅ |
+| 完成(agent) | `task_execute(task_id, output, success=True)` | `POST /api/v1/a2a/task/execute` | ✅ |
+| 明示失败(agent) | `task_execute(task_id, output, success=False)` | 同上 | ✅ |
+| 放弃(agent) | `pool_abandon(task_id)`(= `pool_fail`) | `POST /api/v1/a2a/pool/fail/{id}` | ✅ |
+| settlement cleanup(orchestrator) | `pool_confirm(task_id)` | `POST /api/v1/a2a/pool/confirm/{id}` | ✅ |
+| 轮询 task state(orchestrator) | `pool_list()` 后按 `task_id` 过滤 | `GET /api/v1/a2a/pool/tasks` | ⚠️ 可用但偏重 — 见 §3.3.2 |
 
-**关键: M1 deviation 的语义现在变成 "agent 用真实 SDK action 表达完成" vs "用 verifier 客观验证是否达成"**。这是 F.0 设计本意的还原 — 当 agent 调 `task_execute(done=true)` 时,他/她**就**是在自报 success。
+**未调取 SDK 的 4 项设计偏差均在 §3.2-3.3 已修**(D1/D2/D3/D4)。
 
-#### 3.3.1 SDK API 是否齐全的核对(v1.1 必须前置确认)
-
-实施 F.1.b 第一步:确认 `civitasos_runtime` 的 `Agent` 类(或 SDK)是否暴露:
-
-- ✅ `pool_claim(task_id)` — 已有(`runtime/runner.py:237` 反向 abandon 已用)
-- ❓ `task_execute(task_id, result, done: bool)` — **待核对**
-- ❓ `task_fail(task_id, reason)` — **待核对**
-- ❓ `task_abandon(task_id)` — pool_abandon 应该等价
-
-**若任一缺失** → F.1.b 实施第一动作是**与 SDK 维护者协商最小新增**(F.1.b 范围内,因为 SDK 是 agent 的依赖,不是 runtime/loop;改 SDK 不算违反 "不改 runtime")。**若无法协商** → 退化为方案 X(连续 N tick 都 wait 即视为完成,success=undecided),**M1 数据视为 partial coverage** 在 REPORT 中标注。
-
-#### 3.3.2 orchestrator 新增能力
+#### 3.3.2 orchestrator BackendTaskClient 设计
 
 ```python
-# orchestrator.py 新增伪代码
+# benchmarks/backend_task_client.py(F.1.b 新增)
 class BackendTaskClient:
-    def create(self, task_spec: TaskSpec, run_id: str) -> str: ...   # POST /v1/tasks
-    def get_state(self, backend_task_id: str) -> dict: ...           # GET /v1/tasks/{id}
-    def cleanup(self, backend_task_id: str): ...                     # DELETE 或 mark archived
+    def __init__(self, sdk_client, orchestrator_agent_id: str):
+        self.sdk = sdk_client                # 使用 civitasos.SyncClient(作为"requester")
+        self.orch_id = orchestrator_agent_id # 要提前在 backend 注册 & 充值足够 reward escrow
+
+    def create(self, briefing: str, capability: str, target_agent_id: str,
+               reward: int, deadline_secs: int) -> str:
+        # D3 的 allowed_agents 是防抢占的核心
+        r = self.sdk.pool_post(
+            required_capability=capability,
+            input_data={"description": briefing},
+            reward=reward,
+            deadline_secs=deadline_secs,
+            allowed_agents=[target_agent_id],
+        )
+        return r["task_id"]
+
+    def get_state(self, task_id: str) -> dict:
+        # 补丁: pool_list 返回全表,用 task_id 筛选;如未来 SDK 加个体端点 GET /pool/tasks/{id} 可简化
+        all_tasks = self.sdk.pool_list().get("tasks", [])
+        for t in all_tasks:
+            if t.get("id") == task_id:
+                return t                      # PooledTask serialized: {id, status, output, ...}
+        raise LookupError(f"task {task_id} not found in pool")
+
+    def confirm(self, task_id: str):
+        # D1 settlement cleanup,允许失败(如 escrow 已被其他路径释放)
+        try: self.sdk.pool_confirm(task_id)
+        except Exception as e: logger.warning("pool_confirm cleanup failed: %s", e)
+
+    def force_fail(self, task_id: str):
+        # wall-clock 超时时 orchestrator 主动清理
+        try: self.sdk.pool_fail(task_id)
+        except Exception as e: logger.warning("pool_fail cleanup failed: %s", e)
 ```
 
-poll 循环增加第 5 项检查:**backend task state 终态** → 写 sentinel → SIGTERM。优先级置于 sentinel 检查之前。
+**poll 循环优先级**(F.0 4 项 + F.1 新增第 5 项):
+1. agent 进程 exit → 报 ABNORMAL
+2. **backend task state 终态(Delivered/Completed/Failed/Cancelled)** → 写 sentinel + SIGTERM(F.1 新增)
+3. sentinel 文件出现(legacy F.0 路径,F.1 下不会被触发) → SIGTERM
+4. tick_seq 达 max_ticks → SIGTERM + exit 1
+5. wall_clock 超预算 → SIGTERM + exit 124
+
+**轮询频率**: 默认 1Hz(与 tick 同量级),实际 LLM tick 耗时远大于此,不会压墎 backend。`pool_list` 返回全表的成本在 60 task * 1Hz 量级下可接受;若 F.1.b 实测发现压力,**提 G 阶段 SDK enhancement backlog**:加 `pool_get_task(task_id)` 点查 API。
 
 ### 3.4 backend 启动方式
 
@@ -532,6 +590,10 @@ F.1 完成 → 解锁 G.1(共识时间);所有 G/H/I 阶段必须能与 `benchma
 | m7 | frozen 是软约定 | task_loader 实施时加 `git diff --quiet HEAD -- v1/tasks/` 检查 |
 | m8 | F.1.c 通过标准只看行数 | §4.5 已加 "每 agent ≥50 完成" 硬指标 |
 
-### 仍开放的疑问(F.1.b 实施第一步必须解决)
+### v1.1.1 关闭项
 
-- **R2'**: SDK 是否暴露 `task_execute(done=true)` / `task_fail` / `task_abandon` 三件 API?需要 grep + 与 SDK 维护者协商;若全无,降级路径已在 §3.3.1 写明。
+- **R2'**: SDK 核对完毕(2026-04-18)。全部 API 存在,无需 SDK 修改。4 项设计偏差(D1 Delivered 状态 / D2 failed-vs-give_up 区分 / D3 allowed_agents 防抢占 / D4 参数名 success) 已在 §3.2-3.3 修。
+
+### 仍开放的疑问(F.1.b 实施第一步处理)
+
+- **无**。原 R2' 已闭环。F.1.b 可直接起手。
