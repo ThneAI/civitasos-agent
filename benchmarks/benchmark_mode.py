@@ -128,9 +128,9 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
     def benchmark_prefer_target_task(
         briefing: dict, _memories: dict,
     ) -> Decision | None:
-        # If the agent already claimed this task, advance to task_execute.
+        # 1) If the agent already claimed this task, advance to task_execute.
         for task in briefing.get("active_tasks", []) or []:
-            tid = task.get("task_id") or task.get("id") or task
+            tid = task.get("task_id") or task.get("id") if isinstance(task, dict) else task
             if tid == backend_task_id:
                 return Decision(
                     action="task_execute",
@@ -149,27 +149,21 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
                     confidence=1.0,
                     source=DecisionSource.RULES,
                 )
-        # Otherwise, look for the target in the open opportunities list and claim it.
-        # Backend's briefing endpoint returns 'opportunities', not 'pool_tasks'.
-        candidates = (
-            briefing.get("opportunities")
-            or briefing.get("pool_tasks")
-            or []
+        # 2) Otherwise claim the target unconditionally. The orchestrator
+        # guaranteed this task exists in the pool with allowed_agents=[us].
+        # We can't rely on briefing['opportunities'] because it is paginated
+        # (typically only the 10 oldest are exposed) and the just-created
+        # benchmark task is usually the newest, so it is invisible there.
+        return Decision(
+            action="pool_claim",
+            params={"task_id": backend_task_id},
+            reasoning=(
+                f"benchmark mode: claim orchestrator-targeted task "
+                f"{backend_task_id} by id (bypass opportunities pagination)"
+            ),
+            confidence=1.0,
+            source=DecisionSource.RULES,
         )
-        for task in candidates:
-            tid = task.get("task_id") or task.get("id")
-            if tid == backend_task_id:
-                return Decision(
-                    action="pool_claim",
-                    params={"task_id": backend_task_id},
-                    reasoning=(
-                        f"benchmark mode: claim orchestrator-targeted task "
-                        f"{backend_task_id}"
-                    ),
-                    confidence=1.0,
-                    source=DecisionSource.RULES,
-                )
-        return None
 
     # `runner.rule(...)` is a decorator; call it then apply.
     runner.rule(priority=_RULE_PRIORITY, name=_RULE_NAME)(benchmark_prefer_target_task)
