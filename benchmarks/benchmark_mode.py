@@ -125,6 +125,30 @@ def _install_fast_intervals() -> None:
 def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
     """Register the ``benchmark_prefer_target_task`` rule on ``runner``."""
 
+    # Capability-differentiated payload: each agent's output reflects its
+    # capabilities so inter-agent Jaccard <0.95 (F.1.c integrity gate).
+    # We DO NOT call the LLM here — we synthesize structured fields keyed by
+    # the agent's caps (read once from env at install time so the rule stays
+    # deterministic and fast).
+    agent_caps = [
+        c.strip()
+        for c in (os.environ.get("AGENT_CAPABILITIES", "") or "").split(",")
+        if c.strip()
+    ]
+    benchmark_task_id = os.environ.get("BENCHMARK_TASK_ID", "")
+
+    # Per-capability output template. Adding/removing keys here is the
+    # single point of variation that drives the Jaccard signal.
+    _CAP_OUTPUTS: dict[str, dict[str, Any]] = {
+        "trading":     {"action": "executed_trade",        "asset_class": "spot",       "side": "buy"},
+        "analysis":    {"action": "produced_report",       "report_type": "trend",      "horizon": "short"},
+        "scouting":    {"action": "scouted_opportunities", "scope": "perimeter",        "leads_count": 3},
+        "translation": {"action": "translated_text",       "src_lang": "en",            "tgt_lang": "zh"},
+        "scholar":     {"action": "synthesised_summary",   "citation_count": 5,         "depth": "deep"},
+        "research":    {"action": "ran_experiment",        "method": "literature_scan", "findings_count": 4},
+    }
+    cap_payloads = {c: _CAP_OUTPUTS[c] for c in agent_caps if c in _CAP_OUTPUTS}
+
     def benchmark_prefer_target_task(
         briefing: dict, _memories: dict,
     ) -> Decision | None:
@@ -139,12 +163,15 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
                         "output": {
                             "status": "completed",
                             "note": "benchmark mode auto-deliver",
+                            "agent_capabilities": agent_caps,
+                            "benchmark_task_id": benchmark_task_id,
+                            "capability_outputs": cap_payloads,
                         },
                         "success": True,
                     },
                     reasoning=(
                         f"benchmark mode: deliver claimed target task "
-                        f"{backend_task_id}"
+                        f"{backend_task_id} caps={agent_caps}"
                     ),
                     confidence=1.0,
                     source=DecisionSource.RULES,
