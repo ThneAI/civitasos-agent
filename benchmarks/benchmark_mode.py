@@ -128,7 +128,35 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
     def benchmark_prefer_target_task(
         briefing: dict, _memories: dict,
     ) -> Decision | None:
-        for task in briefing.get("pool_tasks", []) or []:
+        # If the agent already claimed this task, advance to task_execute.
+        for task in briefing.get("active_tasks", []) or []:
+            tid = task.get("task_id") or task.get("id") or task
+            if tid == backend_task_id:
+                return Decision(
+                    action="task_execute",
+                    params={
+                        "task_id": backend_task_id,
+                        "output": {
+                            "status": "completed",
+                            "note": "benchmark mode auto-deliver",
+                        },
+                        "success": True,
+                    },
+                    reasoning=(
+                        f"benchmark mode: deliver claimed target task "
+                        f"{backend_task_id}"
+                    ),
+                    confidence=1.0,
+                    source=DecisionSource.RULES,
+                )
+        # Otherwise, look for the target in the open opportunities list and claim it.
+        # Backend's briefing endpoint returns 'opportunities', not 'pool_tasks'.
+        candidates = (
+            briefing.get("opportunities")
+            or briefing.get("pool_tasks")
+            or []
+        )
+        for task in candidates:
             tid = task.get("task_id") or task.get("id")
             if tid == backend_task_id:
                 return Decision(
