@@ -72,6 +72,12 @@ class OrchestratorConfig:
     backend_reward: int = 100
     backend_deadline_secs: int = 3600
     backend_poll_interval_s: float = 1.0
+    # ── auto-rotation of orchestrator identity when wallet drains ──
+    # Each fresh quickstart grants ~990 CIV (≈9 task escrows). For long
+    # baselines we transparently rotate to a new identity on HTTP 402.
+    backend_url: str = "http://localhost:8099"
+    orch_agent_name: str = "benchmark-orchestrator"
+    orch_identity_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.backend_mode not in _VALID_BACKEND_MODES:
@@ -202,6 +208,55 @@ class Orchestrator:
 
     # ---------------------------------------------------------------- internals
 
+    def _rotate_orchestrator_identity(self) -> None:
+        """Generate a fresh orchestrator key and re-quickstart for a 990-CIV grant.
+
+        Backend `a2a_quickstart` grants ~990 usable CIV per fresh DID. When the
+        active orchestrator wallet drains (HTTP 402 from `/pool/post`), rotate
+        to a brand-new identity to keep the run flowing. The drained key is
+        archived next to the active one for audit (`<name>.drained-<ts>`).
+        """
+        from civitasos import CivitasAgent  # type: ignore[import-not-found]
+        from pathlib import Path as _P
+
+        cfg = self._cfg
+        assert cfg.backend_client is not None
+        old_path = _P(cfg.orch_identity_path) if cfg.orch_identity_path else None
+        if old_path and old_path.exists():
+            archived = old_path.with_suffix(
+                old_path.suffix + f".drained-{int(time.time())}"
+            )
+            try:
+                shutil.move(str(old_path), str(archived))
+                logger.info("[orch-rotate] archived drained key: %s", archived)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[orch-rotate] could not archive old key: %s", exc)
+
+        sdk = CivitasAgent(base_url=cfg.backend_url)
+        sdk.generate_keys()  # type: ignore[attr-defined]
+        if old_path is not None:
+            old_path.parent.mkdir(parents=True, exist_ok=True)
+            sdk.save_identity(str(old_path))  # type: ignore[attr-defined]
+        # Quickstart with a unique alias so we don't collide with the drained
+        # identity's alias (backend rejects alias re-binding to a new DID).
+        unique_name = f"{cfg.orch_agent_name}-r{int(time.time())}"
+        try:
+            sdk.a2a_quickstart(  # type: ignore[attr-defined]
+                name=unique_name,
+                endpoint=f"http://localhost:0/{unique_name}",
+                description="F.1.c benchmark orchestrator (rotated identity)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[orch-rotate] a2a_quickstart failed for fresh identity: %s", exc
+            )
+        logger.info(
+            "[orch-rotate] new orchestrator agent_id=%s",
+            getattr(sdk, "_agent_id", None),
+        )
+        # Swap the SDK inside the existing BackendTaskClient.
+        cfg.backend_client._sdk = sdk  # type: ignore[attr-defined]
+
     def _run_one(self, task: TaskSpec, *, run_id: str, run_dir: Path) -> TaskResult:
         task_dir = run_dir / "tasks" / task.id
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -223,13 +278,34 @@ class Orchestrator:
         if self._cfg.backend_mode == BACKEND_MODE_BACKEND_TASKS:
             assert self._cfg.backend_client is not None  # guaranteed by __post_init__
             assert self._cfg.target_agent_id is not None
-            backend_task_id = self._cfg.backend_client.create(
-                briefing=task.briefing,
-                target_agent_id=self._cfg.target_agent_id,
-                capability=self._cfg.backend_capability,
-                reward=self._cfg.backend_reward,
-                deadline_secs=self._cfg.backend_deadline_secs,
-            )
+            try:
+                backend_task_id = self._cfg.backend_client.create(
+                    briefing=task.briefing,
+                    target_agent_id=self._cfg.target_agent_id,
+                    capability=self._cfg.backend_capability,
+                    reward=self._cfg.backend_reward,
+                    deadline_secs=self._cfg.backend_deadline_secs,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # On 402 (Insufficient funds) rotate the orchestrator identity
+                # to obtain a fresh quickstart grant and retry once.
+                status = getattr(exc, "status_code", None)
+                msg_l = str(exc).lower()
+                is_402 = status == 402 or "insufficient funds" in msg_l or "402" in msg_l
+                if not is_402:
+                    raise
+                logger.warning(
+                    "[orch-rotate] task=%s hit 402 \u2014 rotating orchestrator identity",
+                    task.id,
+                )
+                self._rotate_orchestrator_identity()
+                backend_task_id = self._cfg.backend_client.create(
+                    briefing=task.briefing,
+                    target_agent_id=self._cfg.target_agent_id,
+                    capability=self._cfg.backend_capability,
+                    reward=self._cfg.backend_reward,
+                    deadline_secs=self._cfg.backend_deadline_secs,
+                )
             (task_dir / "backend_task_id.txt").write_text(backend_task_id, encoding="utf-8")
             env["BENCHMARK_BACKEND_TASK_ID"] = backend_task_id
         else:
@@ -630,6 +706,9 @@ def _cli() -> int:
         backend_capability=args.backend_capability,
         backend_reward=args.backend_reward,
         backend_deadline_secs=args.backend_deadline_secs,
+        backend_url=args.backend_url,
+        orch_agent_name=args.orch_agent_name,
+        orch_identity_path=args.orch_identity,
     )
     o = Orchestrator(m, cfg)
     result = o.run(task_ids=args.task, run_id=args.run_id, resume=args.resume)
