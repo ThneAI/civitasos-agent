@@ -72,6 +72,8 @@ class OrchestratorConfig:
     backend_reward: int = 100
     backend_deadline_secs: int = 3600
     backend_poll_interval_s: float = 1.0
+    # S5: reuse one long-lived agent.py subprocess across all tasks in a stage.
+    reuse_agent_process: bool = False
     # ── auto-rotation of orchestrator identity when wallet drains ──
     # Each fresh quickstart grants ~990 CIV (≈9 task escrows). For long
     # baselines we transparently rotate to a new identity on HTTP 402.
@@ -105,6 +107,13 @@ class TaskResult:
     agent_self_reported_success: bool | None
     sentinel_kind: str | None
     sentinel_reason: str
+
+
+@dataclass
+class _PersistentAgentSession:
+    proc: subprocess.Popen[Any]
+    task_id_file: Path
+    backend_task_id_file: Path
 
 
 @dataclass
@@ -152,35 +161,51 @@ class Orchestrator:
         results: list[TaskResult] = []
         skipped = 0
         total = len(targets)
-        for idx, task in enumerate(targets, 1):
-            cached = _load_cached_result(run_dir, task.id) if resume else None
-            if cached is not None:
-                results.append(cached)
-                skipped += 1
+        shared_session: _PersistentAgentSession | None = None
+        try:
+            for idx, task in enumerate(targets, 1):
+                cached = _load_cached_result(run_dir, task.id) if resume else None
+                if cached is not None:
+                    results.append(cached)
+                    skipped += 1
+                    print(
+                        f"[progress] {idx}/{total} {task.id} SKIP (cached:{cached.sentinel_kind})",
+                        flush=True,
+                    )
+                    continue
+                print(f"[progress] {idx}/{total} {task.id} START", flush=True)
+                if (
+                    self._cfg.reuse_agent_process
+                    and self._cfg.backend_mode == BACKEND_MODE_BACKEND_TASKS
+                ):
+                    if shared_session is None:
+                        shared_session = self._spawn_shared_agent(
+                            run_id=run_id, run_dir=run_dir, initial_task_id=task.id,
+                        )
+                    r = self._run_one_reuse(
+                        task, run_id=run_id, run_dir=run_dir, session=shared_session,
+                    )
+                else:
+                    r = self._run_one(task, run_id=run_id, run_dir=run_dir)
+                results.append(r)
+                done = idx
+                elapsed = time.monotonic() - t_start
+                done_runs = max(done - skipped, 1)
+                avg = elapsed / done_runs
+                remaining = total - done
+                eta_s = int(avg * remaining)
+                eta_h, eta_rem = divmod(eta_s, 3600)
+                eta_m, _ = divmod(eta_rem, 60)
                 print(
-                    f"[progress] {idx}/{total} {task.id} SKIP (cached:{cached.sentinel_kind})",
+                    f"[progress] {idx}/{total} {task.id} "
+                    f"{r.sentinel_kind or 'none'} ({r.wall_clock_ms/1000:.1f}s, "
+                    f"{r.tick_count} ticks)  elapsed={elapsed/60:.1f}m "
+                    f"ETA={eta_h}h{eta_m:02d}m",
                     flush=True,
                 )
-                continue
-            print(f"[progress] {idx}/{total} {task.id} START", flush=True)
-            t_task = time.monotonic()
-            r = self._run_one(task, run_id=run_id, run_dir=run_dir)
-            results.append(r)
-            done = idx
-            elapsed = time.monotonic() - t_start
-            done_runs = max(done - skipped, 1)
-            avg = elapsed / done_runs
-            remaining = total - done
-            eta_s = int(avg * remaining)
-            eta_h, eta_rem = divmod(eta_s, 3600)
-            eta_m, _ = divmod(eta_rem, 60)
-            print(
-                f"[progress] {idx}/{total} {task.id} "
-                f"{r.sentinel_kind or 'none'} ({r.wall_clock_ms/1000:.1f}s, "
-                f"{r.tick_count} ticks)  elapsed={elapsed/60:.1f}m "
-                f"ETA={eta_h}h{eta_m:02d}m",
-                flush=True,
-            )
+        finally:
+            if shared_session is not None:
+                _terminate(shared_session.proc, self._cfg.sigterm_grace_s, then_kill=True)
         finished = _now_iso()
 
         if resume and skipped:
@@ -208,6 +233,48 @@ class Orchestrator:
 
     # ---------------------------------------------------------------- internals
 
+    def _topup_orchestrator_via_faucet(self, amount: int = 5000) -> bool:
+        """Request CIV from the dev faucet for the active orchestrator agent.
+
+        Requires the backend to have ``CIVITASOS_DEV_FAUCET=true`` in its env.
+        Returns True on success, False on any failure (caller falls back to
+        identity rotation).
+        """
+        cfg = self._cfg
+        try:
+            sdk = cfg.backend_client._sdk  # type: ignore[attr-defined]
+            agent_id = getattr(sdk, "_agent_id", None)
+            if not agent_id:
+                return False
+            if not getattr(sdk, "_jwt_token", None):
+                _bootstrap_demo_jwt(sdk, cfg.backend_url, agent_id)
+            import urllib.request as _ur
+            import urllib.error as _ue
+            import json as _json
+            headers = {"Content-Type": "application/json"}
+            token = getattr(sdk, "_jwt_token", None)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            req = _ur.Request(
+                f"{cfg.backend_url}/api/v1/a2a/economics/faucet/{agent_id}",
+                data=_json.dumps({"amount": amount}).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with _ur.urlopen(req, timeout=10) as resp:
+                body = _json.loads(resp.read().decode("utf-8"))
+            logger.info(
+                "[orch-faucet] granted=%s balance=%s circulation_remaining=%s",
+                body.get("granted"), body.get("balance"), body.get("circulation_remaining"),
+            )
+            return True
+        except _ue.HTTPError as exc:  # noqa: F821 — _ue defined just above
+            logger.warning("[orch-faucet] HTTP %s: %s", exc.code, exc.read()[:200])
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[orch-faucet] unexpected error: %s", exc)
+            return False
+
     def _rotate_orchestrator_identity(self) -> None:
         """Generate a fresh orchestrator key and re-quickstart for a 990-CIV grant.
 
@@ -234,12 +301,12 @@ class Orchestrator:
 
         sdk = CivitasAgent(base_url=cfg.backend_url)
         sdk.generate_keys()  # type: ignore[attr-defined]
+        _bootstrap_demo_jwt(sdk, cfg.backend_url, unique_name := f"{cfg.orch_agent_name}-r{int(time.time())}")
         if old_path is not None:
             old_path.parent.mkdir(parents=True, exist_ok=True)
             sdk.save_identity(str(old_path))  # type: ignore[attr-defined]
         # Quickstart with a unique alias so we don't collide with the drained
         # identity's alias (backend rejects alias re-binding to a new DID).
-        unique_name = f"{cfg.orch_agent_name}-r{int(time.time())}"
         try:
             sdk.a2a_quickstart(  # type: ignore[attr-defined]
                 name=unique_name,
@@ -256,6 +323,178 @@ class Orchestrator:
         )
         # Swap the SDK inside the existing BackendTaskClient.
         cfg.backend_client._sdk = sdk  # type: ignore[attr-defined]
+
+    def _spawn_shared_agent(
+        self, *, run_id: str, run_dir: Path, initial_task_id: str,
+    ) -> _PersistentAgentSession:
+        """Start one long-lived agent subprocess reused across multiple tasks."""
+        runtime_dir = run_dir / "shared_runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        raw_dir = run_dir / "raw_ticks"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        task_id_file = runtime_dir / "current_task_id.txt"
+        backend_task_id_file = runtime_dir / "current_backend_task_id.txt"
+        task_id_file.write_text(initial_task_id, encoding="utf-8")
+        backend_task_id_file.write_text("", encoding="utf-8")
+
+        env = {
+            **os.environ,
+            **self._cfg.extra_env,
+            "BENCHMARK_RUN_ID": run_id,
+            # BENCHMARK_TASK_ID is only used as the install switch at startup.
+            "BENCHMARK_TASK_ID": initial_task_id,
+            # BENCHMARK_BACKEND_TASK_ID must be non-empty so benchmark mode
+            # installs the target-task rule; real ids come from the file below.
+            "BENCHMARK_BACKEND_TASK_ID": "bootstrap-target",
+            "BENCHMARK_TASK_ID_FILE": str(task_id_file),
+            "BENCHMARK_BACKEND_TASK_ID_FILE": str(backend_task_id_file),
+            # Keep legacy var for compatibility; collector rotates by *_DIR + *_FILE.
+            "BENCHMARK_RAW_CSV": str(raw_dir / f"{initial_task_id}.csv"),
+            "BENCHMARK_RAW_CSV_DIR": str(raw_dir),
+            "BENCHMARK_SENTINEL_DIR": str(runtime_dir / "sentinel"),
+        }
+        (runtime_dir / "sentinel").mkdir(exist_ok=True)
+
+        cmd = shlex.split(self._cfg.agent_command)
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=(run_dir / "agent_stdout.log").open("ab"),
+            stderr=(run_dir / "agent_stderr.log").open("ab"),
+        )
+        logger.info("spawned shared benchmark agent process pid=%s", proc.pid)
+        return _PersistentAgentSession(
+            proc=proc,
+            task_id_file=task_id_file,
+            backend_task_id_file=backend_task_id_file,
+        )
+
+    def _run_one_reuse(
+        self, task: TaskSpec, *, run_id: str, run_dir: Path, session: _PersistentAgentSession,
+    ) -> TaskResult:
+        """Run one task while reusing a shared long-lived agent process."""
+        task_dir = run_dir / "tasks" / task.id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        sentinel_dir = task_dir / "sentinel"
+        sentinel_dir.mkdir(exist_ok=True)
+        raw_csv = run_dir / "raw_ticks" / f"{task.id}.csv"
+
+        assert self._cfg.backend_mode == BACKEND_MODE_BACKEND_TASKS
+        assert self._cfg.backend_client is not None
+        assert self._cfg.target_agent_id is not None
+
+        # Publish current task ids for benchmark_mode rule/collector inside agent.py.
+        session.task_id_file.write_text(task.id, encoding="utf-8")
+
+        backend_task_id: str
+        try:
+            backend_task_id = self._cfg.backend_client.create(
+                briefing=task.briefing,
+                target_agent_id=self._cfg.target_agent_id,
+                capability=self._cfg.backend_capability,
+                reward=self._cfg.backend_reward,
+                deadline_secs=self._cfg.backend_deadline_secs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(exc, "status_code", None)
+            msg_l = str(exc).lower()
+            is_402 = status == 402 or "insufficient funds" in msg_l or "402" in msg_l
+            if not is_402:
+                raise
+            logger.warning(
+                "[orch-recover] task=%s hit 402 — trying dev faucet first",
+                task.id,
+            )
+            if not self._topup_orchestrator_via_faucet():
+                logger.warning(
+                    "[orch-recover] faucet unavailable, falling back to identity rotation",
+                )
+                self._rotate_orchestrator_identity()
+            backend_task_id = self._cfg.backend_client.create(
+                briefing=task.briefing,
+                target_agent_id=self._cfg.target_agent_id,
+                capability=self._cfg.backend_capability,
+                reward=self._cfg.backend_reward,
+                deadline_secs=self._cfg.backend_deadline_secs,
+            )
+
+        (task_dir / "backend_task_id.txt").write_text(backend_task_id, encoding="utf-8")
+        session.backend_task_id_file.write_text(backend_task_id, encoding="utf-8")
+
+        wall_clock_budget_s = task.max_ticks * self._cfg.wall_clock_per_tick_s
+        t0 = time.monotonic()
+        sentinel_kind: str | None = None
+        sentinel_reason = ""
+        exit_code: int | None = None
+
+        while True:
+            # 1) shared process crashed
+            if session.proc.poll() is not None:
+                code = session.proc.returncode
+                sentinel_kind, sentinel_reason = self._sentinel_from_backend(
+                    backend_task_id, sentinel_dir,
+                )
+                if sentinel_kind is not None:
+                    exit_code = SENTINEL_TO_EXIT[sentinel_kind]
+                elif code == 0:
+                    exit_code = EXIT_AGENT_DONE
+                else:
+                    exit_code = EXIT_ABNORMAL
+                break
+
+            # 2) backend task state
+            sentinel_kind, sentinel_reason = self._sentinel_from_backend(
+                backend_task_id, sentinel_dir,
+            )
+            if sentinel_kind is not None:
+                exit_code = SENTINEL_TO_EXIT[sentinel_kind]
+                break
+
+            # 3) tick limit
+            tick_seq = _tail_tick_seq(raw_csv)
+            if tick_seq >= task.max_ticks:
+                exit_code = EXIT_TICK_LIMIT
+                self._cfg.backend_client.force_fail(backend_task_id)
+                break
+
+            # 4) wall-clock
+            if (time.monotonic() - t0) >= wall_clock_budget_s:
+                exit_code = EXIT_WALL_CLOCK
+                self._cfg.backend_client.force_fail(backend_task_id)
+                break
+
+            time.sleep(self._cfg.poll_interval_s)
+
+        (task_dir / "exit_code.txt").write_text(
+            str(exit_code if exit_code is not None else EXIT_ABNORMAL),
+            encoding="utf-8",
+        )
+
+        wall_ms = (time.monotonic() - t0) * 1000.0
+        tick_count = _tail_tick_seq(raw_csv)
+        raw_rows = _csv_row_count(raw_csv)
+        if sentinel_kind == "done":
+            self_reported = True
+        elif sentinel_kind in ("failed", "give_up"):
+            self_reported = False
+        else:
+            self_reported = None
+
+        result = TaskResult(
+            task_id=task.id,
+            exit_code=exit_code if exit_code is not None else EXIT_ABNORMAL,
+            tick_count=tick_count,
+            wall_clock_ms=wall_ms,
+            raw_csv_rows=raw_rows,
+            agent_self_reported_success=self_reported,
+            sentinel_kind=sentinel_kind,
+            sentinel_reason=sentinel_reason,
+        )
+        (task_dir / "result.json").write_text(
+            json.dumps(asdict(result), default=str), encoding="utf-8",
+        )
+        return result
 
     def _run_one(self, task: TaskSpec, *, run_id: str, run_dir: Path) -> TaskResult:
         task_dir = run_dir / "tasks" / task.id
@@ -295,10 +534,14 @@ class Orchestrator:
                 if not is_402:
                     raise
                 logger.warning(
-                    "[orch-rotate] task=%s hit 402 \u2014 rotating orchestrator identity",
+                    "[orch-recover] task=%s hit 402 \u2014 trying dev faucet first",
                     task.id,
                 )
-                self._rotate_orchestrator_identity()
+                if not self._topup_orchestrator_via_faucet():
+                    logger.warning(
+                        "[orch-recover] faucet unavailable, falling back to identity rotation",
+                    )
+                    self._rotate_orchestrator_identity()
                 backend_task_id = self._cfg.backend_client.create(
                     briefing=task.briefing,
                     target_agent_id=self._cfg.target_agent_id,
@@ -607,6 +850,33 @@ def _write_summary(run_dir: Path, run: RunResult) -> None:
 
 # ----------------------------------------------------------------- CLI
 
+def _bootstrap_demo_jwt(sdk: Any, backend_url: str, agent_id: str) -> bool:
+    """Best-effort demo-login bootstrap for JWT-protected A2A endpoints."""
+    if not agent_id:
+        return False
+    try:
+        import urllib.request as _ur
+
+        req = _ur.Request(
+            f"{backend_url}/api/v1/auth/demo-login",
+            data=json.dumps({"agent_id": agent_id}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        token = body.get("token") or body.get("data", {}).get("token")
+        if not token:
+            return False
+        sdk._jwt_token = token  # type: ignore[attr-defined]
+        expires_in = body.get("expires_in") or body.get("data", {}).get("expires_in") or 3600
+        sdk._jwt_expires_at = time.time() + int(expires_in)  # type: ignore[attr-defined]
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[orch-auth] demo-login failed for %s: %s", agent_id, exc)
+        return False
+
+
 def _build_backend_client(
     *, backend_url: str, orch_agent_id: str | None, orch_agent_name: str,
     orch_identity_path: str | None = None,
@@ -634,6 +904,12 @@ def _build_backend_client(
             sdk.save_identity(str(p))  # type: ignore[attr-defined]
     else:
         sdk.generate_keys()  # type: ignore[attr-defined]
+
+    _bootstrap_demo_jwt(
+        sdk,
+        backend_url,
+        orch_agent_id or getattr(sdk, "_agent_id", None) or orch_agent_name,
+    )
 
     try:
         sdk.a2a_quickstart(  # type: ignore[attr-defined]
@@ -681,6 +957,14 @@ def _cli() -> int:
     parser.add_argument("--backend-capability", default="general")
     parser.add_argument("--backend-reward", type=int, default=100)
     parser.add_argument("--backend-deadline-secs", type=int, default=3600)
+    parser.add_argument(
+        "--reuse-agent-process",
+        action="store_true",
+        help=(
+            "S5 optimization: reuse one long-lived agent subprocess for all "
+            "tasks in this run (backend-tasks mode only)."
+        ),
+    )
     args = parser.parse_args()
 
     m = load_manifest(args.manifest)
@@ -706,6 +990,7 @@ def _cli() -> int:
         backend_capability=args.backend_capability,
         backend_reward=args.backend_reward,
         backend_deadline_secs=args.backend_deadline_secs,
+        reuse_agent_process=args.reuse_agent_process,
         backend_url=args.backend_url,
         orch_agent_name=args.orch_agent_name,
         orch_identity_path=args.orch_identity,

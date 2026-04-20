@@ -102,15 +102,18 @@ def test_prefer_target_rule_picks_matching_task(monkeypatch):
     assert decision.params["task_id"] == "backend_42"
 
 
-def test_prefer_target_rule_returns_none_when_no_match(monkeypatch):
+def test_prefer_target_rule_claims_even_when_pool_snapshot_has_no_match(monkeypatch):
     monkeypatch.setenv("BENCHMARK_TASK_ID", "R01_test_01")
     monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
     runner = FakeRunner()
     benchmark_mode.install(runner)
     rule_fn = _get_rule_fn(runner)
-    assert rule_fn({"pool_tasks": [{"id": "other"}]}, {}) is None
-    assert rule_fn({}, {}) is None
-    assert rule_fn({"pool_tasks": []}, {}) is None
+    d1 = rule_fn({"pool_tasks": [{"id": "other"}]}, {})
+    d2 = rule_fn({}, {})
+    d3 = rule_fn({"pool_tasks": []}, {})
+    assert d1 is not None and d1.action == "pool_claim"
+    assert d2 is not None and d2.action == "pool_claim"
+    assert d3 is not None and d3.action == "pool_claim"
 
 
 def test_prefer_target_rule_accepts_id_or_task_id_field(monkeypatch):
@@ -119,9 +122,25 @@ def test_prefer_target_rule_accepts_id_or_task_id_field(monkeypatch):
     runner = FakeRunner()
     benchmark_mode.install(runner)
     rule_fn = _get_rule_fn(runner)
-    # backend_task_id present in 'id' field instead of 'task_id'
-    decision = rule_fn({"pool_tasks": [{"id": "backend_42"}]}, {})
-    assert decision is not None and decision.params["task_id"] == "backend_42"
+    # backend task present in active_tasks (either id or task_id) -> rule yields to LLM.
+    d_id = rule_fn({"active_tasks": [{"id": "backend_42"}]}, {})
+    d_tid = rule_fn({"active_tasks": [{"task_id": "backend_42"}]}, {})
+    assert d_id is None
+    assert d_tid is None
+
+
+def test_prefer_target_rule_no_reclaim_after_active_disappears(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "R01_test_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    # First tick: task is active -> let LLM execute.
+    assert rule_fn({"active_tasks": [{"task_id": "backend_42"}]}, {}) is None
+    # Next tick: task disappeared -> mark finished and wait (do not re-claim).
+    d = rule_fn({"active_tasks": []}, {})
+    assert d is not None
+    assert d.action == "wait"
 
 
 # ── on_reflect installation ─────────────────────────────────────────

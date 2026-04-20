@@ -123,22 +123,31 @@ def _install_fast_intervals() -> None:
 
 
 def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
-    """Register the ``benchmark_prefer_target_task`` rule on ``runner``."""
+    """Register the ``benchmark_prefer_target_task`` rule on ``runner``.
 
-    # Capability-differentiated payload: each agent's output reflects its
-    # capabilities so inter-agent Jaccard <0.95 (F.1.c integrity gate).
-    # We DO NOT call the LLM here — we synthesize structured fields keyed by
-    # the agent's caps (read once from env at install time so the rule stays
-    # deterministic and fast).
+    Two-mode behavior:
+    - **Claim is always deterministic** (orchestrator-target enforcement: we
+      MUST claim the specific task the orchestrator created for this run,
+      otherwise the orchestrator's sentinel watcher times out).
+    - **Execute is LLM-driven by default** (BENCHMARK_LLM_EXECUTE=1, the new
+      default): the rule returns ``None`` after claim so the cognitive loop
+      falls through to ``_decide_llm`` and the LLM generates real output via
+      the ``task_execute`` tool. This is what "do not bypass LLM" means.
+    - Set ``BENCHMARK_LLM_EXECUTE=0`` to fall back to the legacy deterministic
+      execute (capability-differentiated placeholder) — useful for fast smoke
+      tests where LLM cost/latency is not desired.
+    """
+
+    # Capability-differentiated payload (legacy fallback path only):
     agent_caps = [
         c.strip()
         for c in (os.environ.get("AGENT_CAPABILITIES", "") or "").split(",")
         if c.strip()
     ]
     benchmark_task_id = os.environ.get("BENCHMARK_TASK_ID", "")
+    llm_execute = os.environ.get("BENCHMARK_LLM_EXECUTE", "1") not in ("0", "false", "")
+    backend_task_id_file = os.environ.get("BENCHMARK_BACKEND_TASK_ID_FILE", "").strip()
 
-    # Per-capability output template. Adding/removing keys here is the
-    # single point of variation that drives the Jaccard signal.
     _CAP_OUTPUTS: dict[str, dict[str, Any]] = {
         "trading":     {"action": "executed_trade",        "asset_class": "spot",       "side": "buy"},
         "analysis":    {"action": "produced_report",       "report_type": "trend",      "horizon": "short"},
@@ -148,21 +157,54 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
         "research":    {"action": "ran_experiment",        "method": "literature_scan", "findings_count": 4},
     }
     cap_payloads = {c: _CAP_OUTPUTS[c] for c in agent_caps if c in _CAP_OUTPUTS}
+    state: dict[str, Any] = {
+        "current_target": None,
+        "seen_active": False,
+        "finished": set(),
+    }
 
     def benchmark_prefer_target_task(
         briefing: dict, _memories: dict,
     ) -> Decision | None:
-        # 1) If the agent already claimed this task, advance to task_execute.
+        target_tid = _read_text_file(backend_task_id_file) if backend_task_id_file else backend_task_id
+        if not target_tid:
+            return Decision(
+                action="wait",
+                reasoning="benchmark mode: waiting for orchestrator target task id",
+                confidence=1.0,
+                source=DecisionSource.RULES,
+            )
+        if target_tid != state["current_target"]:
+            state["current_target"] = target_tid
+            state["seen_active"] = False
+        if target_tid in state["finished"]:
+            return Decision(
+                action="wait",
+                reasoning=f"benchmark mode: target {target_tid} already finished; waiting next target",
+                confidence=1.0,
+                source=DecisionSource.RULES,
+            )
+
+        # 1) Already claimed → either let LLM drive (default) or
+        #    fall back to deterministic capability-differentiated output.
         for task in briefing.get("active_tasks", []) or []:
             tid = task.get("task_id") or task.get("id") if isinstance(task, dict) else task
-            if tid == backend_task_id:
+            if tid == target_tid:
+                state["seen_active"] = True
+                if llm_execute:
+                    # Return None → cognitive loop falls through to LLM.
+                    # The LLM will see active_tasks and decide to call
+                    # task_execute (or other actions). This is the path
+                    # that exercises real cognition.
+                    return None
+                # Legacy deterministic path:
                 return Decision(
                     action="task_execute",
                     params={
-                        "task_id": backend_task_id,
+                        "task_id": target_tid,
                         "output": {
                             "status": "completed",
-                            "note": "benchmark mode auto-deliver",
+                            "note": "benchmark mode auto-deliver (legacy)",
                             "agent_capabilities": agent_caps,
                             "benchmark_task_id": benchmark_task_id,
                             "capability_outputs": cap_payloads,
@@ -170,23 +212,33 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
                         "success": True,
                     },
                     reasoning=(
-                        f"benchmark mode: deliver claimed target task "
-                        f"{backend_task_id} caps={agent_caps}"
+                        f"benchmark legacy mode: deliver claimed target task "
+                        f"{target_tid} caps={agent_caps}"
                     ),
                     confidence=1.0,
                     source=DecisionSource.RULES,
                 )
-        # 2) Otherwise claim the target unconditionally. The orchestrator
+        # S4: once the target task has been seen as active and later disappears
+        # from active_tasks, treat it as terminal and never re-claim it.
+        if state["seen_active"]:
+            state["finished"].add(target_tid)
+            return Decision(
+                action="wait",
+                reasoning=(
+                    f"benchmark mode: target {target_tid} left active_tasks; "
+                    "assume executed and wait for next orchestrator target"
+                ),
+                confidence=1.0,
+                source=DecisionSource.RULES,
+            )
+        # 2) Not yet claimed → claim deterministically. The orchestrator
         # guaranteed this task exists in the pool with allowed_agents=[us].
-        # We can't rely on briefing['opportunities'] because it is paginated
-        # (typically only the 10 oldest are exposed) and the just-created
-        # benchmark task is usually the newest, so it is invisible there.
         return Decision(
             action="pool_claim",
-            params={"task_id": backend_task_id},
+            params={"task_id": target_tid},
             reasoning=(
                 f"benchmark mode: claim orchestrator-targeted task "
-                f"{backend_task_id} by id (bypass opportunities pagination)"
+                f"{target_tid} by id (bypass opportunities pagination)"
             ),
             confidence=1.0,
             source=DecisionSource.RULES,
@@ -210,10 +262,36 @@ def _install_collector(
 
     csv_path = Path(raw_csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    task_id_file = os.environ.get("BENCHMARK_TASK_ID_FILE", "").strip()
+    raw_csv_dir = os.environ.get("BENCHMARK_RAW_CSV_DIR", "").strip()
+    if raw_csv_dir:
+        Path(raw_csv_dir).mkdir(parents=True, exist_ok=True)
 
-    state: dict[str, Any] = {"adapter": None, "writer": None}
+    state: dict[str, Any] = {"adapter": None, "writer": None, "task_id": None}
+
+    def _close_writer() -> None:
+        writer = state.get("writer")
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("benchmark_mode: writer close failed", exc_info=True)
+        state["writer"] = None
+        state["adapter"] = None
 
     def _on_reflect(ctx: Any) -> None:
+        current_task_id = _read_text_file(task_id_file) if task_id_file else task_id
+        if not current_task_id:
+            return
+        current_csv_path = (
+            Path(raw_csv_dir) / f"{current_task_id}.csv"
+            if raw_csv_dir
+            else csv_path
+        )
+
+        if state["adapter"] is not None and state.get("task_id") != current_task_id:
+            _close_writer()
+
         if state["adapter"] is None:
             loop = getattr(runner, "_loop", None) or getattr(runner, "loop", None)
             if loop is None:
@@ -223,8 +301,8 @@ def _install_collector(
                 )
                 return
             agent_id = _resolve_agent_id(runner)
-            writer = RawWriter(csv_path)
-            writer.__enter__()  # opened for whole-process lifetime
+            writer = RawWriter(current_csv_path)
+            writer.__enter__()  # opened for current task lifetime
             state["writer"] = writer
             adapter = CollectorAdapter(
                 run_id=run_id,
@@ -232,8 +310,9 @@ def _install_collector(
                 loop=loop,
                 writer=writer,
             )
-            adapter.bind_task(task_id)
+            adapter.bind_task(current_task_id)
             state["adapter"] = adapter
+            state["task_id"] = current_task_id
         try:
             state["adapter"](ctx)
         except Exception:
@@ -257,3 +336,13 @@ def _resolve_agent_id(runner: Any) -> str:
     if name:
         return str(name).lower().replace(" ", "_")
     return "unknown-agent"
+
+
+def _read_text_file(path: str) -> str:
+    """Read a small text file and return stripped content (or '')."""
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""

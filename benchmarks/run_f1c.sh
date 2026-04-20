@@ -146,6 +146,7 @@ else:
         --runs-root "$RUNS_ROOT" \
         --run-id "$RUN_ID" \
         $RESUME_FLAG \
+        --reuse-agent-process \
         --wall-clock-per-tick-s "$WALL_CLOCK_PER_TICK_S" \
         --backend-mode backend-tasks \
         --backend-url "$BACKEND_URL" \

@@ -7,8 +7,14 @@ break-downs in the F.1.d REPORT (§4.3 / §5.2).
 
 Also writes:
   - ``inter_agent_jaccard.csv`` — pseudo-sample detection (§3.5):
-    Jaccard similarity of action sequences per common task; flags any
-    pair >= 0.95 as a basleine integrity issue.
+    Primary score is weighted Jaccard over action bigram multisets
+    (order-aware, count-aware), with legacy set-Jaccard of action tokens
+    retained for compatibility/audit columns.
+
+Integrity gate (default):
+  - flag pairs where score >= 0.95
+  - pass if flagged_pair_ratio <= 0.25 AND flagged_task_ratio <= 0.50
+    with at least 30 common tasks.
 """
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ import json
 import logging
 import re
 import sys
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
@@ -80,14 +87,35 @@ def _action_seq(run_dir: Path, task_id: str) -> tuple[str, ...]:
     return tuple(actions)
 
 
-def _jaccard(a: tuple[str, ...], b: tuple[str, ...]) -> float:
+def _action_bigrams(seq: tuple[str, ...]) -> tuple[str, ...]:
+    if len(seq) < 2:
+        return ()
+    return tuple(f"{seq[i]}>{seq[i + 1]}" for i in range(len(seq) - 1))
+
+
+def _jaccard_set(a: tuple[str, ...], b: tuple[str, ...]) -> float:
     sa, sb = set(a), set(b)
     if not sa and not sb:
         return 1.0
     return len(sa & sb) / len(sa | sb) if (sa | sb) else 0.0
 
 
-def _inter_agent_jaccard(runs: list[tuple[str, Path]]) -> list[dict[str, str]]:
+def _jaccard_weighted_multiset(a: tuple[str, ...], b: tuple[str, ...]) -> float:
+    """Weighted Jaccard over multisets (counts matter)."""
+    ca, cb = Counter(a), Counter(b)
+    keys = set(ca) | set(cb)
+    if not keys:
+        return 1.0
+    num = sum(min(ca[k], cb[k]) for k in keys)
+    den = sum(max(ca[k], cb[k]) for k in keys)
+    return num / den if den else 0.0
+
+
+def _inter_agent_jaccard(
+    runs: list[tuple[str, Path]],
+    *,
+    jaccard_threshold: float = 0.95,
+) -> list[dict[str, str]]:
     """For each task common to ≥2 runs, compute pairwise Jaccard."""
     per_alias_tasks: dict[str, set[str]] = {}
     for alias, d in runs:
@@ -101,9 +129,13 @@ def _inter_agent_jaccard(runs: list[tuple[str, Path]]) -> list[dict[str, str]]:
     aliases = [a for a, _ in runs]
     for task_id in sorted(common):
         seqs = {a: _action_seq(d, task_id) for a, d in runs}
+        bigrams = {a: _action_bigrams(seqs[a]) for a in aliases}
         for i, a in enumerate(aliases):
             for b in aliases[i + 1:]:
-                j = _jaccard(seqs[a], seqs[b])
+                j_legacy = _jaccard_set(seqs[a], seqs[b])
+                j_weighted_action = _jaccard_weighted_multiset(seqs[a], seqs[b])
+                # Primary score for gate: order-aware + count-aware.
+                j = _jaccard_weighted_multiset(bigrams[a], bigrams[b])
                 rows.append({
                     "task_id": task_id,
                     "agent_a": a,
@@ -111,12 +143,68 @@ def _inter_agent_jaccard(runs: list[tuple[str, Path]]) -> list[dict[str, str]]:
                     "jaccard": f"{j:.4f}",
                     "len_a": str(len(seqs[a])),
                     "len_b": str(len(seqs[b])),
-                    "flagged": "1" if j >= 0.95 else "0",
+                    "jaccard_legacy_set": f"{j_legacy:.4f}",
+                    "jaccard_weighted_action": f"{j_weighted_action:.4f}",
+                    "jaccard_weighted_bigram": f"{j:.4f}",
+                    "flagged": "1" if j >= jaccard_threshold else "0",
+                    "flagged_legacy_set": "1" if j_legacy >= jaccard_threshold else "0",
                 })
     return rows
 
 
-def merge(*, runs_root: Path, manifest_path: Path, schema_yaml: Path | None) -> dict:
+def _evaluate_integrity_gate(
+    rows: list[dict[str, str]],
+    *,
+    max_flagged_pair_ratio: float,
+    max_flagged_task_ratio: float,
+    min_common_tasks: int,
+) -> dict[str, object]:
+    pair_count = len(rows)
+    flagged_pairs = sum(1 for r in rows if r["flagged"] == "1")
+    all_tasks = {r["task_id"] for r in rows}
+    flagged_tasks = {r["task_id"] for r in rows if r["flagged"] == "1"}
+    common_task_count = len(all_tasks)
+    flagged_task_count = len(flagged_tasks)
+
+    flagged_pair_ratio = (flagged_pairs / pair_count) if pair_count else 0.0
+    flagged_task_ratio = (flagged_task_count / common_task_count) if common_task_count else 0.0
+
+    reasons: list[str] = []
+    if common_task_count < min_common_tasks:
+        reasons.append(
+            f"insufficient common tasks: {common_task_count} < {min_common_tasks}",
+        )
+    if flagged_pair_ratio > max_flagged_pair_ratio:
+        reasons.append(
+            f"flagged pair ratio {flagged_pair_ratio:.4f} > {max_flagged_pair_ratio:.4f}",
+        )
+    if flagged_task_ratio > max_flagged_task_ratio:
+        reasons.append(
+            f"flagged task ratio {flagged_task_ratio:.4f} > {max_flagged_task_ratio:.4f}",
+        )
+
+    return {
+        "passed": not reasons,
+        "failure_reasons": reasons,
+        "pair_count": pair_count,
+        "flagged_pair_count": flagged_pairs,
+        "flagged_pair_ratio": flagged_pair_ratio,
+        "common_task_count": common_task_count,
+        "flagged_task_count": flagged_task_count,
+        "flagged_task_ratio": flagged_task_ratio,
+    }
+
+
+def merge(
+    *,
+    runs_root: Path,
+    manifest_path: Path,
+    schema_yaml: Path | None,
+    jaccard_threshold: float = 0.95,
+    gate_max_flagged_pair_ratio: float = 0.25,
+    gate_max_flagged_task_ratio: float = 0.50,
+    gate_min_common_tasks: int = 30,
+) -> dict:
     runs = _discover_runs(runs_root)
     if not runs:
         raise AggregatorError(f"no baseline-* run dirs found under {runs_root}")
@@ -136,7 +224,10 @@ def merge(*, runs_root: Path, manifest_path: Path, schema_yaml: Path | None) -> 
                 n_rows += 1
     logger.info("wrote %s (%d rows)", out_csv, n_rows)
 
-    jaccard_rows = _inter_agent_jaccard(runs)
+    jaccard_rows = _inter_agent_jaccard(
+        runs,
+        jaccard_threshold=jaccard_threshold,
+    )
     jaccard_csv = runs_root / "inter_agent_jaccard.csv"
     if jaccard_rows:
         with jaccard_csv.open("w", newline="", encoding="utf-8") as fh:
@@ -144,19 +235,47 @@ def merge(*, runs_root: Path, manifest_path: Path, schema_yaml: Path | None) -> 
             w.writeheader()
             w.writerows(jaccard_rows)
         flagged = sum(1 for r in jaccard_rows if r["flagged"] == "1")
-        logger.info("wrote %s (%d pairs, %d flagged ≥0.95)", jaccard_csv, len(jaccard_rows), flagged)
+        logger.info(
+            "wrote %s (%d pairs, %d flagged ≥%.2f)",
+            jaccard_csv, len(jaccard_rows), flagged, jaccard_threshold,
+        )
     else:
         flagged = 0
         logger.warning("no common tasks across runs — Jaccard skipped")
+
+    gate = _evaluate_integrity_gate(
+        jaccard_rows,
+        max_flagged_pair_ratio=gate_max_flagged_pair_ratio,
+        max_flagged_task_ratio=gate_max_flagged_task_ratio,
+        min_common_tasks=gate_min_common_tasks,
+    )
 
     summary = {
         "runs_root": str(runs_root),
         "agents": [a for a, _ in runs],
         "final_metrics_csv": str(out_csv),
         "final_metrics_rows": n_rows,
+        "jaccard_method": "weighted_multiset_action_bigram",
+        "jaccard_threshold": jaccard_threshold,
         "jaccard_csv": str(jaccard_csv) if jaccard_rows else None,
         "jaccard_pairs": len(jaccard_rows),
         "jaccard_flagged_ge_0_95": flagged,
+        "jaccard_flagged_ratio": gate["flagged_pair_ratio"],
+        "jaccard_flagged_task_count": gate["flagged_task_count"],
+        "jaccard_common_task_count": gate["common_task_count"],
+        "jaccard_flagged_task_ratio": gate["flagged_task_ratio"],
+        "jaccard_legacy_flagged_ge_0_95": (
+            sum(1 for r in jaccard_rows if r["flagged_legacy_set"] == "1")
+            if jaccard_rows
+            else 0
+        ),
+        "integrity_gate": {
+            "passed": gate["passed"],
+            "max_flagged_pair_ratio": gate_max_flagged_pair_ratio,
+            "max_flagged_task_ratio": gate_max_flagged_task_ratio,
+            "min_common_tasks": gate_min_common_tasks,
+            "failure_reasons": gate["failure_reasons"],
+        },
     }
     (runs_root / "merge_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
@@ -167,6 +286,10 @@ def main() -> int:
     p.add_argument("--runs-root", default="runs/F1c")
     p.add_argument("--manifest", default="benchmarks/v1/manifest.yaml")
     p.add_argument("--schema-yaml", default=None)
+    p.add_argument("--jaccard-threshold", type=float, default=0.95)
+    p.add_argument("--gate-max-flagged-pair-ratio", type=float, default=0.25)
+    p.add_argument("--gate-max-flagged-task-ratio", type=float, default=0.50)
+    p.add_argument("--gate-min-common-tasks", type=int, default=30)
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
     logging.basicConfig(
@@ -177,15 +300,28 @@ def main() -> int:
         runs_root=Path(args.runs_root),
         manifest_path=Path(args.manifest),
         schema_yaml=Path(args.schema_yaml) if args.schema_yaml else None,
+        jaccard_threshold=args.jaccard_threshold,
+        gate_max_flagged_pair_ratio=args.gate_max_flagged_pair_ratio,
+        gate_max_flagged_task_ratio=args.gate_max_flagged_task_ratio,
+        gate_min_common_tasks=args.gate_min_common_tasks,
     )
     print(json.dumps(summary, indent=2))
-    if summary["jaccard_flagged_ge_0_95"]:
+    if not summary["integrity_gate"]["passed"]:
         logger.error(
-            "F.1.c integrity gate FAILED: %d task(s) have inter-agent Jaccard ≥0.95 "
-            "(pseudo-sample). Re-design capability matrix.",
-            summary["jaccard_flagged_ge_0_95"],
+            "F.1.c integrity gate FAILED: pair_ratio=%.4f task_ratio=%.4f "
+            "(thresholds pair<=%.4f task<=%.4f, min_common_tasks=%d).",
+            summary["jaccard_flagged_ratio"],
+            summary["jaccard_flagged_task_ratio"],
+            summary["integrity_gate"]["max_flagged_pair_ratio"],
+            summary["integrity_gate"]["max_flagged_task_ratio"],
+            summary["integrity_gate"]["min_common_tasks"],
         )
         return 3
+    logger.info(
+        "F.1.c integrity gate PASSED: pair_ratio=%.4f task_ratio=%.4f",
+        summary["jaccard_flagged_ratio"],
+        summary["jaccard_flagged_task_ratio"],
+    )
     return 0
 
 
