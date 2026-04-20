@@ -27,7 +27,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,6 +66,65 @@ def _ensure_identity(sdk, identity_path: Path) -> str:
     return pub
 
 
+def _institutional_identity_enabled() -> bool:
+    return os.getenv("CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _post_json(url: str, payload: dict) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        body = resp.read().decode("utf-8")
+    return json.loads(body) if body else {}
+
+
+def _birth_proposal(
+    *,
+    backend_url: str,
+    public_key: str,
+    cfg: AgentConfig,
+) -> str:
+    sponsor = os.getenv("BENCHMARK_BIRTH_SPONSOR", "@guardian")
+    payload = {
+        "public_key": public_key,
+        "name": cfg.name,
+        "alias": cfg.alias,
+        "endpoint": f"http://localhost:0/{cfg.alias}",
+        "description": f"F.1.c benchmark agent ({', '.join(cfg.capabilities)})",
+        "sponsor": sponsor,
+        "intent": "F.1.c benchmark incubation",
+        "stake": int(os.getenv("BENCHMARK_BIRTH_STAKE", "100")),
+        "capabilities": [
+            {
+                "id": cap,
+                "name": cap.replace("_", " ").title(),
+                "description": f"Benchmark capability: {cap}",
+                "input_schema": None,
+                "output_schema": None,
+            }
+            for cap in cfg.capabilities
+        ],
+        "obligations": ["complete_assigned_tasks"],
+    }
+    resp = _post_json(f"{backend_url}/api/v1/agents/birth-proposal", payload)
+    data = resp.get("data", {}) if isinstance(resp, dict) else {}
+    agent = data.get("agent", {}) if isinstance(data, dict) else {}
+    did = agent.get("did") or data.get("did")
+    if not did:
+        raise RuntimeError(f"birth-proposal response missing did: {resp}")
+    logger.info("birth-proposed %s did=%s sponsor=%s", cfg.alias, did, sponsor)
+    return str(did)
+
+
 def register_agent(
     *, backend_url: str, cfg: AgentConfig, identity_dir: Path,
 ) -> dict:
@@ -71,29 +133,40 @@ def register_agent(
 
     identity_file = identity_dir / f"{cfg.alias}.key"
     sdk = CivitasAgent(base_url=backend_url)
-    _ensure_identity(sdk, identity_file)
+    public_key = _ensure_identity(sdk, identity_file)
 
-    # a2a_quickstart is idempotent for the same public key (server returns
-    # existing card). On first call it creates; on subsequent runs the DID
-    # comes back identical.
-    endpoint = f"http://localhost:0/{cfg.alias}"  # placeholder; benchmarks don't accept inbound
-    try:
-        result = sdk.a2a_quickstart(
-            name=cfg.name,
-            endpoint=endpoint,
-            description=f"F.1.c benchmark agent ({', '.join(cfg.capabilities)})",
-        )
-        did = sdk._agent_id  # populated by a2a_quickstart
-        logger.info("registered %s did=%s", cfg.alias, did)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("a2a_quickstart failed for %s: %s — falling back to register()", cfg.alias, exc)
-        sdk.register(
-            agent_id=cfg.name.lower().replace(" ", "_"),
-            name=cfg.name,
-            capabilities=list(cfg.capabilities),
-            stake=100,
-        )
-        did = sdk._agent_id
+    if _institutional_identity_enabled():
+        did = _birth_proposal(backend_url=backend_url, public_key=public_key, cfg=cfg)
+    else:
+        # a2a_quickstart is idempotent for the same public key (server returns
+        # existing card). On first call it creates; on subsequent runs the DID
+        # comes back identical.
+        endpoint = f"http://localhost:0/{cfg.alias}"  # placeholder; benchmarks don't accept inbound
+        try:
+            sdk.a2a_quickstart(
+                name=cfg.name,
+                endpoint=endpoint,
+                description=f"F.1.c benchmark agent ({', '.join(cfg.capabilities)})",
+            )
+            did = sdk._agent_id  # populated by a2a_quickstart
+            logger.info("registered %s did=%s", cfg.alias, did)
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc)
+            if "sponsor_required" in msg:
+                did = _birth_proposal(backend_url=backend_url, public_key=public_key, cfg=cfg)
+            else:
+                logger.warning(
+                    "a2a_quickstart failed for %s: %s — falling back to register()",
+                    cfg.alias,
+                    exc,
+                )
+                sdk.register(
+                    agent_id=cfg.name.lower().replace(" ", "_"),
+                    name=cfg.name,
+                    capabilities=list(cfg.capabilities),
+                    stake=100,
+                )
+                did = sdk._agent_id
 
     if not did:
         raise RuntimeError(f"could not obtain DID for {cfg.alias} after registration")
