@@ -30,6 +30,7 @@ import logging
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,13 +88,86 @@ def _post_json(url: str, payload: dict) -> dict:
     return json.loads(body) if body else {}
 
 
+def _get_json(url: str) -> dict:
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        body = resp.read().decode("utf-8")
+    return json.loads(body) if body else {}
+
+
+def _resolve_birth_sponsor() -> str:
+    for key in ("BENCHMARK_BIRTH_SPONSOR", "CIVITASOS_BIRTH_SPONSOR"):
+        sponsor = os.getenv(key, "").strip()
+        if sponsor:
+            return sponsor
+    return "@guardian"
+
+
+def _validate_birth_sponsor(*, backend_url: str) -> None:
+    """Fail fast if BENCHMARK_BIRTH_SPONSOR is missing or not eligible."""
+    sponsor = _resolve_birth_sponsor()
+    encoded = urllib.parse.quote(sponsor, safe="")
+    identity_url = f"{backend_url}/api/v1/agents/{encoded}/identity-state"
+    try:
+        payload = _get_json(identity_url)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        if exc.code == 404:
+            raise RuntimeError(
+                f"birth sponsor not found: {sponsor}. "
+                "Set BENCHMARK_BIRTH_SPONSOR to an existing DID/alias."
+            ) from exc
+        raise RuntimeError(
+            f"failed to verify birth sponsor {sponsor}: HTTP {exc.code} {detail}"
+        ) from exc
+
+    data = payload.get("data", {}) if isinstance(payload, dict) else {}
+    state = str(data.get("state", "")).strip().upper()
+    did = str(data.get("did", "")).strip() or sponsor
+    if not state:
+        raise RuntimeError(f"birth sponsor {sponsor} identity-state response malformed: {payload}")
+    if state in {"PROVISIONAL", "LIQUIDATED"}:
+        raise RuntimeError(
+            f"birth sponsor {did} not eligible in state {state}; "
+            "use a CIVITAS_IDENTITY sponsor"
+        )
+    logger.info("validated birth sponsor %s did=%s state=%s", sponsor, did, state)
+
+
+def _validate_birth_aliases(*, backend_url: str, identity_dir: Path) -> None:
+    """Fail early when alias already exists but local identity key is missing."""
+    for cfg in AGENT_CONFIGS:
+        identity_file = identity_dir / f"{cfg.alias}.key"
+        if identity_file.exists():
+            continue
+
+        encoded = urllib.parse.quote(cfg.alias, safe="")
+        identity_url = f"{backend_url}/api/v1/agents/{encoded}/identity-state"
+        try:
+            payload = _get_json(identity_url)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                continue
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(
+                f"failed to verify alias {cfg.alias}: HTTP {exc.code} {detail}"
+            ) from exc
+
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        did = str(data.get("did", "")).strip() or "<unknown>"
+        raise RuntimeError(
+            f"alias {cfg.alias} already exists as {did}, but {identity_file} is missing. "
+            "Reuse the original identity key files (same runs-root) or choose a new alias."
+        )
+
+
 def _birth_proposal(
     *,
     backend_url: str,
     public_key: str,
     cfg: AgentConfig,
 ) -> str:
-    sponsor = os.getenv("BENCHMARK_BIRTH_SPONSOR", "@guardian")
+    sponsor = _resolve_birth_sponsor()
     payload = {
         "public_key": public_key,
         "name": cfg.name,
@@ -115,7 +189,19 @@ def _birth_proposal(
         ],
         "obligations": ["complete_assigned_tasks"],
     }
-    resp = _post_json(f"{backend_url}/api/v1/agents/birth-proposal", payload)
+    try:
+        resp = _post_json(f"{backend_url}/api/v1/agents/birth-proposal", payload)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        if exc.code == 409:
+            raise RuntimeError(
+                f"birth-proposal conflict for alias {cfg.alias}: {detail}. "
+                "Ensure this alias reuses its original identity key."
+            ) from exc
+        raise RuntimeError(
+            f"birth-proposal failed for alias {cfg.alias}: HTTP {exc.code} {detail}"
+        ) from exc
+
     data = resp.get("data", {}) if isinstance(resp, dict) else {}
     agent = data.get("agent", {}) if isinstance(data, dict) else {}
     did = agent.get("did") or data.get("did")
@@ -196,6 +282,10 @@ def main() -> int:
     identity_dir = runs_root / "identity"
     out_path = runs_root / "agent_ids.json"
     runs_root.mkdir(parents=True, exist_ok=True)
+
+    if _institutional_identity_enabled():
+        _validate_birth_sponsor(backend_url=args.backend_url)
+        _validate_birth_aliases(backend_url=args.backend_url, identity_dir=identity_dir)
 
     records = []
     for cfg in AGENT_CONFIGS:

@@ -128,7 +128,14 @@ else:
     RESUME_FLAG=""
     if [ "${RESUME:-0}" = "1" ]; then
         # Reuse the most-recent existing baseline-<alias>-* run dir for this agent.
-        EXISTING="$(ls -dt "$RUNS_ROOT"/baseline-"${AGENT}"-*/ 2>/dev/null | head -1)"
+        # NOTE: avoid `ls ... | head` under `set -euo pipefail` when no match exists.
+        EXISTING=""
+        for d in "$RUNS_ROOT"/baseline-"${AGENT}"-*/; do
+            [ -d "$d" ] || continue
+            if [ -z "$EXISTING" ] || [ "$d" -nt "$EXISTING" ]; then
+                EXISTING="$d"
+            fi
+        done
         if [ -n "$EXISTING" ]; then
             RUN_ID="$(basename "${EXISTING%/}")"
             RESUME_FLAG="--resume"
@@ -159,6 +166,33 @@ else:
     set -e
     if [ $rc -ne 0 ]; then
         echo "  WARN: orchestrator for $AGENT exited non-zero ($rc)"
+        orch_failures=$((orch_failures + 1))
+    fi
+
+    # Hard guard: prevent fast-fail runs (abnormal terminations) from being
+    # mistaken as successful baseline completion.
+    SUMMARY_PATH="$RUNS_ROOT/$RUN_ID/summary.json"
+    if [ ! -f "$SUMMARY_PATH" ]; then
+        echo "  WARN: missing summary.json for $AGENT ($SUMMARY_PATH)"
+        orch_failures=$((orch_failures + 1))
+        continue
+    fi
+
+    COUNTS="$($PYTHON -c 'import json,sys; d=json.load(open(sys.argv[1])); print(int(d.get("tasks_total", 0)), int(d.get("tasks_completed", 0)), int(d.get("tasks_terminated_abnormally", 0)))' "$SUMMARY_PATH" 2>/dev/null || true)"
+    if [ -z "$COUNTS" ]; then
+        echo "  WARN: failed to parse $SUMMARY_PATH"
+        orch_failures=$((orch_failures + 1))
+        continue
+    fi
+    read -r TASKS_TOTAL TASKS_COMPLETED TASKS_ABNORMAL <<< "$COUNTS"
+    echo "  summary: completed=$TASKS_COMPLETED/$TASKS_TOTAL abnormal=$TASKS_ABNORMAL"
+
+    if [ "$TASKS_ABNORMAL" -gt 0 ]; then
+        echo "  WARN: $AGENT has $TASKS_ABNORMAL tasks_terminated_abnormally"
+        orch_failures=$((orch_failures + 1))
+    fi
+    if [ "$TASKS_TOTAL" -gt 0 ] && [ "$TASKS_COMPLETED" -lt "$TASKS_TOTAL" ]; then
+        echo "  WARN: $AGENT completed $TASKS_COMPLETED/$TASKS_TOTAL tasks"
         orch_failures=$((orch_failures + 1))
     fi
 done
