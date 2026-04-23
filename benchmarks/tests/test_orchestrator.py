@@ -10,7 +10,7 @@ import pytest
 from benchmarks.orchestrator import (
     EXIT_ABNORMAL, EXIT_AGENT_DONE, EXIT_AGENT_FAILED, EXIT_AGENT_GAVE_UP,
     EXIT_TICK_LIMIT, EXIT_WALL_CLOCK,
-    Orchestrator, OrchestratorConfig,
+    Orchestrator, OrchestratorConfig, _load_cached_result, _tail_actions_all_pool_claim,
 )
 from benchmarks.task_loader import load_manifest
 
@@ -96,3 +96,62 @@ def test_summary_written(tmp_path: Path) -> None:
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert payload["tasks_total"] == 1
     assert payload["tasks"][0]["agent_self_reported_success"] is True
+
+
+def test_tail_actions_all_pool_claim_true(tmp_path: Path) -> None:
+    p = tmp_path / "ticks.csv"
+    p.write_text(
+        (
+            "run_id,agent_id,task_id,tick_seq,tick_id,timestamp,phase_reached,"
+            "decision_action,decision_source,decision_reasoning,served_intent_layer,"
+            "conscience_allowed,conscience_reason,eval_success,eval_cost,eval_duration_ms,"
+            "aspect_gap,peer_trust_avg,balance,mode,is_wait,lessons_count,wait_references_telos\n"
+            "r,a,t,1,x,ts,reflect,pool_claim,rules,,,"
+            ",false,0,1,0.1,0.5,1,active,false,0,false\n"
+            "r,a,t,2,x,ts,reflect,pool_claim,rules,,,"
+            ",false,0,1,0.1,0.5,1,active,false,0,false\n"
+            "r,a,t,3,x,ts,reflect,pool_claim,rules,,,"
+            ",false,0,1,0.1,0.5,1,active,false,0,false\n"
+        ),
+        encoding="utf-8",
+    )
+    assert _tail_actions_all_pool_claim(p, window=3) is True
+
+
+def test_tail_actions_all_pool_claim_false_when_mixed_actions(tmp_path: Path) -> None:
+    p = tmp_path / "ticks.csv"
+    p.write_text(
+        (
+            "run_id,agent_id,task_id,tick_seq,tick_id,timestamp,phase_reached,"
+            "decision_action,decision_source,decision_reasoning,served_intent_layer,"
+            "conscience_allowed,conscience_reason,eval_success,eval_cost,eval_duration_ms,"
+            "aspect_gap,peer_trust_avg,balance,mode,is_wait,lessons_count,wait_references_telos\n"
+            "r,a,t,1,x,ts,reflect,pool_claim,rules,,,,false,0,1,0.1,0.5,1,active,false,0,false\n"
+            "r,a,t,2,x,ts,reflect,task_execute,llm,,,,true,1,3,0.1,0.5,1,active,false,0,false\n"
+            "r,a,t,3,x,ts,reflect,pool_claim,rules,,,,false,0,1,0.1,0.5,1,active,false,0,false\n"
+        ),
+        encoding="utf-8",
+    )
+    assert _tail_actions_all_pool_claim(p, window=3) is False
+
+
+def test_load_cached_result_drops_abnormal_without_sentinel(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    task_dir = run_dir / "tasks" / "R01_happy_01"
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_id": "R01_happy_01",
+                "exit_code": EXIT_TICK_LIMIT,
+                "tick_count": 20,
+                "wall_clock_ms": 1000.0,
+                "raw_csv_rows": 20,
+                "agent_self_reported_success": None,
+                "sentinel_kind": None,
+                "sentinel_reason": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _load_cached_result(run_dir, "R01_happy_01") is None

@@ -25,6 +25,8 @@ import subprocess
 import sys
 import time
 import uuid
+from collections import deque
+import csv
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +51,9 @@ SENTINEL_TO_EXIT = {
     "failed": EXIT_AGENT_FAILED,
     "give_up": EXIT_AGENT_GAVE_UP,
 }
+
+_CLAIM_SPIN_GRACE_TICKS_DEFAULT = 10
+_CLAIM_SPIN_WINDOW_DEFAULT = 5
 
 # F.1.b backend-mode flag values.
 BACKEND_MODE_LEGACY_FAKE = "legacy-fake"   # F.0 path: BENCHMARK_BRIEFING_FILE, agent writes sentinel
@@ -423,6 +428,18 @@ class Orchestrator:
         session.backend_task_id_file.write_text(backend_task_id, encoding="utf-8")
 
         wall_clock_budget_s = task.max_ticks * self._cfg.wall_clock_per_tick_s
+        claim_spin_grace_ticks = _env_int(
+            "BENCHMARK_CLAIM_SPIN_GRACE_TICKS",
+            _CLAIM_SPIN_GRACE_TICKS_DEFAULT,
+            min_value=0,
+        )
+        claim_spin_window = _env_int(
+            "BENCHMARK_CLAIM_SPIN_WINDOW",
+            _CLAIM_SPIN_WINDOW_DEFAULT,
+            min_value=2,
+        )
+        tick_limit_budget = task.max_ticks
+        claim_spin_grace_used = False
         t0 = time.monotonic()
         sentinel_kind: str | None = None
         sentinel_reason = ""
@@ -453,7 +470,28 @@ class Orchestrator:
 
             # 3) tick limit
             tick_seq = _tail_tick_seq(raw_csv)
-            if tick_seq >= task.max_ticks:
+            if tick_seq >= tick_limit_budget:
+                if (
+                    not claim_spin_grace_used
+                    and claim_spin_grace_ticks > 0
+                ):
+                    eligible, reason = self._can_grant_claim_spin_grace(
+                        backend_task_id=backend_task_id,
+                        raw_csv=raw_csv,
+                        window=claim_spin_window,
+                    )
+                    if eligible:
+                        claim_spin_grace_used = True
+                        prev = tick_limit_budget
+                        tick_limit_budget += claim_spin_grace_ticks
+                        logger.warning(
+                            "[orch-claim-grace] task=%s extending tick limit %d -> %d (%s)",
+                            task.id,
+                            prev,
+                            tick_limit_budget,
+                            reason,
+                        )
+                        continue
                 exit_code = EXIT_TICK_LIMIT
                 self._cfg.backend_client.force_fail(backend_task_id)
                 break
@@ -557,6 +595,18 @@ class Orchestrator:
             env["BENCHMARK_BRIEFING_FILE"] = str(briefing_path)
 
         wall_clock_budget_s = task.max_ticks * self._cfg.wall_clock_per_tick_s
+        claim_spin_grace_ticks = _env_int(
+            "BENCHMARK_CLAIM_SPIN_GRACE_TICKS",
+            _CLAIM_SPIN_GRACE_TICKS_DEFAULT,
+            min_value=0,
+        )
+        claim_spin_window = _env_int(
+            "BENCHMARK_CLAIM_SPIN_WINDOW",
+            _CLAIM_SPIN_WINDOW_DEFAULT,
+            min_value=2,
+        )
+        tick_limit_budget = task.max_ticks
+        claim_spin_grace_used = False
 
         cmd = shlex.split(self._cfg.agent_command)
         t0 = time.monotonic()
@@ -606,7 +656,29 @@ class Orchestrator:
 
                 # 3. tick limit
                 tick_seq = _tail_tick_seq(raw_csv)
-                if tick_seq >= task.max_ticks:
+                if tick_seq >= tick_limit_budget:
+                    if (
+                        not claim_spin_grace_used
+                        and backend_task_id is not None
+                        and claim_spin_grace_ticks > 0
+                    ):
+                        eligible, reason = self._can_grant_claim_spin_grace(
+                            backend_task_id=backend_task_id,
+                            raw_csv=raw_csv,
+                            window=claim_spin_window,
+                        )
+                        if eligible:
+                            claim_spin_grace_used = True
+                            prev = tick_limit_budget
+                            tick_limit_budget += claim_spin_grace_ticks
+                            logger.warning(
+                                "[orch-claim-grace] task=%s extending tick limit %d -> %d (%s)",
+                                task.id,
+                                prev,
+                                tick_limit_budget,
+                                reason,
+                            )
+                            continue
                     exit_code = EXIT_TICK_LIMIT
                     _terminate(proc, self._cfg.sigterm_grace_s)
                     if backend_task_id is not None:
@@ -689,6 +761,27 @@ class Orchestrator:
             client.confirm(backend_task_id)
         return kind, reason
 
+    def _can_grant_claim_spin_grace(
+        self,
+        *,
+        backend_task_id: str,
+        raw_csv: Path,
+        window: int,
+    ) -> tuple[bool, str]:
+        """Allow one tick-budget extension only for benchmark claim-cooldown spin."""
+        client = self._cfg.backend_client
+        if client is None:
+            return False, "backend client unavailable"
+        if not _tail_actions_all_pool_claim(raw_csv, window=window):
+            return False, "tail actions are not pure pool_claim failures"
+        try:
+            state = client.get_state(backend_task_id)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"cannot read backend state: {exc}"
+        if state.status != "Open":
+            return False, f"backend status={state.status}"
+        return True, "backend status=Open with sustained pool_claim retries"
+
     @staticmethod
     def _materialise_sentinel(sentinel_dir: Path, kind: str, reason: str) -> None:
         path = sentinel_dir / kind
@@ -723,7 +816,15 @@ def _load_cached_result(run_dir: Path, task_id: str) -> "TaskResult | None":
     if p.is_file():
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
-            return TaskResult(**d)
+            cached = TaskResult(**d)
+            # Resume should re-run unfinished/abnormal tasks even if result.json
+            # exists (e.g., prior EXIT_TICK_LIMIT with no terminal sentinel).
+            if (
+                cached.sentinel_kind is None
+                and cached.exit_code in (EXIT_TICK_LIMIT, EXIT_ABNORMAL, EXIT_WALL_CLOCK)
+            ):
+                return None
+            return cached
         except Exception as exc:  # noqa: BLE001
             logger.warning("resume: dropping unreadable result for %s: %s", task_id, exc)
             return None
@@ -808,6 +909,48 @@ def _csv_row_count(csv_path: Path) -> int:
         return 0
     with csv_path.open("rb") as fh:
         return max(0, sum(1 for _ in fh) - 1)  # subtract header
+
+
+def _tail_actions_all_pool_claim(csv_path: Path, *, window: int) -> bool:
+    """True iff the last `window` rows are all pool_claim with non-success eval."""
+    if window <= 0:
+        return False
+    rows: deque[dict[str, str]] = deque(maxlen=window)
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                rows.append(row)
+    except OSError:
+        return False
+
+    if len(rows) < window:
+        return False
+
+    saw_failed_eval = False
+    for row in rows:
+        if str(row.get("decision_action", "")).strip() != "pool_claim":
+            return False
+        eval_success = str(row.get("eval_success", "")).strip().lower()
+        if eval_success in {"true", "1"}:
+            return False
+        if eval_success in {"false", "0"}:
+            saw_failed_eval = True
+    return saw_failed_eval
+
+
+def _env_int(name: str, default: int, *, min_value: int = 0) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r; fallback to %d", name, raw, default)
+        return default
+    if value < min_value:
+        return min_value
+    return value
 
 
 def _terminate(proc: subprocess.Popen[Any], grace_s: float, *, then_kill: bool = False) -> None:
