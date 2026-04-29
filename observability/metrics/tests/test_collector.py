@@ -10,19 +10,35 @@ from observability.metrics.schema import RAW_COLUMNS
 from observability.metrics.writer import RawWriter
 
 
-def _make_loop(*, aspect_gap: float = 0.2, peer_trust_avg: float = 0.5, balance: float = 100.0):
+def _make_loop(
+    *,
+    aspect_gap: float = 0.2,
+    peer_trust_avg: float = 0.5,
+    balance: float = 100.0,
+    lessons_count: int = 0,
+):
     state = SimpleNamespace(
         aspect_gap=aspect_gap, peer_trust_avg=peer_trust_avg, balance=balance,
     )
     energy = SimpleNamespace(state=state)
-    return SimpleNamespace(_energy=energy)
+    lessons = [{} for _ in range(lessons_count)]
+    memory = SimpleNamespace(recall=lambda key: lessons if key == "lessons_learned" else None)
+    return SimpleNamespace(_energy=energy, _memory=memory)
 
 
-def _make_ctx(action: str = "noop", success: bool = True, duration_ms: int = 42, *, gap: float = 0.0):
+def _make_ctx(
+    action: str = "noop",
+    success: bool = True,
+    duration_ms: int = 42,
+    *,
+    gap: float = 0.0,
+    briefing: dict | None = None,
+):
     return SimpleNamespace(
         tick_id="tick-abc",
         timestamp="2026-04-18T15:30:22+00:00",
         phase=SimpleNamespace(value="reflect"),
+        briefing=briefing or {},
         decision=SimpleNamespace(
             action=action,
             source=SimpleNamespace(value="rules"),
@@ -100,7 +116,12 @@ def test_failure_does_not_propagate(tmp_path: Path) -> None:
 
 def test_energy_snapshot_used(tmp_path: Path) -> None:
     csv_path = tmp_path / "T.csv"
-    loop = _make_loop(aspect_gap=0.85, peer_trust_avg=0.42, balance=12.5)
+    loop = _make_loop(
+        aspect_gap=0.85,
+        peer_trust_avg=0.42,
+        balance=12.5,
+        lessons_count=3,
+    )
     with RawWriter(csv_path) as writer:
         adapter = CollectorAdapter(run_id="R", agent_id="A", loop=loop, writer=writer)
         adapter.bind_task("T")
@@ -109,3 +130,23 @@ def test_energy_snapshot_used(tmp_path: Path) -> None:
     assert row["aspect_gap"] == "0.85"
     assert row["peer_trust_avg"] == "0.42"
     assert row["balance"] == "12.5"
+    assert row["lessons_count"] == "3"
+
+
+def test_identity_snapshot_used(tmp_path: Path) -> None:
+    csv_path = tmp_path / "T.csv"
+    identity_briefing = {
+        "identity": {
+            "state": "PROVISIONAL",
+            "remaining_epochs": 2,
+        },
+        "_identity_prompt_injected": True,
+    }
+    with RawWriter(csv_path) as writer:
+        adapter = CollectorAdapter(run_id="R", agent_id="A", loop=_make_loop(), writer=writer)
+        adapter.bind_task("T")
+        adapter(_make_ctx(briefing=identity_briefing))
+    row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
+    assert row["identity_state"] == "PROVISIONAL"
+    assert row["identity_remaining_epochs"] == "2"
+    assert row["identity_prompt_injected"] == "true"

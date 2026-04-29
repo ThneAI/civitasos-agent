@@ -56,7 +56,7 @@ allowed_metric_codes:
   - m1_result_deviation_rate
   - m2_verification_miss_rate
   - m3_aspect_gap_response_rate
-  - m4_lessons_impact_rate     # F.0 阶段采集但不计算，null 占位
+  - m4_lessons_impact_rate     # H.2-lite 可计算；信号不足时返回 null + notes
   - m5_tick_latency
   - m5_task_latency
   - m6_wait_ratio

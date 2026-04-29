@@ -25,7 +25,7 @@ import logging
 import re
 import sys
 from collections import Counter
-from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .aggregator import (
@@ -33,11 +33,25 @@ from .aggregator import (
     AggregatorError,
     aggregate_run,
 )
-from .task_loader import load_manifest
+from observability.metrics.computers.m2_verification_miss import (
+    is_verification_observed,
+)
+from .task_loader import Manifest, load_manifest
 
 logger = logging.getLogger("f1c_merge")
 
 _RUN_DIR_RE = re.compile(r"^baseline-(?P<alias>[a-z]+)-(?P<ts>\d{8}T\d{6}Z)$")
+
+_DEFAULT_SURVIVAL_THRESHOLD = 0.55
+_DEFAULT_COMPLETION_FLOOR = 0.95
+_DEFAULT_LATENCY_TARGET_MS = 20000.0
+_DIM_WEIGHTS = {
+    "completion_rate": 0.30,
+    "latency_score": 0.20,
+    "collaboration_score": 0.20,
+    "trust_score": 0.30,
+}
+_SENTINEL_HARD_FAIL = frozenset({"failed", "give_up"})
 
 
 def _discover_runs(runs_root: Path) -> list[tuple[str, Path]]:
@@ -54,6 +68,542 @@ def _discover_runs(runs_root: Path) -> list[tuple[str, Path]]:
         if cur is None or ts > cur[0]:
             candidates[alias] = (ts, d)
     return sorted([(alias, d) for alias, (_ts, d) in candidates.items()])
+
+
+def _safe_float(raw: str | None) -> float | None:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _mean(xs: list[float]) -> float | None:
+    if not xs:
+        return None
+    return sum(xs) / len(xs)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        import os
+
+        val = os.getenv(name)
+        if not val:
+            return default
+        parsed = float(val)
+        if parsed <= 0:
+            return default
+        return parsed
+    except Exception:
+        return default
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    try:
+        import os
+
+        val = os.getenv(name)
+        if val is None:
+            return default
+        return val.strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        return default
+
+
+def _load_completion_from_summary(run_dir: Path) -> tuple[int, int]:
+    payload = _load_summary_payload(run_dir)
+    return (
+        int(payload.get("tasks_completed", 0)),
+        int(payload.get("tasks_total", 0)),
+    )
+
+
+def _load_summary_payload(run_dir: Path) -> dict[str, object]:
+    summary_path = run_dir / "summary.json"
+    if not summary_path.exists():
+        return {}
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _evaluate_sentinel_gate(
+    runs: list[tuple[str, Path]],
+    *,
+    disallowed_sentinels: frozenset[str] = _SENTINEL_HARD_FAIL,
+    max_examples: int = 30,
+) -> dict[str, object]:
+    """Hard gate: any failed/give_up sentinel in task summary fails the batch."""
+    violations: list[dict[str, str]] = []
+    by_agent: list[dict[str, object]] = []
+
+    for alias, run_dir in runs:
+        payload = _load_summary_payload(run_dir)
+        tasks = payload.get("tasks")
+        if not isinstance(tasks, list):
+            tasks = []
+        counts: Counter[str] = Counter()
+        bad = 0
+        for row in tasks:
+            if not isinstance(row, dict):
+                continue
+            kind_raw = row.get("sentinel_kind")
+            kind = str(kind_raw).strip().lower() if kind_raw is not None else ""
+            if not kind:
+                kind = "none"
+            counts[kind] += 1
+            if kind in disallowed_sentinels:
+                bad += 1
+                if len(violations) < max_examples:
+                    violations.append(
+                        {
+                            "agent_alias": alias,
+                            "task_id": str(row.get("task_id", "")),
+                            "sentinel_kind": kind,
+                            "reason": str(row.get("sentinel_reason", "")),
+                        }
+                    )
+        by_agent.append(
+            {
+                "agent_alias": alias,
+                "run_dir": str(run_dir),
+                "tasks_total": sum(counts.values()),
+                "disallowed_count": bad,
+                "sentinel_counts": dict(sorted(counts.items())),
+            }
+        )
+
+    by_agent = sorted(by_agent, key=lambda row: str(row["agent_alias"]))
+    violation_count = sum(int(row["disallowed_count"]) for row in by_agent)
+    reasons = [
+        (
+            f"{row['agent_alias']}: disallowed sentinel count "
+            f"{row['disallowed_count']} in {row['tasks_total']} tasks"
+        )
+        for row in by_agent
+        if int(row["disallowed_count"]) > 0
+    ]
+    return {
+        "passed": violation_count == 0,
+        "disallowed_sentinels": sorted(disallowed_sentinels),
+        "violation_count": violation_count,
+        "failure_reasons": reasons,
+        "per_agent": by_agent,
+        "violations_sample": violations,
+    }
+
+
+def _agent_alias_metrics(final_metrics_csv: Path) -> dict[str, dict[str, float | None]]:
+    by_alias: dict[str, dict[str, list[float]]] = {}
+    with final_metrics_csv.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            alias = row.get("agent_alias", "")
+            if not alias:
+                continue
+            slot = by_alias.setdefault(
+                alias,
+                {
+                    "m1": [],
+                    "m2": [],
+                    "m3": [],
+                    "m4": [],
+                    "m5_task_p95": [],
+                },
+            )
+            for src, dst in (
+                ("m1_result_deviation_rate", "m1"),
+                ("m2_verification_miss_rate", "m2"),
+                ("m3_aspect_gap_response_rate", "m3"),
+                ("m4_lessons_impact_rate", "m4"),
+                ("m5_task_latency_p95_ms", "m5_task_p95"),
+            ):
+                v = _safe_float(row.get(src))
+                if v is not None:
+                    slot[dst].append(v)
+
+    out: dict[str, dict[str, float | None]] = {}
+    for alias, raw in by_alias.items():
+        out[alias] = {
+            "m1_result_deviation_rate": _mean(raw["m1"]),
+            "m2_verification_miss_rate": _mean(raw["m2"]),
+            "m3_aspect_gap_response_rate": _mean(raw["m3"]),
+            "m4_lessons_impact_rate": _mean(raw["m4"]),
+            "m5_task_latency_p95_ms": _mean(raw["m5_task_p95"]),
+            "m3_coverage": (len(raw["m3"]) / 30.0) if raw["m3"] else 0.0,
+            "m4_coverage": (len(raw["m4"]) / 30.0) if raw["m4"] else 0.0,
+        }
+    return out
+
+
+def _m2_observable_ratio(run_dir: Path, manifest: Manifest | None) -> float:
+    if manifest is None:
+        return 1.0
+    eligible = [
+        t for t in manifest.tasks
+        if t.variant == "adversarial" and t.verifier_tools
+    ]
+    if not eligible:
+        return 1.0
+    observed = 0
+    total = 0
+    for t in eligible:
+        seq = _action_seq(run_dir, t.id)
+        if not seq:
+            continue
+        total += 1
+        if is_verification_observed(
+            verifier_tools=t.verifier_tools,
+            decision_actions=seq,
+        ):
+            observed += 1
+    if total == 0:
+        return 0.0
+    return observed / total
+
+
+def _parse_csv_bool(raw: str | None) -> bool | None:
+    if raw is None:
+        return None
+    s = str(raw).strip().lower()
+    if not s:
+        return None
+    if s == "true":
+        return True
+    if s == "false":
+        return False
+    return None
+
+
+def _identity_prompt_observability(run_dir: Path) -> dict[str, object]:
+    raw_dir = run_dir / "raw_ticks"
+    if not raw_dir.exists():
+        return {
+            "tasks_with_ticks": 0,
+            "observable_schema_tasks": 0,
+            "identity_state_tasks": 0,
+            "identity_prompt_tasks": 0,
+            "tick_rows": 0,
+            "identity_prompt_ticks": 0,
+            "llm_tasks": 0,
+            "llm_identity_prompt_tasks": 0,
+            "llm_tick_rows": 0,
+            "llm_identity_prompt_ticks": 0,
+            "observable_schema_task_ratio": None,
+            "identity_state_task_ratio": None,
+            "identity_prompt_task_ratio": None,
+            "identity_prompt_tick_ratio": None,
+            "identity_prompt_llm_task_ratio": None,
+            "identity_prompt_llm_tick_ratio": None,
+        }
+
+    tasks_with_ticks = 0
+    observable_schema_tasks = 0
+    identity_state_tasks = 0
+    identity_prompt_tasks = 0
+    tick_rows = 0
+    identity_prompt_ticks = 0
+    llm_tasks = 0
+    llm_identity_prompt_tasks = 0
+    llm_tick_rows = 0
+    llm_identity_prompt_ticks = 0
+
+    for csv_path in sorted(raw_dir.glob("*.csv")):
+        with csv_path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = set(reader.fieldnames or [])
+            task_ticks = 0
+            task_has_identity_state = False
+            task_has_prompt = False
+            task_has_llm = False
+            task_llm_has_prompt = False
+            if fieldnames & {
+                "identity_state",
+                "identity_remaining_epochs",
+                "identity_prompt_injected",
+            }:
+                observable_schema_tasks += 1
+            for row in reader:
+                task_ticks += 1
+                tick_rows += 1
+                state = str(row.get("identity_state", "") or "").strip().upper()
+                if state and state != "UNKNOWN":
+                    task_has_identity_state = True
+                prompt = _parse_csv_bool(row.get("identity_prompt_injected"))
+                if prompt is True:
+                    identity_prompt_ticks += 1
+                    task_has_prompt = True
+                if str(row.get("decision_source", "")).strip().lower() == "llm":
+                    task_has_llm = True
+                    llm_tick_rows += 1
+                    if prompt is True:
+                        llm_identity_prompt_ticks += 1
+                        task_llm_has_prompt = True
+            if task_ticks > 0:
+                tasks_with_ticks += 1
+                if task_has_identity_state:
+                    identity_state_tasks += 1
+                if task_has_prompt:
+                    identity_prompt_tasks += 1
+                if task_has_llm:
+                    llm_tasks += 1
+                    if task_llm_has_prompt:
+                        llm_identity_prompt_tasks += 1
+
+    def _ratio(num: int, den: int) -> float | None:
+        return (num / den) if den else None
+
+    return {
+        "tasks_with_ticks": tasks_with_ticks,
+        "observable_schema_tasks": observable_schema_tasks,
+        "identity_state_tasks": identity_state_tasks,
+        "identity_prompt_tasks": identity_prompt_tasks,
+        "tick_rows": tick_rows,
+        "identity_prompt_ticks": identity_prompt_ticks,
+        "llm_tasks": llm_tasks,
+        "llm_identity_prompt_tasks": llm_identity_prompt_tasks,
+        "llm_tick_rows": llm_tick_rows,
+        "llm_identity_prompt_ticks": llm_identity_prompt_ticks,
+        "observable_schema_task_ratio": _ratio(observable_schema_tasks, tasks_with_ticks),
+        "identity_state_task_ratio": _ratio(identity_state_tasks, tasks_with_ticks),
+        "identity_prompt_task_ratio": _ratio(identity_prompt_tasks, tasks_with_ticks),
+        "identity_prompt_tick_ratio": _ratio(identity_prompt_ticks, tick_rows),
+        "identity_prompt_llm_task_ratio": _ratio(llm_identity_prompt_tasks, llm_tasks),
+        "identity_prompt_llm_tick_ratio": _ratio(llm_identity_prompt_ticks, llm_tick_rows),
+    }
+
+
+def _aggregate_identity_prompt_observability(
+    runs: list[tuple[str, Path]],
+) -> dict[str, object]:
+    per_agent: list[dict[str, object]] = []
+    total_tasks = 0
+    total_schema_tasks = 0
+    total_identity_state_tasks = 0
+    total_identity_prompt_tasks = 0
+    total_ticks = 0
+    total_prompt_ticks = 0
+    total_llm_tasks = 0
+    total_llm_prompt_tasks = 0
+    total_llm_ticks = 0
+    total_llm_prompt_ticks = 0
+    for alias, run_dir in runs:
+        obs = _identity_prompt_observability(run_dir)
+        total_tasks += int(obs["tasks_with_ticks"])
+        total_schema_tasks += int(obs["observable_schema_tasks"])
+        total_identity_state_tasks += int(obs["identity_state_tasks"])
+        total_identity_prompt_tasks += int(obs["identity_prompt_tasks"])
+        total_ticks += int(obs["tick_rows"])
+        total_prompt_ticks += int(obs["identity_prompt_ticks"])
+        total_llm_tasks += int(obs["llm_tasks"])
+        total_llm_prompt_tasks += int(obs["llm_identity_prompt_tasks"])
+        total_llm_ticks += int(obs["llm_tick_rows"])
+        total_llm_prompt_ticks += int(obs["llm_identity_prompt_ticks"])
+        per_agent.append({"agent_alias": alias, **obs})
+
+    def _ratio(num: int, den: int) -> float | None:
+        return (num / den) if den else None
+
+    return {
+        "per_agent": sorted(per_agent, key=lambda row: str(row["agent_alias"])),
+        "tasks_with_ticks": total_tasks,
+        "observable_schema_task_ratio": _ratio(total_schema_tasks, total_tasks),
+        "identity_state_task_ratio": _ratio(total_identity_state_tasks, total_tasks),
+        "identity_prompt_task_ratio": _ratio(total_identity_prompt_tasks, total_tasks),
+        "identity_prompt_tick_ratio": _ratio(total_prompt_ticks, total_ticks),
+        "identity_prompt_llm_task_ratio": _ratio(total_llm_prompt_tasks, total_llm_tasks),
+        "identity_prompt_llm_tick_ratio": _ratio(total_llm_prompt_ticks, total_llm_ticks),
+    }
+
+
+def _alias_collaboration_score(
+    alias: str,
+    rows: list[dict[str, str]],
+) -> float:
+    mine = [
+        r for r in rows
+        if r.get("agent_a") == alias or r.get("agent_b") == alias
+    ]
+    if not mine:
+        return 1.0
+    flagged = sum(1 for r in mine if r.get("flagged") == "1")
+    ratio = flagged / len(mine)
+    return max(0.0, min(1.0, 1.0 - ratio))
+
+
+def _score_from_metric(value: float | None, *, invert: bool, unknown: float = 0.5) -> float:
+    if value is None:
+        return unknown
+    clamped = max(0.0, min(1.0, value))
+    return 1.0 - clamped if invert else clamped
+
+
+def _latency_score(task_p95_ms: float | None, target_ms: float) -> float:
+    if task_p95_ms is None:
+        return 0.5
+    if task_p95_ms <= 0:
+        return 1.0
+    ratio = min(task_p95_ms / target_ms, 1.0)
+    return max(0.0, 1.0 - ratio)
+
+
+def _build_ii2_scorecard(
+    *,
+    runs: list[tuple[str, Path]],
+    final_metrics_csv: Path,
+    jaccard_rows: list[dict[str, str]],
+    manifest: Manifest | None = None,
+) -> dict[str, object]:
+    survival_threshold = _env_float(
+        "CIVITASOS_IDENTITY_SURVIVAL_THRESHOLD",
+        _DEFAULT_SURVIVAL_THRESHOLD,
+    )
+    completion_floor = _env_float(
+        "CIVITASOS_II2_COMPLETION_FLOOR",
+        _DEFAULT_COMPLETION_FLOOR,
+    )
+    latency_target_ms = _env_float(
+        "CIVITASOS_II2_LATENCY_TARGET_MS",
+        _DEFAULT_LATENCY_TARGET_MS,
+    )
+    identity_prompt_floor = _env_float(
+        "CIVITASOS_IDENTITY_PROMPT_TASK_FLOOR",
+        0.95,
+    )
+    institutional_on = _env_flag("CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED")
+
+    metrics = _agent_alias_metrics(final_metrics_csv)
+    by_agent: list[dict[str, object]] = []
+    failure_reasons: list[str] = []
+    observability_warnings: list[str] = []
+    pass_count = 0
+    for alias, run_dir in runs:
+        completed, total = _load_completion_from_summary(run_dir)
+        completion_rate = (completed / total) if total else 0.0
+        m = metrics.get(alias, {})
+        m2_obs_ratio = _m2_observable_ratio(run_dir, manifest)
+        identity_obs = _identity_prompt_observability(run_dir)
+
+        trust_components = {
+            "m1_score": _score_from_metric(
+                m.get("m1_result_deviation_rate"), invert=True,
+            ),
+            "m2_score": _score_from_metric(
+                m.get("m2_verification_miss_rate"), invert=True,
+            ),
+            "m3_score": _score_from_metric(
+                m.get("m3_aspect_gap_response_rate"), invert=False,
+            ),
+            "m4_score": _score_from_metric(
+                m.get("m4_lessons_impact_rate"), invert=False,
+            ),
+        }
+        if m2_obs_ratio < 0.05:
+            trust_components["m2_score"] = 0.5
+            observability_warnings.append(
+                f"{alias}: m2 observable ratio {m2_obs_ratio:.4f} is low; m2_score neutralized",
+        )
+        if institutional_on:
+            prompt_task_ratio = identity_obs["identity_prompt_llm_task_ratio"]
+            state_task_ratio = identity_obs["identity_state_task_ratio"]
+            schema_task_ratio = identity_obs["observable_schema_task_ratio"]
+            llm_tasks = int(identity_obs["llm_tasks"])
+            if schema_task_ratio is None or schema_task_ratio < identity_prompt_floor:
+                observability_warnings.append(
+                    f"{alias}: identity observability schema ratio {0.0 if schema_task_ratio is None else schema_task_ratio:.4f} < {identity_prompt_floor:.4f}",
+                )
+            if llm_tasks > 0 and (
+                prompt_task_ratio is None or prompt_task_ratio < identity_prompt_floor
+            ):
+                observability_warnings.append(
+                    f"{alias}: identity prompt llm task ratio {0.0 if prompt_task_ratio is None else prompt_task_ratio:.4f} < {identity_prompt_floor:.4f}",
+                )
+            if state_task_ratio is None or state_task_ratio < identity_prompt_floor:
+                observability_warnings.append(
+                    f"{alias}: identity state task ratio {0.0 if state_task_ratio is None else state_task_ratio:.4f} < {identity_prompt_floor:.4f}",
+                )
+        trust_score = (
+            0.35 * trust_components["m1_score"]
+            + 0.35 * trust_components["m2_score"]
+            + 0.15 * trust_components["m3_score"]
+            + 0.15 * trust_components["m4_score"]
+        )
+        latency_score = _latency_score(m.get("m5_task_latency_p95_ms"), latency_target_ms)
+        collaboration_score = _alias_collaboration_score(alias, jaccard_rows)
+        identity_score = (
+            _DIM_WEIGHTS["completion_rate"] * completion_rate
+            + _DIM_WEIGHTS["latency_score"] * latency_score
+            + _DIM_WEIGHTS["collaboration_score"] * collaboration_score
+            + _DIM_WEIGHTS["trust_score"] * trust_score
+        )
+        passed = completion_rate >= completion_floor and identity_score >= survival_threshold
+        if passed:
+            pass_count += 1
+        else:
+            if completion_rate < completion_floor:
+                failure_reasons.append(
+                    f"{alias}: completion_rate {completion_rate:.4f} < {completion_floor:.4f}",
+                )
+            if identity_score < survival_threshold:
+                failure_reasons.append(
+                    f"{alias}: identity_score {identity_score:.4f} < {survival_threshold:.4f}",
+                )
+
+        by_agent.append(
+            {
+                "agent_alias": alias,
+                "run_dir": str(run_dir),
+                "completion_rate": round(completion_rate, 6),
+                "latency_score": round(latency_score, 6),
+                "collaboration_score": round(collaboration_score, 6),
+                "trust_score": round(trust_score, 6),
+                "identity_score": round(identity_score, 6),
+                "metrics_observed": {
+                    "m1_result_deviation_rate": m.get("m1_result_deviation_rate"),
+                    "m2_verification_miss_rate": m.get("m2_verification_miss_rate"),
+                    "m3_aspect_gap_response_rate": m.get("m3_aspect_gap_response_rate"),
+                    "m4_lessons_impact_rate": m.get("m4_lessons_impact_rate"),
+                    "m5_task_latency_p95_ms": m.get("m5_task_latency_p95_ms"),
+                    "m2_observable_ratio": round(m2_obs_ratio, 6),
+                    "m3_coverage_ratio": m.get("m3_coverage", 0.0),
+                    "m4_coverage_ratio": m.get("m4_coverage", 0.0),
+                    "identity_observable_schema_task_ratio": identity_obs["observable_schema_task_ratio"],
+                    "identity_state_task_ratio": identity_obs["identity_state_task_ratio"],
+                    "identity_prompt_task_ratio": identity_obs["identity_prompt_task_ratio"],
+                    "identity_prompt_tick_ratio": identity_obs["identity_prompt_tick_ratio"],
+                    "identity_prompt_llm_task_ratio": identity_obs["identity_prompt_llm_task_ratio"],
+                    "identity_prompt_llm_tick_ratio": identity_obs["identity_prompt_llm_tick_ratio"],
+                },
+                "passed": passed,
+            }
+        )
+
+    by_agent_sorted = sorted(by_agent, key=lambda r: str(r["agent_alias"]))
+    overall_identity_score = _mean(
+        [float(r["identity_score"]) for r in by_agent_sorted],
+    ) or 0.0
+    return {
+        "schema_version": "ii2_scorecard.v1",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "runs_root": str(final_metrics_csv.parent),
+        "weights": _DIM_WEIGHTS,
+        "gate": {
+            "passed": pass_count == len(by_agent_sorted),
+            "survival_threshold": survival_threshold,
+            "completion_floor": completion_floor,
+            "failure_reasons": failure_reasons,
+            "observability_warnings": observability_warnings,
+        },
+        "overall_identity_score": round(overall_identity_score, 6),
+        "agents": by_agent_sorted,
+    }
 
 
 def _row_with_alias(alias: str, agg) -> dict[str, str]:
@@ -249,6 +799,8 @@ def merge(
         max_flagged_task_ratio=gate_max_flagged_task_ratio,
         min_common_tasks=gate_min_common_tasks,
     )
+    sentinel_gate = _evaluate_sentinel_gate(runs)
+    identity_prompt_observability = _aggregate_identity_prompt_observability(runs)
 
     summary = {
         "runs_root": str(runs_root),
@@ -276,7 +828,19 @@ def merge(
             "min_common_tasks": gate_min_common_tasks,
             "failure_reasons": gate["failure_reasons"],
         },
+        "sentinel_gate": sentinel_gate,
+        "identity_prompt_observability": identity_prompt_observability,
     }
+    ii2_scorecard = _build_ii2_scorecard(
+        runs=runs,
+        final_metrics_csv=out_csv,
+        jaccard_rows=jaccard_rows,
+        manifest=manifest,
+    )
+    ii2_path = runs_root / "ii2_scorecard.json"
+    ii2_path.write_text(json.dumps(ii2_scorecard, indent=2), encoding="utf-8")
+    summary["ii2_scorecard_json"] = str(ii2_path)
+    summary["ii2_gate"] = ii2_scorecard["gate"]
     (runs_root / "merge_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
 
@@ -317,8 +881,15 @@ def main() -> int:
             summary["integrity_gate"]["min_common_tasks"],
         )
         return 3
+    if not summary["sentinel_gate"]["passed"]:
+        logger.error(
+            "F.1.c sentinel gate FAILED: %d disallowed task sentinel(s): %s",
+            summary["sentinel_gate"]["violation_count"],
+            "; ".join(summary["sentinel_gate"]["failure_reasons"]),
+        )
+        return 4
     logger.info(
-        "F.1.c integrity gate PASSED: pair_ratio=%.4f task_ratio=%.4f",
+        "F.1.c integrity+sentinel gates PASSED: pair_ratio=%.4f task_ratio=%.4f",
         summary["jaccard_flagged_ratio"],
         summary["jaccard_flagged_task_ratio"],
     )

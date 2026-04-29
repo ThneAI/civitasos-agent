@@ -1,20 +1,114 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
-from benchmarks.f1c_merge import _evaluate_integrity_gate, _inter_agent_jaccard
+from benchmarks.f1c_merge import (
+    _aggregate_identity_prompt_observability,
+    _build_ii2_scorecard,
+    _evaluate_integrity_gate,
+    _evaluate_sentinel_gate,
+    _inter_agent_jaccard,
+)
+from benchmarks.task_loader import Manifest, TaskSpec
 
 
-def _write_raw_ticks(run_dir: Path, task_id: str, actions: list[str]) -> None:
+def _write_raw_ticks(
+    run_dir: Path,
+    task_id: str,
+    actions: list[str],
+    *,
+    decision_sources: list[str] | None = None,
+    identity_states: list[str] | None = None,
+    identity_prompt_injected: list[bool] | None = None,
+) -> None:
     raw_dir = run_dir / "raw_ticks"
     raw_dir.mkdir(parents=True, exist_ok=True)
     p = raw_dir / f"{task_id}.csv"
+    rows: list[dict[str, str]] = []
+    for idx, action in enumerate(actions):
+        row = {
+            "decision_action": action,
+            "decision_source": (
+                decision_sources[idx]
+                if decision_sources is not None
+                else ("llm" if action == "task_execute" else "rules")
+            ),
+        }
+        if identity_states is not None:
+            row["identity_state"] = identity_states[idx]
+        if identity_prompt_injected is not None:
+            row["identity_prompt_injected"] = "true" if identity_prompt_injected[idx] else "false"
+        rows.append(row)
+    fieldnames = list(rows[0].keys()) if rows else ["decision_action"]
     with p.open("w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=["decision_action"])
+        w = csv.DictWriter(fh, fieldnames=fieldnames)
         w.writeheader()
-        for a in actions:
-            w.writerow({"decision_action": a})
+        w.writerows(rows)
+
+
+def _write_summary(
+    run_dir: Path,
+    *,
+    completed: int,
+    total: int,
+    tasks: list[dict[str, object]] | None = None,
+) -> None:
+    payload = {
+        "run_id": run_dir.name,
+        "tasks_completed": completed,
+        "tasks_total": total,
+        "tasks": tasks or [],
+    }
+    (run_dir / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_final_metrics(path: Path) -> None:
+    rows = [
+        {
+            "agent_alias": "alpha",
+            "run_id": "rid-alpha",
+            "agent_id": "did:alpha",
+            "category_id": "A01",
+            "targets_disease": "A",
+            "task_count": "2",
+            "m1_result_deviation_rate": "0.1",
+            "m2_verification_miss_rate": "0.2",
+            "m3_aspect_gap_response_rate": "0.5",
+            "m4_lessons_impact_rate": "0.3",
+            "m5_tick_latency_p50_ms": "1",
+            "m5_tick_latency_p95_ms": "2",
+            "m5_tick_latency_p99_ms": "3",
+            "m5_task_latency_p50_ms": "1000",
+            "m5_task_latency_p95_ms": "8000",
+            "m6_wait_ratio": "0.1",
+            "notes": "",
+        },
+        {
+            "agent_alias": "beta",
+            "run_id": "rid-beta",
+            "agent_id": "did:beta",
+            "category_id": "A01",
+            "targets_disease": "A",
+            "task_count": "2",
+            "m1_result_deviation_rate": "0.3",
+            "m2_verification_miss_rate": "0.6",
+            "m3_aspect_gap_response_rate": "",
+            "m4_lessons_impact_rate": "",
+            "m5_tick_latency_p50_ms": "1",
+            "m5_tick_latency_p95_ms": "2",
+            "m5_tick_latency_p99_ms": "3",
+            "m5_task_latency_p50_ms": "1000",
+            "m5_task_latency_p95_ms": "18000",
+            "m6_wait_ratio": "0.2",
+            "notes": "pending H.2",
+        },
+    ]
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
 
 
 def test_inter_agent_jaccard_uses_weighted_bigrams_as_primary(tmp_path: Path) -> None:
@@ -86,3 +180,258 @@ def test_integrity_gate_fails_when_common_tasks_too_few() -> None:
     reasons = gate["failure_reasons"]
     assert isinstance(reasons, list)
     assert any("insufficient common tasks" in r for r in reasons)
+
+
+def test_sentinel_gate_passes_without_failed_or_give_up(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    alpha.mkdir()
+    beta.mkdir()
+    _write_summary(
+        alpha,
+        completed=2,
+        total=2,
+        tasks=[
+            {"task_id": "T1", "sentinel_kind": "done", "sentinel_reason": "ok"},
+            {"task_id": "T2", "sentinel_kind": "done", "sentinel_reason": "ok"},
+        ],
+    )
+    _write_summary(
+        beta,
+        completed=2,
+        total=2,
+        tasks=[
+            {"task_id": "T1", "sentinel_kind": "done", "sentinel_reason": "ok"},
+            {"task_id": "T2", "sentinel_kind": "none", "sentinel_reason": ""},
+        ],
+    )
+    gate = _evaluate_sentinel_gate([("alpha", alpha), ("beta", beta)])
+    assert gate["passed"] is True
+    assert gate["violation_count"] == 0
+
+
+def test_sentinel_gate_fails_on_failed_or_give_up(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    alpha.mkdir()
+    beta.mkdir()
+    _write_summary(
+        alpha,
+        completed=1,
+        total=2,
+        tasks=[
+            {"task_id": "T1", "sentinel_kind": "done", "sentinel_reason": "ok"},
+            {"task_id": "T2", "sentinel_kind": "give_up", "sentinel_reason": "timeout"},
+        ],
+    )
+    _write_summary(
+        beta,
+        completed=1,
+        total=2,
+        tasks=[
+            {"task_id": "T1", "sentinel_kind": "failed", "sentinel_reason": "tool error"},
+            {"task_id": "T2", "sentinel_kind": "done", "sentinel_reason": "ok"},
+        ],
+    )
+    gate = _evaluate_sentinel_gate([("alpha", alpha), ("beta", beta)])
+    assert gate["passed"] is False
+    assert gate["violation_count"] == 2
+    reasons = gate["failure_reasons"]
+    assert isinstance(reasons, list)
+    assert any("alpha" in r for r in reasons)
+    assert any("beta" in r for r in reasons)
+
+
+def test_ii2_scorecard_builds_four_dimension_scores(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    alpha.mkdir()
+    beta.mkdir()
+    _write_summary(alpha, completed=60, total=60)
+    _write_summary(beta, completed=54, total=60)
+
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_final_metrics(final_metrics)
+    jaccard_rows = [
+        {"task_id": "T1", "agent_a": "alpha", "agent_b": "beta", "flagged": "0"},
+        {"task_id": "T2", "agent_a": "alpha", "agent_b": "beta", "flagged": "1"},
+    ]
+
+    scorecard = _build_ii2_scorecard(
+        runs=[("alpha", alpha), ("beta", beta)],
+        final_metrics_csv=final_metrics,
+        jaccard_rows=jaccard_rows,
+    )
+
+    assert scorecard["schema_version"] == "ii2_scorecard.v1"
+    assert "weights" in scorecard
+    agents = scorecard["agents"]
+    assert len(agents) == 2
+    alpha_row = next(r for r in agents if r["agent_alias"] == "alpha")
+    beta_row = next(r for r in agents if r["agent_alias"] == "beta")
+    assert alpha_row["completion_rate"] == 1.0
+    assert beta_row["completion_rate"] == 0.9
+    assert alpha_row["identity_score"] > beta_row["identity_score"]
+    assert alpha_row["passed"] is True
+    assert beta_row["passed"] is False
+    gate = scorecard["gate"]
+    assert gate["passed"] is False
+    assert isinstance(gate["failure_reasons"], list)
+
+
+def test_ii2_scorecard_recognizes_generic_m2_observation(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    alpha.mkdir()
+    beta.mkdir()
+    _write_summary(alpha, completed=60, total=60)
+    _write_summary(beta, completed=60, total=60)
+
+    # Generic verification action should count as observable for M2.
+    _write_raw_ticks(alpha, "T_adv_01", ["pool_claim", "query_reputation", "task_execute"])
+    _write_raw_ticks(beta, "T_adv_01", ["pool_claim", "query_reputation", "task_execute"])
+
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_final_metrics(final_metrics)
+    jaccard_rows = [
+        {"task_id": "T_adv_01", "agent_a": "alpha", "agent_b": "beta", "flagged": "0"},
+    ]
+    manifest = Manifest(
+        schema_version="1.1",
+        allowed_metric_codes=["M2"],
+        taxonomy=[{"id": "A01"}],
+        tasks=[
+            TaskSpec(
+                id="T_adv_01",
+                category_id="A01",
+                category_name="A",
+                targets_disease="A",
+                variant="adversarial",
+                description="d",
+                briefing="b",
+                telos="t",
+                success_criteria=[{"kind": "regex", "body": "x"}],
+                max_ticks=10,
+                metrics_targeted=["M2"],
+                verifier_tools=["manual_check"],
+            ),
+        ],
+        path=tmp_path / "manifest.yaml",
+    )
+
+    scorecard = _build_ii2_scorecard(
+        runs=[("alpha", alpha), ("beta", beta)],
+        final_metrics_csv=final_metrics,
+        jaccard_rows=jaccard_rows,
+        manifest=manifest,
+    )
+    gate = scorecard["gate"]
+    assert gate["observability_warnings"] == []
+
+
+def test_identity_prompt_observability_aggregates_per_agent(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    alpha.mkdir()
+    beta.mkdir()
+    _write_raw_ticks(
+        alpha,
+        "T01",
+        ["pool_claim", "task_execute"],
+        identity_states=["PROVISIONAL", "PROVISIONAL"],
+        identity_prompt_injected=[True, True],
+    )
+    _write_raw_ticks(
+        beta,
+        "T01",
+        ["pool_claim", "task_execute"],
+        identity_states=["PROVISIONAL", "PROVISIONAL"],
+        identity_prompt_injected=[False, False],
+    )
+
+    summary = _aggregate_identity_prompt_observability([("alpha", alpha), ("beta", beta)])
+    assert summary["tasks_with_ticks"] == 2
+    assert summary["observable_schema_task_ratio"] == 1.0
+    assert summary["identity_state_task_ratio"] == 1.0
+    assert summary["identity_prompt_task_ratio"] == 0.5
+    assert summary["identity_prompt_tick_ratio"] == 0.5
+    assert summary["identity_prompt_llm_task_ratio"] == 0.5
+    assert summary["identity_prompt_llm_tick_ratio"] == 0.5
+
+
+def test_ii2_scorecard_records_identity_prompt_coverage(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED", "true")
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    alpha.mkdir()
+    beta.mkdir()
+    _write_summary(alpha, completed=60, total=60)
+    _write_summary(beta, completed=60, total=60)
+    _write_raw_ticks(
+        alpha,
+        "T01",
+        ["pool_claim", "task_execute"],
+        identity_states=["PROVISIONAL", "PROVISIONAL"],
+        identity_prompt_injected=[True, True],
+    )
+    _write_raw_ticks(
+        beta,
+        "T01",
+        ["pool_claim", "task_execute"],
+        identity_states=["PROVISIONAL", "PROVISIONAL"],
+        identity_prompt_injected=[True, True],
+    )
+
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_final_metrics(final_metrics)
+    jaccard_rows = [
+        {"task_id": "T01", "agent_a": "alpha", "agent_b": "beta", "flagged": "0"},
+    ]
+
+    scorecard = _build_ii2_scorecard(
+        runs=[("alpha", alpha), ("beta", beta)],
+        final_metrics_csv=final_metrics,
+        jaccard_rows=jaccard_rows,
+    )
+    alpha_row = next(r for r in scorecard["agents"] if r["agent_alias"] == "alpha")
+    observed = alpha_row["metrics_observed"]
+    assert observed["identity_observable_schema_task_ratio"] == 1.0
+    assert observed["identity_state_task_ratio"] == 1.0
+    assert observed["identity_prompt_task_ratio"] == 1.0
+    assert observed["identity_prompt_tick_ratio"] == 1.0
+    assert observed["identity_prompt_llm_task_ratio"] == 1.0
+    assert observed["identity_prompt_llm_tick_ratio"] == 1.0
+    gate = scorecard["gate"]
+    assert gate["observability_warnings"] == []
+
+
+def test_ii2_scorecard_excludes_rules_only_tasks_from_identity_prompt_floor(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setenv("CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED", "true")
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    alpha.mkdir()
+    _write_summary(alpha, completed=60, total=60)
+    _write_raw_ticks(
+        alpha,
+        "T_rules_only",
+        ["pool_claim", "report_blocked"],
+        decision_sources=["rules", "rules"],
+        identity_states=["PROVISIONAL", "PROVISIONAL"],
+        identity_prompt_injected=[False, False],
+    )
+
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_final_metrics(final_metrics)
+
+    scorecard = _build_ii2_scorecard(
+        runs=[("alpha", alpha)],
+        final_metrics_csv=final_metrics,
+        jaccard_rows=[],
+    )
+
+    observed = scorecard["agents"][0]["metrics_observed"]
+    assert observed["identity_prompt_task_ratio"] == 0.0
+    assert observed["identity_prompt_llm_task_ratio"] is None
+    gate = scorecard["gate"]
+    assert gate["observability_warnings"] == []

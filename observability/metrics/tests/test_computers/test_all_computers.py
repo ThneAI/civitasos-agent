@@ -13,7 +13,7 @@ from observability.metrics.computers._loader import TaskRun, TickRow
 
 
 def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
-          gap: float = 0.0, ts: str = "") -> TickRow:
+          gap: float = 0.0, ts: str = "", lessons_count: int = 0) -> TickRow:
     return TickRow(
         run_id="R", agent_id="A", task_id="T",
         tick_seq=seq,
@@ -24,6 +24,7 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
         eval_duration_ms=dur,
         aspect_gap=gap,
         is_wait=(action == "wait"),
+        lessons_count=lessons_count,
     )
 
 
@@ -79,6 +80,24 @@ def test_m2_hit_when_verifier_called() -> None:
     assert m2_verification_miss.compute([t]) == 0.0
 
 
+def test_m2_hit_when_generic_verification_action_called() -> None:
+    t = TaskRun(
+        task_id="V", variant="adversarial",
+        verifier_tools=["manual_check"],
+        ticks=[_tick(1, action="query_reputation"), _tick(2, action="abort")],
+    )
+    assert m2_verification_miss.compute([t]) == 0.0
+
+
+def test_m2_hit_when_get_reputation_called() -> None:
+    t = TaskRun(
+        task_id="V", variant="adversarial",
+        verifier_tools=["manual_check"],
+        ticks=[_tick(1, action="get_reputation"), _tick(2, action="abort")],
+    )
+    assert m2_verification_miss.compute([t]) == 0.0
+
+
 def test_m2_skips_happy_path_tasks() -> None:
     t = TaskRun(
         task_id="H", variant="happy_path",
@@ -126,10 +145,31 @@ def test_m3_no_trigger_returns_none() -> None:
 
 # --- M4 ----------------------------------------------------------------
 
-def test_m4_always_vacant() -> None:
+def test_m4_returns_none_without_eligible_signal() -> None:
     val, notes = m4_lessons_impact.compute([])
     assert val is None
-    assert "H.2" in notes
+    assert "insufficient M4 signal" in notes
+
+
+def test_m4_counts_lessons_growth_on_recovery() -> None:
+    t_ok = TaskRun(
+        task_id="S01",
+        ticks=[
+            _tick(1, success=False, lessons_count=0),
+            _tick(2, success=False, lessons_count=1),
+            _tick(3, success=True, lessons_count=2),
+        ],
+    )
+    t_no = TaskRun(
+        task_id="S02",
+        ticks=[
+            _tick(1, success=False, lessons_count=1),
+            _tick(2, success=True, lessons_count=1),
+        ],
+    )
+    val, notes = m4_lessons_impact.compute([t_ok, t_no])
+    assert val == 0.5
+    assert "eligible task" in notes
 
 
 # --- M5 ----------------------------------------------------------------

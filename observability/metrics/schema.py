@@ -26,8 +26,12 @@ RAW_COLUMNS: tuple[str, ...] = (
     "aspect_gap",
     "peer_trust_avg",
     "balance",
+    "identity_state",
+    "identity_remaining_epochs",
+    "identity_prompt_injected",
     "mode",
     "is_wait",
+    "lessons_count",
     "wait_references_telos",
 )
 
@@ -45,7 +49,7 @@ REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "is_wait",
 })
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.3"
 
 # Truncation for decision_reasoning (post-newline-escape).
 REASONING_MAX_LEN = 500

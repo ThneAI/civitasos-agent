@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -28,6 +27,7 @@ class FakeRunner:
         self._loop = None  # set later to simulate post-start
         self._agent = None
         self._name = "test-agent"
+        self._tools_registered: dict[str, Any] = {}
 
     def rule(self, priority: int = 50, name: str = ""):
         return self._rules.rule(priority=priority, name=name)
@@ -35,6 +35,19 @@ class FakeRunner:
     def on_reflect(self, fn):
         self._on_reflect_fn = fn
         return fn
+
+    def tool(
+        self,
+        *,
+        name: str,
+        description: str = "",
+        requires_conscience: bool = False,
+        estimated_cost: float = 0.0,
+    ):
+        def decorator(fn):
+            self._tools_registered[name] = fn
+            return fn
+        return decorator
 
 
 # ── install_if_present ──────────────────────────────────────────────
@@ -58,6 +71,8 @@ def test_install_registers_rule_at_priority_one(monkeypatch):
     priority, name, _fn = runner._rules.registered[0]
     assert priority == 1, "must beat default rules (priority=10/20/30)"
     assert name == "benchmark_prefer_target_task"
+    assert "report_blocked" in runner._tools_registered
+    assert "abandon" in runner._tools_registered
 
 
 def test_install_skips_rule_when_no_backend_task_id(monkeypatch):
@@ -127,6 +142,110 @@ def test_prefer_target_rule_accepts_id_or_task_id_field(monkeypatch):
     d_tid = rule_fn({"active_tasks": [{"task_id": "backend_42"}]}, {})
     assert d_id is None
     assert d_tid is None
+
+
+def test_prefer_target_rule_emits_verification_probe_once_for_adversarial(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "A01_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_RATE", "1")
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_ACTIONS", "query_reputation")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    d1 = rule_fn(briefing, {})
+    assert d1 is not None
+    # query_reputation is coerced to get_reputation in benchmark mode.
+    assert d1.action == "get_reputation"
+    assert d1.params["agent_id"] == "did:poster"
+
+    # Next tick on same active target falls through to LLM path.
+    d2 = rule_fn(briefing, {})
+    assert d2 is None
+
+
+def test_prefer_target_rule_skips_probe_when_rate_zero(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "A01_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_RATE", "0")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    # Probe disabled -> directly yield to LLM execute path.
+    d1 = rule_fn(briefing, {})
+    assert d1 is None
+
+
+def test_prefer_target_rule_supports_get_reputation_probe(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "A01_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_RATE", "1")
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_ACTIONS", "get_reputation")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    d1 = rule_fn(briefing, {})
+    assert d1 is not None
+    assert d1.action == "get_reputation"
+    assert d1.params["agent_id"] == "did:poster"
+
+
+def test_prefer_target_rule_bridges_resource_blocked_task(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "A02_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    d1 = rule_fn(briefing, {})
+    assert d1 is not None
+    assert d1.action == "report_blocked"
+    assert d1.params["task_id"] == "backend_42"
+
+    # Bridge action only once per target task, then yield to LLM.
+    d2 = rule_fn(briefing, {})
+    assert d2 is None
+
+
+def test_prefer_target_rule_emits_identity_probe_when_enabled(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "R01_happy_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_IDENTITY_PROBE_ENABLED", "1")
+    monkeypatch.setenv("AGENT_CAPABILITIES", "trading,analysis")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    d1 = rule_fn(briefing, {})
+    assert d1 is not None
+    assert d1.action == "identity_probe_market"
+    assert d1.params["task_id"] == "backend_42"
+    assert d1.params["benchmark_task_id"] == "R01_happy_01"
+
+    d2 = rule_fn(briefing, {})
+    assert d2 is None
+
+
+def test_install_registers_identity_probe_bridge_tools(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "R01_happy_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+
+    for tool_name in (
+        "identity_probe_market",
+        "identity_probe_field",
+        "identity_probe_scholar",
+        "identity_probe_general",
+    ):
+        assert tool_name in runner._tools_registered
 
 
 def test_prefer_target_rule_no_reclaim_after_active_disappears(monkeypatch):

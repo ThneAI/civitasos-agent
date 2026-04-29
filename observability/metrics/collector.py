@@ -88,6 +88,8 @@ class CollectorAdapter:
 
         action = getattr(decision, "action", None) if decision else None
         is_wait = action == "wait"
+        lessons_count = self._snapshot_lessons_count()
+        identity = self._snapshot_identity(ctx)
 
         return {
             "run_id": self.run_id,
@@ -117,8 +119,12 @@ class CollectorAdapter:
             "aspect_gap": _num(energy.get("aspect_gap"), default=0.0),
             "peer_trust_avg": _num(energy.get("peer_trust_avg"), default=0.0),
             "balance": _num(energy.get("balance"), default=0.0),
+            "identity_state": str(identity.get("state", "")),
+            "identity_remaining_epochs": _num(identity.get("remaining_epochs")),
+            "identity_prompt_injected": bool_to_csv(identity.get("prompt_injected")),
             "mode": F0_DEFAULT_MODE,
             "is_wait": bool_to_csv(is_wait),
+            "lessons_count": lessons_count,
             "wait_references_telos": bool_to_csv(F0_DEFAULT_WAIT_REFERENCES_TELOS),
         }
 
@@ -131,6 +137,39 @@ class CollectorAdapter:
             "aspect_gap": getattr(state, "aspect_gap", 0.0),
             "peer_trust_avg": getattr(state, "peer_trust_avg", 0.0),
             "balance": getattr(state, "balance", 0.0),
+        }
+
+    def _snapshot_lessons_count(self) -> int:
+        mem = getattr(self._loop, "_memory", None)
+        lessons = None
+        if mem is not None and hasattr(mem, "recall"):
+            try:
+                lessons = mem.recall("lessons_learned")
+            except Exception:
+                logger.debug("CollectorAdapter: memory.recall(lessons_learned) failed")
+        if lessons is None:
+            agent = getattr(self._loop, "_agent", None)
+            if agent is not None and hasattr(agent, "recall"):
+                try:
+                    lessons = agent.recall("lessons_learned")
+                except Exception:
+                    logger.debug("CollectorAdapter: agent.recall(lessons_learned) failed")
+        if isinstance(lessons, list):
+            return len(lessons)
+        return 0
+
+    @staticmethod
+    def _snapshot_identity(ctx: Any) -> dict[str, object]:
+        briefing = getattr(ctx, "briefing", None)
+        if not isinstance(briefing, dict):
+            return {}
+        identity = briefing.get("identity")
+        if not isinstance(identity, dict):
+            identity = {}
+        return {
+            "state": identity.get("state", ""),
+            "remaining_epochs": identity.get("remaining_epochs"),
+            "prompt_injected": briefing.get("_identity_prompt_injected"),
         }
 
 

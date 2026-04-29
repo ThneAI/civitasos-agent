@@ -31,7 +31,7 @@ def _build_minimal_run(tmp_path: Path) -> Path:
                    "noop", "rules", "", "",
                    "true", "ok", "true" if seq == 3 else "", "0.001", "10",
                    "0.1", "0.5", "100.0", "active",
-                   "true" if seq == 2 else "false", "false"]
+                   "true" if seq == 2 else "false", "0", "false"]
             w.writerow(row)
     summary = {
         "run_id": "rid",
@@ -52,9 +52,9 @@ def test_aggregate_real_manifest(tmp_path: Path) -> None:
     assert r.category_id == "R01"
     assert r.targets_disease == "R"
     assert r.task_count == 1
-    # M4 is vacated.
+    # M4 needs fail->success + lessons_count signal; minimal fixture has none.
     assert r.metrics["m4_lessons_impact_rate"] is None
-    assert "H.2" in r.notes
+    assert "insufficient M4 signal" in r.notes
 
 
 def test_write_final_metrics_columns(tmp_path: Path) -> None:

@@ -65,9 +65,20 @@ class BackendTaskState:
 class BackendTaskClient:
     """Orchestrator-side requester client; stateless apart from injected SDK."""
 
-    def __init__(self, sdk: _SDKLike, *, default_capability: str = "general") -> None:
+    def __init__(
+        self,
+        sdk: _SDKLike,
+        *,
+        default_capability: str = "general",
+        create_max_retries: int = 6,
+        create_retry_base_s: float = 0.5,
+        create_retry_max_s: float = 8.0,
+    ) -> None:
         self._sdk = sdk
         self._default_capability = default_capability
+        self._create_max_retries = max(0, int(create_max_retries))
+        self._create_retry_base_s = max(0.0, float(create_retry_base_s))
+        self._create_retry_max_s = max(self._create_retry_base_s, float(create_retry_max_s))
 
     # -- create ---------------------------------------------------------
 
@@ -86,13 +97,32 @@ class BackendTaskClient:
         the SDK raises on backend errors — orchestrator decides retry policy.
         """
         cap = capability or self._default_capability
-        resp = self._sdk.pool_post(
-            required_capability=cap,
-            input_data={"description": briefing},
-            reward=reward,
-            deadline_secs=deadline_secs,
-            allowed_agents=[target_agent_id],
-        )
+        resp: dict[str, Any] | Any
+        for attempt in range(self._create_max_retries + 1):
+            try:
+                resp = self._sdk.pool_post(
+                    required_capability=cap,
+                    input_data={"description": briefing},
+                    reward=reward,
+                    deadline_secs=deadline_secs,
+                    allowed_agents=[target_agent_id],
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= self._create_max_retries or not _is_rate_limited(exc):
+                    raise
+                backoff_s = min(
+                    self._create_retry_max_s,
+                    self._create_retry_base_s * (2 ** attempt),
+                )
+                logger.warning(
+                    "pool_post rate-limited (attempt %d/%d), retry in %.1fs: %s",
+                    attempt + 1,
+                    self._create_max_retries + 1,
+                    backoff_s,
+                    exc,
+                )
+                time.sleep(backoff_s)
         # Backend serializes as {"task_id": "..."}; some test fakes may wrap.
         if not isinstance(resp, dict):
             raise ValueError(f"pool_post returned non-dict: {type(resp).__name__}")
@@ -224,3 +254,12 @@ def state_to_sentinel(state: BackendTaskState) -> tuple[str, str]:
     if s == "Cancelled":
         return "give_up", "backend status=Cancelled"
     raise ValueError(f"state_to_sentinel called on non-terminal state: {s}")
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    """Best-effort check for backend 429 responses."""
+    status_code = int(getattr(exc, "status_code", 0) or 0)
+    if status_code == 429:
+        return True
+    msg = str(exc).lower()
+    return "http 429" in msg or "rate limit" in msg

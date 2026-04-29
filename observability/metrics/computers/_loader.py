@@ -21,6 +21,7 @@ class TickRow:
     eval_duration_ms: int | None
     aspect_gap: float
     is_wait: bool
+    lessons_count: int
 
 
 @dataclass
@@ -65,13 +66,17 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 eval_duration_ms=_optint(raw.get("eval_duration_ms")),
                 aspect_gap=_float(raw.get("aspect_gap"), 0.0),
                 is_wait=_optbool(raw.get("is_wait")) or False,
+                lessons_count=_int(raw.get("lessons_count"), 0),
             )
 
 
 def _int(s: str | None, default: int) -> int:
     if s is None or s == "":
         return default
-    return int(s)
+    try:
+        return int(s)
+    except ValueError:
+        return default
 
 
 def _optint(s: str | None) -> int | None:

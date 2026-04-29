@@ -1,9 +1,11 @@
-# Raw Tick CSV Schema — F.0.a v1.1
+# Raw Tick CSV Schema — F.0.a v1.3
 # 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
 # v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
+# v1.2 变更：新增 lessons_count（每 tick 可见 lessons 数）支持 M4 可计算化。
+# v1.3 变更：新增 institutional identity 观测列（identity_state / remaining_epochs / prompt_injected）。
 
-schema_version: "1.1"
+schema_version: "1.3"
 artifact: "raw_tick"
 
 columns:
@@ -107,6 +109,22 @@ columns:
     required: true
     source: EnergyState.balance
 
+  - name: identity_state
+    type: enum
+    required: false
+    values: [UNKNOWN, PROVISIONAL, CIVITAS_IDENTITY, LIQUIDATED]
+    source: "briefing.identity.state（II-1 institutional identity 摘要）"
+
+  - name: identity_remaining_epochs
+    type: int
+    required: false
+    source: "briefing.identity.remaining_epochs（若可计算）"
+
+  - name: identity_prompt_injected
+    type: bool
+    required: false
+    source: "本 tick 是否将 institutional identity 摘要注入 system prompt"
+
   - name: mode
     type: enum
     required: false
@@ -118,6 +136,11 @@ columns:
     required: true
     source: Decision.action == "wait"
 
+  - name: lessons_count
+    type: int
+    required: false
+    source: "本地/远程 memory 中 lessons_learned 的长度快照（每 tick 采样）"
+
   - name: wait_references_telos
     type: bool
     required: false
@@ -127,7 +150,7 @@ columns:
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.1"
+  schema_version: "1.3"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
@@ -146,7 +169,7 @@ final_metrics:
        constraint: '0.0 <= x <= 1.0',
        note: '阈值 θ=0.7、窗宽 N=3、Jaccard<0.5 为 F.0 经验值，F.1 后校准'}
     - {name: m4_lessons_impact_rate, type: float, required: false, nullable: true,
-       note: 'F.0 阶段固定 null + notes="pending H.2"（civitasos_runtime 当前无 lessons 数据结构）'}
+       note: 'H.2-lite：基于 raw tick 的 lessons_count + fail→success 恢复计算；无可计算样本时保持 null'}
     - {name: m5_tick_latency_p50_ms, type: float, required: true,
        note: 'per-tick 层，Evaluation.duration_ms 的 P50'}
     - {name: m5_tick_latency_p95_ms, type: float, required: true}

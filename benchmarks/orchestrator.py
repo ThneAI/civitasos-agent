@@ -54,6 +54,8 @@ SENTINEL_TO_EXIT = {
 
 _CLAIM_SPIN_GRACE_TICKS_DEFAULT = 10
 _CLAIM_SPIN_WINDOW_DEFAULT = 5
+_IDENTITY_PROBE_GRACE_TICKS_DEFAULT = 2
+_ORCH_BOOTSTRAP_AUTH_AGENT_ID = "f1c_orchestrator_bootstrap"
 
 # F.1.b backend-mode flag values.
 BACKEND_MODE_LEGACY_FAKE = "legacy-fake"   # F.0 path: BENCHMARK_BRIEFING_FILE, agent writes sentinel
@@ -281,13 +283,7 @@ class Orchestrator:
             return False
 
     def _rotate_orchestrator_identity(self) -> None:
-        """Generate a fresh orchestrator key and re-quickstart for a 990-CIV grant.
-
-        Backend `a2a_quickstart` grants ~990 usable CIV per fresh DID. When the
-        active orchestrator wallet drains (HTTP 402 from `/pool/post`), rotate
-        to a brand-new identity to keep the run flowing. The drained key is
-        archived next to the active one for audit (`<name>.drained-<ts>`).
-        """
+        """Generate a fresh orchestrator key and re-register it for continued escrow."""
         from civitasos import CivitasAgent  # type: ignore[import-not-found]
         from pathlib import Path as _P
 
@@ -306,25 +302,26 @@ class Orchestrator:
 
         sdk = CivitasAgent(base_url=cfg.backend_url)
         sdk.generate_keys()  # type: ignore[attr-defined]
-        _bootstrap_demo_jwt(sdk, cfg.backend_url, unique_name := f"{cfg.orch_agent_name}-r{int(time.time())}")
+        unique_name = f"{cfg.orch_agent_name}-r{int(time.time())}"
+        bootstrap_id = (
+            _ORCH_BOOTSTRAP_AUTH_AGENT_ID
+            if _institutional_identity_enabled()
+            else unique_name
+        )
+        _bootstrap_demo_jwt(sdk, cfg.backend_url, bootstrap_id)
+        did = _register_orchestrator_identity(
+            sdk,
+            backend_url=cfg.backend_url,
+            name=unique_name,
+            alias=unique_name,
+            description="F.1.c benchmark orchestrator (rotated identity)",
+        )
         if old_path is not None:
             old_path.parent.mkdir(parents=True, exist_ok=True)
             sdk.save_identity(str(old_path))  # type: ignore[attr-defined]
-        # Quickstart with a unique alias so we don't collide with the drained
-        # identity's alias (backend rejects alias re-binding to a new DID).
-        try:
-            sdk.a2a_quickstart(  # type: ignore[attr-defined]
-                name=unique_name,
-                endpoint=f"http://localhost:0/{unique_name}",
-                description="F.1.c benchmark orchestrator (rotated identity)",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[orch-rotate] a2a_quickstart failed for fresh identity: %s", exc
-            )
         logger.info(
             "[orch-rotate] new orchestrator agent_id=%s",
-            getattr(sdk, "_agent_id", None),
+            did,
         )
         # Swap the SDK inside the existing BackendTaskClient.
         cfg.backend_client._sdk = sdk  # type: ignore[attr-defined]
@@ -438,8 +435,14 @@ class Orchestrator:
             _CLAIM_SPIN_WINDOW_DEFAULT,
             min_value=2,
         )
+        identity_probe_grace_ticks = _env_int(
+            "BENCHMARK_IDENTITY_PROBE_GRACE_TICKS",
+            _IDENTITY_PROBE_GRACE_TICKS_DEFAULT,
+            min_value=0,
+        )
         tick_limit_budget = task.max_ticks
         claim_spin_grace_used = False
+        identity_probe_grace_used = False
         t0 = time.monotonic()
         sentinel_kind: str | None = None
         sentinel_reason = ""
@@ -471,6 +474,26 @@ class Orchestrator:
             # 3) tick limit
             tick_seq = _tail_tick_seq(raw_csv)
             if tick_seq >= tick_limit_budget:
+                if (
+                    not identity_probe_grace_used
+                    and identity_probe_grace_ticks > 0
+                ):
+                    eligible, reason = self._can_grant_identity_probe_grace(
+                        backend_task_id=backend_task_id,
+                        raw_csv=raw_csv,
+                    )
+                    if eligible:
+                        identity_probe_grace_used = True
+                        prev = tick_limit_budget
+                        tick_limit_budget += identity_probe_grace_ticks
+                        logger.warning(
+                            "[orch-identity-grace] task=%s extending tick limit %d -> %d (%s)",
+                            task.id,
+                            prev,
+                            tick_limit_budget,
+                            reason,
+                        )
+                        continue
                 if (
                     not claim_spin_grace_used
                     and claim_spin_grace_ticks > 0
@@ -605,8 +628,14 @@ class Orchestrator:
             _CLAIM_SPIN_WINDOW_DEFAULT,
             min_value=2,
         )
+        identity_probe_grace_ticks = _env_int(
+            "BENCHMARK_IDENTITY_PROBE_GRACE_TICKS",
+            _IDENTITY_PROBE_GRACE_TICKS_DEFAULT,
+            min_value=0,
+        )
         tick_limit_budget = task.max_ticks
         claim_spin_grace_used = False
+        identity_probe_grace_used = False
 
         cmd = shlex.split(self._cfg.agent_command)
         t0 = time.monotonic()
@@ -657,6 +686,27 @@ class Orchestrator:
                 # 3. tick limit
                 tick_seq = _tail_tick_seq(raw_csv)
                 if tick_seq >= tick_limit_budget:
+                    if (
+                        not identity_probe_grace_used
+                        and backend_task_id is not None
+                        and identity_probe_grace_ticks > 0
+                    ):
+                        eligible, reason = self._can_grant_identity_probe_grace(
+                            backend_task_id=backend_task_id,
+                            raw_csv=raw_csv,
+                        )
+                        if eligible:
+                            identity_probe_grace_used = True
+                            prev = tick_limit_budget
+                            tick_limit_budget += identity_probe_grace_ticks
+                            logger.warning(
+                                "[orch-identity-grace] task=%s extending tick limit %d -> %d (%s)",
+                                task.id,
+                                prev,
+                                tick_limit_budget,
+                                reason,
+                            )
+                            continue
                     if (
                         not claim_spin_grace_used
                         and backend_task_id is not None
@@ -781,6 +831,27 @@ class Orchestrator:
         if state.status != "Open":
             return False, f"backend status={state.status}"
         return True, "backend status=Open with sustained pool_claim retries"
+
+    def _can_grant_identity_probe_grace(
+        self,
+        *,
+        backend_task_id: str,
+        raw_csv: Path,
+    ) -> tuple[bool, str]:
+        """Allow one tiny extension when an identity probe consumed the last tick."""
+        client = self._cfg.backend_client
+        if client is None:
+            return False, "backend client unavailable"
+        last_action = _tail_last_action(raw_csv)
+        if not last_action.startswith("identity_probe_"):
+            return False, f"last action is {last_action or 'none'}"
+        try:
+            state = client.get_state(backend_task_id)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"cannot read backend state: {exc}"
+        if state.status != "Claimed":
+            return False, f"backend status={state.status}"
+        return True, f"backend status=Claimed after {last_action}"
 
     @staticmethod
     def _materialise_sentinel(sentinel_dir: Path, kind: str, reason: str) -> None:
@@ -911,6 +982,22 @@ def _csv_row_count(csv_path: Path) -> int:
         return max(0, sum(1 for _ in fh) - 1)  # subtract header
 
 
+def _tail_last_action(csv_path: Path) -> str:
+    if not csv_path.exists():
+        return ""
+    last_action = ""
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                action = str(row.get("decision_action", "")).strip()
+                if action:
+                    last_action = action
+    except OSError:
+        return ""
+    return last_action
+
+
 def _tail_actions_all_pool_claim(csv_path: Path, *, window: int) -> bool:
     """True iff the last `window` rows are all pool_claim with non-success eval."""
     if window <= 0:
@@ -1020,6 +1107,87 @@ def _bootstrap_demo_jwt(sdk: Any, backend_url: str, agent_id: str) -> bool:
         return False
 
 
+def _institutional_identity_enabled() -> bool:
+    return os.getenv("CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _resolve_birth_sponsor() -> str:
+    for key in ("BENCHMARK_BIRTH_SPONSOR", "CIVITASOS_BIRTH_SPONSOR"):
+        sponsor = os.getenv(key, "").strip()
+        if sponsor:
+            return sponsor
+    return "@guardian"
+
+
+def _register_orchestrator_identity(
+    sdk: Any,
+    *,
+    backend_url: str,
+    name: str,
+    alias: str,
+    description: str,
+) -> str:
+    """Register the requester/orchestrator identity and return its DID."""
+    endpoint = f"http://localhost:0/{alias}"
+    if _institutional_identity_enabled():
+        public_key = getattr(sdk, "public_key_hex", None)
+        if not public_key:
+            raise RuntimeError("orchestrator identity missing public_key_hex")
+        payload: dict[str, Any] = {
+            "public_key": public_key,
+            "name": name,
+            "alias": alias,
+            "endpoint": endpoint,
+            "description": description,
+            "sponsor": _resolve_birth_sponsor(),
+            "intent": "F.1.c benchmark requester registration",
+            "stake": int(os.getenv("BENCHMARK_BIRTH_STAKE", "100")),
+            "capabilities": [
+                {
+                    "id": "requester",
+                    "name": "Requester",
+                    "description": "Benchmark requester/orchestrator identity",
+                    "input_schema": None,
+                    "output_schema": None,
+                }
+            ],
+            "obligations": ["fund_assigned_tasks"],
+        }
+        incubation_epochs_raw = os.getenv("BENCHMARK_BIRTH_INCUBATION_EPOCHS", "").strip()
+        if incubation_epochs_raw:
+            payload["incubation_epochs"] = int(incubation_epochs_raw)
+        resp = sdk._post("/agents/birth-proposal", payload)  # type: ignore[attr-defined]
+        if not getattr(resp, "success", False):
+            msg = getattr(resp, "error", None) or "birth-proposal failed"
+            hint = getattr(resp, "hint", None)
+            if hint:
+                msg = f"{msg} (hint: {hint})"
+            raise RuntimeError(str(msg))
+        data = getattr(resp, "data", None) or {}
+        agent = data.get("agent", {}) if isinstance(data, dict) else {}
+        did = agent.get("did") or data.get("did")
+        if not did:
+            raise RuntimeError(f"birth-proposal response missing did: {data!r}")
+        sdk._agent_id = str(did)  # type: ignore[attr-defined]
+        _bootstrap_demo_jwt(sdk, backend_url, str(did))
+        return str(did)
+
+    sdk.a2a_quickstart(  # type: ignore[attr-defined]
+        name=name,
+        endpoint=endpoint,
+        description=description,
+    )
+    did = getattr(sdk, "_agent_id", None)
+    if not did:
+        raise RuntimeError("a2a_quickstart did not populate agent_id")
+    _bootstrap_demo_jwt(sdk, backend_url, str(did))
+    return str(did)
+
+
 def _build_backend_client(
     *, backend_url: str, orch_agent_id: str | None, orch_agent_name: str,
     orch_identity_path: str | None = None,
@@ -1035,35 +1203,65 @@ def _build_backend_client(
     from civitasos import CivitasAgent  # type: ignore[import-not-found]
 
     sdk = CivitasAgent(base_url=backend_url)
+    identity_path_obj: Path | None = None
+    loaded_registered_identity = False
     # Persistent identity → idempotent DID across orchestrator restarts.
     if orch_identity_path:
-        from pathlib import Path as _P
-        p = _P(orch_identity_path)
-        if p.exists():
-            sdk.load_identity(str(p))  # type: ignore[attr-defined]
+        identity_path_obj = Path(orch_identity_path)
+        if identity_path_obj.exists():
+            sdk.load_identity(str(identity_path_obj))  # type: ignore[attr-defined]
+            loaded_registered_identity = bool(getattr(sdk, "_agent_id", None))
         else:
             sdk.generate_keys()  # type: ignore[attr-defined]
-            p.parent.mkdir(parents=True, exist_ok=True)
-            sdk.save_identity(str(p))  # type: ignore[attr-defined]
+            identity_path_obj.parent.mkdir(parents=True, exist_ok=True)
     else:
         sdk.generate_keys()  # type: ignore[attr-defined]
 
-    _bootstrap_demo_jwt(
-        sdk,
-        backend_url,
-        orch_agent_id or getattr(sdk, "_agent_id", None) or orch_agent_name,
-    )
-
-    try:
-        sdk.a2a_quickstart(  # type: ignore[attr-defined]
-            name=orch_agent_name,
-            endpoint=f"http://localhost:0/{orch_agent_name}",
-            description="F.1.c benchmark orchestrator (requester role)",
+    if loaded_registered_identity:
+        _bootstrap_demo_jwt(sdk, backend_url, str(getattr(sdk, "_agent_id", "")))
+        logger.info("orchestrator identity reused did=%s", getattr(sdk, "_agent_id", None))
+    else:
+        bootstrap_id = (
+            orch_agent_id
+            or getattr(sdk, "_agent_id", None)
+            or (
+                _ORCH_BOOTSTRAP_AUTH_AGENT_ID
+                if _institutional_identity_enabled()
+                else orch_agent_name
+            )
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("orchestrator a2a_quickstart failed (may already exist): %s", exc)
-    if not sdk._agent_id and orch_agent_id:  # type: ignore[attr-defined]
-        sdk._agent_id = orch_agent_id  # type: ignore[attr-defined]
+        _bootstrap_demo_jwt(sdk, backend_url, str(bootstrap_id))
+
+        try:
+            did = _register_orchestrator_identity(
+                sdk,
+                backend_url=backend_url,
+                name=orch_agent_name,
+                alias=orch_agent_name,
+                description="F.1.c benchmark orchestrator (requester role)",
+            )
+            logger.info("orchestrator registered did=%s", did)
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc)
+            if "already registered to did" in msg.lower():
+                unique_name = f"{orch_agent_name}-r{int(time.time())}"
+                did = _register_orchestrator_identity(
+                    sdk,
+                    backend_url=backend_url,
+                    name=unique_name,
+                    alias=unique_name,
+                    description="F.1.c benchmark orchestrator (requester role, rotated alias)",
+                )
+                logger.info(
+                    "orchestrator alias %s conflicted; registered unique alias did=%s",
+                    orch_agent_name,
+                    did,
+                )
+            else:
+                raise RuntimeError(f"orchestrator registration failed: {exc}") from exc
+
+    if identity_path_obj is not None:
+        sdk.save_identity(str(identity_path_obj))  # type: ignore[attr-defined]
     logger.info("orchestrator agent_id=%s", sdk._agent_id)  # type: ignore[attr-defined]
     return BackendTaskClient(sdk)
 

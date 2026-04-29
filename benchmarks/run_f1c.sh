@@ -36,9 +36,14 @@ AGENT_IDS_FILE="$RUNS_ROOT/agent_ids.json"
 #                              because it answers more concisely after thinking)
 #   BENCHMARK_TICK_INTERVAL_S=0.1  → inter-tick sleep (default ACTIVE=10s)
 #   BENCHMARK_IDLE_INTERVAL_S=1.0  → inter-tick sleep when IDLE (default 45s)
+#   BENCHMARK_IDENTITY_PROBE_ENABLED=1 → emit one capability-differentiated
+#                             bridge action before LLM execute so short happy
+#                             path tasks remain inter-agent observable
 export LLM_DISABLE_THINKING="${LLM_DISABLE_THINKING:-0}"
 export BENCHMARK_TICK_INTERVAL_S="${BENCHMARK_TICK_INTERVAL_S:-0.1}"
 export BENCHMARK_IDLE_INTERVAL_S="${BENCHMARK_IDLE_INTERVAL_S:-1.0}"
+export BENCHMARK_IDENTITY_PROBE_ENABLED="${BENCHMARK_IDENTITY_PROBE_ENABLED:-1}"
+export BENCHMARK_IDENTITY_PROBE_GRACE_TICKS="${BENCHMARK_IDENTITY_PROBE_GRACE_TICKS:-2}"
 
 # Smoke knobs
 SMOKE="${SMOKE:-0}"

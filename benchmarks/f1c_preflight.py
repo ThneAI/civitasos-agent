@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger("f1c_preflight")
+_AUTH_TOKEN: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,24 +76,72 @@ def _institutional_identity_enabled() -> bool:
     }
 
 
-def _post_json(url: str, payload: dict) -> dict:
-    data = json.dumps(payload).encode("utf-8")
+def _url_origin(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.scheme or not parsed.netloc:
+        raise RuntimeError(f"invalid URL: {url}")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _bootstrap_demo_jwt(base_url: str) -> None:
+    global _AUTH_TOKEN
+    if _AUTH_TOKEN:
+        return
+    payload = {"agent_id": os.getenv("BENCHMARK_PREFLIGHT_AGENT_ID", "f1c_preflight")}
     req = urllib.request.Request(
-        url,
-        data=data,
+        f"{base_url}/api/v1/auth/demo-login",
+        data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        body = resp.read().decode("utf-8")
-    return json.loads(body) if body else {}
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("demo-login bootstrap failed: %s", exc)
+        return
+    body = json.loads(raw) if raw else {}
+    token = body.get("token") or body.get("data", {}).get("token")
+    if token:
+        _AUTH_TOKEN = str(token)
+        logger.info("preflight auth token bootstrapped via demo-login")
+
+
+def _request_json(url: str, *, method: str, payload: dict | None = None) -> dict:
+    global _AUTH_TOKEN
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+
+    def _build_request() -> urllib.request.Request:
+        headers: dict[str, str] = {}
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        if _AUTH_TOKEN:
+            headers["Authorization"] = f"Bearer {_AUTH_TOKEN}"
+        return urllib.request.Request(url, data=body, headers=headers, method=method)
+
+    req = _build_request()
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            raise
+        _bootstrap_demo_jwt(_url_origin(url))
+        if not _AUTH_TOKEN:
+            raise
+        retry_req = _build_request()
+        with urllib.request.urlopen(retry_req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def _post_json(url: str, payload: dict) -> dict:
+    return _request_json(url, method="POST", payload=payload)
 
 
 def _get_json(url: str) -> dict:
-    req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        body = resp.read().decode("utf-8")
-    return json.loads(body) if body else {}
+    return _request_json(url, method="GET")
 
 
 def _resolve_birth_sponsor() -> str:
@@ -189,6 +238,9 @@ def _birth_proposal(
         ],
         "obligations": ["complete_assigned_tasks"],
     }
+    incubation_epochs_raw = os.getenv("BENCHMARK_BIRTH_INCUBATION_EPOCHS", "").strip()
+    if incubation_epochs_raw:
+        payload["incubation_epochs"] = int(incubation_epochs_raw)
     try:
         resp = _post_json(f"{backend_url}/api/v1/agents/birth-proposal", payload)
     except urllib.error.HTTPError as exc:

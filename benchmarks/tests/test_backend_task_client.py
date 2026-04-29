@@ -66,6 +66,12 @@ class FakeSDK:
         raise AssertionError(f"task {task_id} not found")
 
 
+class RateLimitError(RuntimeError):
+    def __init__(self, message: str = "HTTP 429: rate limit exceeded") -> None:
+        super().__init__(message)
+        self.status_code = 429
+
+
 # ── create ───────────────────────────────────────────────────────────
 
 def test_create_passes_allowed_agents_and_returns_task_id():
@@ -104,6 +110,42 @@ def test_create_raises_when_response_missing_id():
             return {}
     with pytest.raises(ValueError, match="task_id"):
         BackendTaskClient(BrokenSDK()).create(briefing="x", target_agent_id="a")
+
+
+def test_create_retries_when_pool_post_is_rate_limited(monkeypatch):
+    calls = {"n": 0}
+
+    class RetrySDK(FakeSDK):
+        def pool_post(self, **kwargs):  # type: ignore[override]
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RateLimitError()
+            return super().pool_post(**kwargs)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(float(s)))
+
+    client = BackendTaskClient(
+        RetrySDK(),
+        create_max_retries=4,
+        create_retry_base_s=0.01,
+        create_retry_max_s=0.02,
+    )
+    tid = client.create(briefing="x", target_agent_id="a")
+    assert tid == "task_1"
+    assert calls["n"] == 3
+    assert sleeps == [0.01, 0.02]
+
+
+def test_create_raises_after_rate_limit_retry_exhausted(monkeypatch):
+    class AlwaysRateLimitSDK(FakeSDK):
+        def pool_post(self, **kwargs):  # type: ignore[override]
+            raise RateLimitError()
+
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    client = BackendTaskClient(AlwaysRateLimitSDK(), create_max_retries=2, create_retry_base_s=0.01)
+    with pytest.raises(RateLimitError):
+        client.create(briefing="x", target_agent_id="a")
 
 
 # ── get_state ────────────────────────────────────────────────────────
