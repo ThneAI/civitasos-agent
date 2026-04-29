@@ -19,6 +19,8 @@ class FakeSDK:
     def __init__(self) -> None:
         self.tasks: list[dict[str, Any]] = []
         self.post_calls: list[dict[str, Any]] = []
+        self.get_task_calls: list[str] = []
+        self.failures_calls: list[dict[str, Any]] = []
         self.confirm_calls: list[str] = []
         self.fail_calls: list[str] = []
         self._next_id = 1
@@ -43,6 +45,38 @@ class FakeSDK:
         if self.list_wrap:
             return {"tasks": list(self.tasks)}
         return list(self.tasks)
+
+    def pool_get_task(self, task_id: str) -> dict[str, Any]:
+        self.get_task_calls.append(task_id)
+        for task in self.tasks:
+            if task["id"] == task_id:
+                return dict(task)
+        raise LookupError(task_id)
+
+    def pool_failures(
+        self,
+        agent_id: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        self.failures_calls.append({"agent_id": agent_id, "since": since, "limit": limit})
+        failures = []
+        for task in self.tasks:
+            if not task.get("failed_at"):
+                continue
+            if agent_id and task.get("claimed_by") != agent_id:
+                continue
+            failures.append({
+                "task_id": task["id"],
+                "agent_id": task.get("claimed_by"),
+                "failed_at": task.get("failed_at"),
+                "failure_reason": task.get("failure_reason"),
+            })
+        return {
+            "failures": failures[:limit],
+            "total": len(failures),
+            "returned": len(failures[:limit]),
+        }
 
     def pool_confirm(self, task_id: str) -> dict[str, Any]:
         if self.confirm_should_raise:
@@ -158,6 +192,7 @@ def test_get_state_returns_state_for_listed_task():
     assert state.task_id == tid
     assert state.status == "Open"
     assert not state.is_terminal
+    assert sdk.get_task_calls == [tid]
 
 
 def test_get_state_handles_dict_wrap():
@@ -183,6 +218,38 @@ def test_get_state_terminal_flag():
     state = client.get_state(tid)
     assert state.is_terminal
     assert state.output == "result"
+
+
+def test_get_state_exposes_g1_challenge_and_failure_fields():
+    sdk = FakeSDK()
+    client = BackendTaskClient(sdk)
+    tid = client.create(briefing="x", target_agent_id="a")
+    sdk.tasks[0]["status"] = "Delivered"
+    sdk.tasks[0]["challenge_deadline_at"] = "2026-04-29T12:00:00Z"
+    sdk.tasks[0]["failure_reason"] = None
+    state = client.get_state(tid)
+    assert state.challenge_deadline_at == "2026-04-29T12:00:00Z"
+    assert state.failure_reason is None
+
+
+def test_get_failure_events_reads_g1_failure_index():
+    sdk = FakeSDK()
+    client = BackendTaskClient(sdk)
+    tid = client.create(briefing="x", target_agent_id="a")
+    sdk.tasks[0].update({
+        "status": "Failed",
+        "claimed_by": "worker-1",
+        "failed_at": "2026-04-29T12:01:00Z",
+        "failure_reason": "worker_failed",
+    })
+    events = client.get_failure_events(agent_id="worker-1", since="0", limit=10)
+    assert events == [{
+        "task_id": tid,
+        "agent_id": "worker-1",
+        "failed_at": "2026-04-29T12:01:00Z",
+        "failure_reason": "worker_failed",
+    }]
+    assert sdk.failures_calls == [{"agent_id": "worker-1", "since": "0", "limit": 10}]
 
 
 # ── wait_terminal ────────────────────────────────────────────────────

@@ -43,6 +43,15 @@ class _SDKLike(Protocol):
 
     def pool_list(self) -> list[dict[str, Any]] | dict[str, Any]: ...
 
+    def pool_get_task(self, task_id: str) -> dict[str, Any]: ...
+
+    def pool_failures(
+        self,
+        agent_id: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]: ...
+
     def pool_confirm(self, task_id: str) -> dict[str, Any]: ...
 
     def pool_fail(self, task_id: str) -> dict[str, Any]: ...
@@ -60,6 +69,14 @@ class BackendTaskState:
     @property
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_STATES
+
+    @property
+    def challenge_deadline_at(self) -> Any | None:
+        return self.raw.get("challenge_deadline_at")
+
+    @property
+    def failure_reason(self) -> Any | None:
+        return self.raw.get("failure_reason")
 
 
 class BackendTaskClient:
@@ -140,6 +157,21 @@ class BackendTaskClient:
         shows pressure under F.1.c (3 agents × 60 tasks) the G-stage backlog
         item ``pool_get_task(task_id)`` will replace this.
         """
+        pool_get_task = getattr(self._sdk, "pool_get_task", None)
+        if callable(pool_get_task):
+            try:
+                rec = pool_get_task(task_id)
+                if isinstance(rec, dict):
+                    return self._state_from_record(task_id, rec)
+            except LookupError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "pool_get_task(%s) failed; falling back to pool_list: %s",
+                    task_id,
+                    exc,
+                )
+
         records = self._sdk.pool_list()
         # SDK returns either bare list or {"tasks": [...]}; tolerate both.
         if isinstance(records, dict):
@@ -152,13 +184,40 @@ class BackendTaskClient:
             if not isinstance(rec, dict):
                 continue
             if rec.get("id") == task_id or rec.get("task_id") == task_id:
-                return BackendTaskState(
-                    task_id=task_id,
-                    status=str(rec.get("status", "Unknown")),
-                    output=rec.get("output"),
-                    raw=rec,
-                )
+                return self._state_from_record(task_id, rec)
         raise LookupError(f"backend task {task_id!r} not present in pool_list")
+
+    @staticmethod
+    def _state_from_record(task_id: str, rec: dict[str, Any]) -> BackendTaskState:
+        return BackendTaskState(
+            task_id=task_id,
+            status=str(rec.get("status", "Unknown")),
+            output=rec.get("output"),
+            raw=rec,
+        )
+
+    def get_failure_events(
+        self,
+        *,
+        agent_id: str | None = None,
+        since: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Read the G.1 failure-time index via the SDK."""
+        pool_failures = getattr(self._sdk, "pool_failures", None)
+        if not callable(pool_failures):
+            return []
+        resp = pool_failures(agent_id=agent_id, since=since, limit=limit)
+        if isinstance(resp, list):
+            return [event for event in resp if isinstance(event, dict)]
+        if not isinstance(resp, dict):
+            return []
+        failures = resp.get("failures")
+        if failures is None and isinstance(resp.get("data"), dict):
+            failures = resp["data"].get("failures")
+        if not isinstance(failures, list):
+            return []
+        return [event for event in failures if isinstance(event, dict)]
 
     # -- terminal-state polling ----------------------------------------
 
