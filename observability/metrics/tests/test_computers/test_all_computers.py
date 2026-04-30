@@ -8,12 +8,14 @@ from observability.metrics.computers import (
     m4_lessons_impact,
     m5_reaction_latency,
     m6_wait_ratio,
+    g2_subjective_mode,
 )
 from observability.metrics.computers._loader import TaskRun, TickRow
 
 
 def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
-          gap: float = 0.0, ts: str = "", lessons_count: int = 0) -> TickRow:
+          gap: float = 0.0, ts: str = "", lessons_count: int = 0,
+          llm_mode_request: str = "", llm_mode_selected: bool = False) -> TickRow:
     return TickRow(
         run_id="R", agent_id="A", task_id="T",
         tick_seq=seq,
@@ -25,6 +27,8 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
         aspect_gap=gap,
         is_wait=(action == "wait"),
         lessons_count=lessons_count,
+        llm_mode_request=llm_mode_request,
+        llm_mode_selected=llm_mode_selected,
     )
 
 
@@ -204,3 +208,36 @@ def test_m6_basic_ratio() -> None:
 
 def test_m6_no_ticks_returns_none() -> None:
     assert m6_wait_ratio.compute([]) is None
+
+
+# --- G.2 ---------------------------------------------------------------
+
+def test_g2_subjective_mode_choice_ratios() -> None:
+    t = TaskRun(task_id="T", ticks=[
+        _tick(
+            1,
+            action="wait",
+            llm_mode_request="deep_think",
+            llm_mode_selected=True,
+        ),
+        _tick(
+            2,
+            action="wait",
+            llm_mode_request="waiting",
+            llm_mode_selected=True,
+        ),
+        _tick(3, action="wait"),
+        _tick(4, action="task_execute"),
+    ])
+    out = g2_subjective_mode.compute([t])
+    assert out["g2_mode_choice_observable_ratio"] == 2 / 3
+    assert out["g2_llm_waiting_ratio"] == 0.5
+    assert out["g2_llm_deep_think_ratio"] == 0.5
+
+
+def test_g2_subjective_mode_no_wait_ticks_returns_null_observable_ratio() -> None:
+    t = TaskRun(task_id="T", ticks=[_tick(1, action="task_execute")])
+    out = g2_subjective_mode.compute([t])
+    assert out["g2_mode_choice_observable_ratio"] is None
+    assert out["g2_llm_waiting_ratio"] is None
+    assert out["g2_llm_deep_think_ratio"] is None

@@ -614,7 +614,9 @@ def _row_with_alias(alias: str, agg) -> dict[str, str]:
                    "m3_aspect_gap_response_rate", "m4_lessons_impact_rate",
                    "m5_tick_latency_p50_ms", "m5_tick_latency_p95_ms",
                    "m5_tick_latency_p99_ms", "m5_task_latency_p50_ms",
-                   "m5_task_latency_p95_ms", "m6_wait_ratio"):
+                   "m5_task_latency_p95_ms", "m6_wait_ratio",
+                   "g2_mode_choice_observable_ratio", "g2_llm_waiting_ratio",
+                   "g2_llm_deep_think_ratio"):
             v = agg.metrics.get(col)
             out[col] = "" if v is None else f"{v:.6f}" if isinstance(v, float) else str(v)
         else:

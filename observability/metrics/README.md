@@ -1,7 +1,7 @@
 # Observability Metrics — F.0.a 指标采集器
 
 > **关联文档**: [WISDOM_EVOLUTION_ROADMAP.md](../../../civitasos/doc/plan/WISDOM_EVOLUTION_ROADMAP.md) Gate F.0.a
-> **状态**: DRAFT v1.4 (自审后修订；schema + 接口已定，M4 已切到 H.2-lite 可计算，II-1 identity prompt 与 G.2 subjective-time mode request 已可观测)
+> **状态**: DRAFT v1.5 (自审后修订；schema + 接口已定，M4 已切到 H.2-lite 可计算，II-1 identity prompt 与 G.2 subjective-time mode request 已可观测并可聚合)
 >
 > **v1.1 变更摘要**（自审 RCA 触发）:
 > - M3 操作化：阈值与「行为模式改变」给出可计算定义
@@ -14,6 +14,7 @@
 > - v1.2 新增 `lessons_count` 采集列，M4 从固定 null 升级为 H.2-lite（fail→success + lessons 增长）
 > - v1.3 新增 `identity_state / identity_remaining_epochs / identity_prompt_injected`，用于观测 II-1 institutional identity 是否进入决策面
 > - v1.4 新增 `subjective_lifecycle_stage / subjective_recommended_mode / llm_mode_request / llm_mode_selected`，用于观测 G.2 中 LLM 是否自主选择 `waiting/deep_think`
+> - v1.5 在 final_metrics 新增 `g2_mode_choice_observable_ratio / g2_llm_waiting_ratio / g2_llm_deep_think_ratio`
 
 ---
 
@@ -57,7 +58,8 @@ observability/metrics/
 │   ├── m3_aspect_gap_response.py
 │   ├── m4_lessons_impact.py    # H.2-lite 可计算（无信号时返回 null+notes）
 │   ├── m5_reaction_latency.py  # 输出 per-tick + per-task 双层
-│   └── m6_wait_ratio.py        # F.0 弱化版；H.1 后拆为 idle_thinking + purposeful_wait
+│   ├── m6_wait_ratio.py        # F.0 弱化版；H.1 后拆为 idle_thinking + purposeful_wait
+│   └── g2_subjective_mode.py   # G.2 mode-choice 聚合指标
 └── tests/
     ├── test_schema.py          # schema 字段完备性
     ├── test_collector.py       # adapter 注入与 tick 解析
@@ -104,7 +106,7 @@ observability/metrics/
 | `llm_mode_request` | enum | LLM 显式声明的 `mode_request: waiting/deep_think` | optional |
 | `llm_mode_selected` | bool | 本 tick 是否由 LLM 自主选择 waiting/deep_think | optional |
 
-**Schema 版本**：v1.4。冻结后只允许追加新列，不允许修改/删除。
+**Schema 版本**：v1.5。冻结后只允许追加新列，不允许修改/删除。
 
 ### CSV 转义策略（v1.1 新增）
 
@@ -137,6 +139,9 @@ observability/metrics/
 | `m5_task_latency_p50_ms` | float | per-task 层 |
 | `m5_task_latency_p95_ms` | float | per-task 层 |
 | `m6_wait_ratio` | float | 0~1（F.0 弱化版；H.1 后会拆分） |
+| `g2_mode_choice_observable_ratio` | float \| null | LLM 显式 `mode_request` tick / wait tick |
+| `g2_llm_waiting_ratio` | float \| null | LLM 显式选择 `waiting` / 所有显式 mode_request |
+| `g2_llm_deep_think_ratio` | float \| null | LLM 显式选择 `deep_think` / 所有显式 mode_request |
 | `notes` | string | 特殊情况说明（数据不足、指标空载等） |
 
 ---

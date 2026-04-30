@@ -22,6 +22,11 @@ class TickRow:
     aspect_gap: float
     is_wait: bool
     lessons_count: int
+    mode: str = ""
+    subjective_lifecycle_stage: str = ""
+    subjective_recommended_mode: str = ""
+    llm_mode_request: str = ""
+    llm_mode_selected: bool = False
 
 
 @dataclass
@@ -67,6 +72,11 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 aspect_gap=_float(raw.get("aspect_gap"), 0.0),
                 is_wait=_optbool(raw.get("is_wait")) or False,
                 lessons_count=_int(raw.get("lessons_count"), 0),
+                mode=raw.get("mode", ""),
+                subjective_lifecycle_stage=raw.get("subjective_lifecycle_stage", ""),
+                subjective_recommended_mode=raw.get("subjective_recommended_mode", ""),
+                llm_mode_request=raw.get("llm_mode_request", ""),
+                llm_mode_selected=_optbool(raw.get("llm_mode_selected")) or False,
             )
 
 

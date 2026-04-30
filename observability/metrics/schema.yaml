@@ -1,12 +1,13 @@
-# Raw Tick CSV Schema — F.0.a v1.4
+# Raw Tick CSV Schema — F.0.a v1.5
 # 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
 # v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
 # v1.2 变更：新增 lessons_count（每 tick 可见 lessons 数）支持 M4 可计算化。
 # v1.3 变更：新增 institutional identity 观测列（identity_state / remaining_epochs / prompt_injected）。
 # v1.4 变更：新增 G.2 subjective-time 与 LLM 自主 waiting/deep_think 选择观测列。
+# v1.5 变更：final_metrics 新增 G.2 mode-choice 聚合指标。
 
-schema_version: "1.4"
+schema_version: "1.5"
 artifact: "raw_tick"
 
 columns:
@@ -174,7 +175,7 @@ columns:
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.4"
+  schema_version: "1.5"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
@@ -204,4 +205,13 @@ final_metrics:
     - {name: m6_wait_ratio, type: float, required: true,
        constraint: '0.0 <= x <= 1.0',
        note: 'F.0 弱化版；H.1 后拆分为 idle_thinking_ratio + purposeful_wait_ratio'}
+    - {name: g2_mode_choice_observable_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'G.2：LLM 显式 mode_request tick / wait tick；无 wait tick 时为 null'}
+    - {name: g2_llm_waiting_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'G.2：LLM 显式选择 waiting / 所有显式 mode_request'}
+    - {name: g2_llm_deep_think_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'G.2：LLM 显式选择 deep_think / 所有显式 mode_request'}
     - {name: notes, type: string, required: false}

@@ -23,6 +23,7 @@ from observability.metrics.computers import (
     m4_lessons_impact,
     m5_reaction_latency,
     m6_wait_ratio,
+    g2_subjective_mode,
 )
 from observability.metrics.computers._loader import TaskRun
 
@@ -44,6 +45,9 @@ FINAL_METRIC_COLUMNS: tuple[str, ...] = (
     "m5_task_latency_p50_ms",
     "m5_task_latency_p95_ms",
     "m6_wait_ratio",
+    "g2_mode_choice_observable_ratio",
+    "g2_llm_waiting_ratio",
+    "g2_llm_deep_think_ratio",
     "notes",
 )
 
@@ -103,6 +107,7 @@ def aggregate_run(run_dir: str | Path, manifest: Manifest, *, schema_yaml: str |
         targets_disease = tasks[0].targets_disease
         m4_val, m4_notes = m4_lessons_impact.compute(tasks)
         m5 = m5_reaction_latency.compute(tasks)
+        g2 = g2_subjective_mode.compute(tasks)
         metrics: dict[str, float | None] = {
             "m1_result_deviation_rate": m1_result_deviation.compute(tasks),
             "m2_verification_miss_rate": m2_verification_miss.compute(tasks),
@@ -110,6 +115,7 @@ def aggregate_run(run_dir: str | Path, manifest: Manifest, *, schema_yaml: str |
             "m4_lessons_impact_rate": m4_val,
             **m5,
             "m6_wait_ratio": m6_wait_ratio.compute(tasks),
+            **g2,
         }
         out.append(AggregateRow(
             run_id=run_id,
@@ -142,6 +148,9 @@ def write_final_metrics(rows: Iterable[AggregateRow], out_path: str | Path) -> P
                 _fmt(r.metrics.get("m5_task_latency_p50_ms")),
                 _fmt(r.metrics.get("m5_task_latency_p95_ms")),
                 _fmt(r.metrics.get("m6_wait_ratio")),
+                _fmt(r.metrics.get("g2_mode_choice_observable_ratio")),
+                _fmt(r.metrics.get("g2_llm_waiting_ratio")),
+                _fmt(r.metrics.get("g2_llm_deep_think_ratio")),
                 r.notes,
             ])
     return out
