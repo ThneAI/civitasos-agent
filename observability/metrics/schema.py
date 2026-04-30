@@ -1,6 +1,6 @@
 """Raw Tick CSV schema constants — single source of truth for column order.
 
-Mirrors observability/metrics/schema.yaml v1.1. test_schema.py verifies parity.
+Mirrors observability/metrics/schema.yaml. test_schema.py verifies parity.
 """
 from __future__ import annotations
 
@@ -33,6 +33,10 @@ RAW_COLUMNS: tuple[str, ...] = (
     "is_wait",
     "lessons_count",
     "wait_references_telos",
+    "subjective_lifecycle_stage",
+    "subjective_recommended_mode",
+    "llm_mode_request",
+    "llm_mode_selected",
 )
 
 REQUIRED_COLUMNS: frozenset[str] = frozenset({
@@ -49,7 +53,7 @@ REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "is_wait",
 })
 
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 
 # Truncation for decision_reasoning (post-newline-escape).
 REASONING_MAX_LEN = 500

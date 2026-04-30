@@ -16,6 +16,7 @@ def _make_loop(
     peer_trust_avg: float = 0.5,
     balance: float = 100.0,
     lessons_count: int = 0,
+    mode: str = "active",
 ):
     state = SimpleNamespace(
         aspect_gap=aspect_gap, peer_trust_avg=peer_trust_avg, balance=balance,
@@ -23,7 +24,7 @@ def _make_loop(
     energy = SimpleNamespace(state=state)
     lessons = [{} for _ in range(lessons_count)]
     memory = SimpleNamespace(recall=lambda key: lessons if key == "lessons_learned" else None)
-    return SimpleNamespace(_energy=energy, _memory=memory)
+    return SimpleNamespace(_energy=energy, _memory=memory, mode=SimpleNamespace(value=mode))
 
 
 def _make_ctx(
@@ -150,3 +151,30 @@ def test_identity_snapshot_used(tmp_path: Path) -> None:
     assert row["identity_state"] == "PROVISIONAL"
     assert row["identity_remaining_epochs"] == "2"
     assert row["identity_prompt_injected"] == "true"
+
+
+def test_subjective_time_snapshot_used(tmp_path: Path) -> None:
+    csv_path = tmp_path / "T.csv"
+    briefing = {
+        "subjective_time": {
+            "lifecycle_stage": "mature",
+            "recommended_mode": "deep_think",
+            "llm_mode_request": "deep_think",
+            "llm_mode_selected": True,
+        }
+    }
+    with RawWriter(csv_path) as writer:
+        adapter = CollectorAdapter(
+            run_id="R",
+            agent_id="A",
+            loop=_make_loop(mode="deep_think"),
+            writer=writer,
+        )
+        adapter.bind_task("T")
+        adapter(_make_ctx(action="wait", briefing=briefing))
+    row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
+    assert row["mode"] == "deep_think"
+    assert row["subjective_lifecycle_stage"] == "mature"
+    assert row["subjective_recommended_mode"] == "deep_think"
+    assert row["llm_mode_request"] == "deep_think"
+    assert row["llm_mode_selected"] == "true"

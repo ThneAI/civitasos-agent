@@ -11,7 +11,6 @@ import logging
 from typing import Any
 
 from .schema import (
-    F0_DEFAULT_MODE,
     F0_DEFAULT_WAIT_REFERENCES_TELOS,
     bool_to_csv,
     escape_reasoning,
@@ -90,6 +89,7 @@ class CollectorAdapter:
         is_wait = action == "wait"
         lessons_count = self._snapshot_lessons_count()
         identity = self._snapshot_identity(ctx)
+        subjective_time = self._snapshot_subjective_time(ctx)
 
         return {
             "run_id": self.run_id,
@@ -119,13 +119,17 @@ class CollectorAdapter:
             "aspect_gap": _num(energy.get("aspect_gap"), default=0.0),
             "peer_trust_avg": _num(energy.get("peer_trust_avg"), default=0.0),
             "balance": _num(energy.get("balance"), default=0.0),
-            "identity_state": str(identity.get("state", "")),
+            "identity_state": _text(identity.get("state")),
             "identity_remaining_epochs": _num(identity.get("remaining_epochs")),
             "identity_prompt_injected": bool_to_csv(identity.get("prompt_injected")),
-            "mode": F0_DEFAULT_MODE,
+            "mode": self._snapshot_mode(),
             "is_wait": bool_to_csv(is_wait),
             "lessons_count": lessons_count,
             "wait_references_telos": bool_to_csv(F0_DEFAULT_WAIT_REFERENCES_TELOS),
+            "subjective_lifecycle_stage": _text(subjective_time.get("lifecycle_stage")),
+            "subjective_recommended_mode": _text(subjective_time.get("recommended_mode")),
+            "llm_mode_request": _text(subjective_time.get("llm_mode_request")),
+            "llm_mode_selected": bool_to_csv(subjective_time.get("llm_mode_selected")),
         }
 
     def _snapshot_energy(self) -> dict[str, float]:
@@ -158,6 +162,12 @@ class CollectorAdapter:
             return len(lessons)
         return 0
 
+    def _snapshot_mode(self) -> str:
+        mode = getattr(self._loop, "mode", None)
+        if mode is None:
+            mode = getattr(self._loop, "_mode", None)
+        return _enum_value(mode) or "active"
+
     @staticmethod
     def _snapshot_identity(ctx: Any) -> dict[str, object]:
         briefing = getattr(ctx, "briefing", None)
@@ -170,6 +180,21 @@ class CollectorAdapter:
             "state": identity.get("state", ""),
             "remaining_epochs": identity.get("remaining_epochs"),
             "prompt_injected": briefing.get("_identity_prompt_injected"),
+        }
+
+    @staticmethod
+    def _snapshot_subjective_time(ctx: Any) -> dict[str, object]:
+        briefing = getattr(ctx, "briefing", None)
+        if not isinstance(briefing, dict):
+            return {}
+        subjective = briefing.get("subjective_time")
+        if not isinstance(subjective, dict):
+            return {}
+        return {
+            "lifecycle_stage": subjective.get("lifecycle_stage", ""),
+            "recommended_mode": subjective.get("recommended_mode", ""),
+            "llm_mode_request": subjective.get("llm_mode_request", ""),
+            "llm_mode_selected": subjective.get("llm_mode_selected"),
         }
 
 
@@ -188,4 +213,10 @@ def _enum_value(enum_obj: Any) -> str:
 def _num(value: Any, default: float | None = None) -> str:
     if value is None:
         return "" if default is None else str(default)
+    return str(value)
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
     return str(value)

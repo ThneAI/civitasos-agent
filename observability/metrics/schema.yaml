@@ -1,11 +1,12 @@
-# Raw Tick CSV Schema — F.0.a v1.3
+# Raw Tick CSV Schema — F.0.a v1.4
 # 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
 # v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
 # v1.2 变更：新增 lessons_count（每 tick 可见 lessons 数）支持 M4 可计算化。
 # v1.3 变更：新增 institutional identity 观测列（identity_state / remaining_epochs / prompt_injected）。
+# v1.4 变更：新增 G.2 subjective-time 与 LLM 自主 waiting/deep_think 选择观测列。
 
-schema_version: "1.3"
+schema_version: "1.4"
 artifact: "raw_tick"
 
 columns:
@@ -128,8 +129,8 @@ columns:
   - name: mode
     type: enum
     required: false
-    values: [active, idle, sleeping, event]
-    source: '当前 LoopMode；F.0 阶段 runtime 未暴露，采集器默认写 "active"，G.1 后启用真值'
+    values: [active, idle, sleeping, waiting, deep_think, event]
+    source: '当前 LoopMode；无法读取 runtime 真值时采集器默认写 "active"'
 
   - name: is_wait
     type: bool
@@ -146,11 +147,34 @@ columns:
     required: false
     source: 'F.0 阶段固定 false（M6 已弱化为 wait_ratio）；H.1 后基于 served_intent_layer 重新计算'
 
+  - name: subjective_lifecycle_stage
+    type: enum
+    required: false
+    values: [infant, juvenile, mature, elder]
+    source: "briefing.subjective_time.lifecycle_stage（G.2 Agent 主观时间）"
+
+  - name: subjective_recommended_mode
+    type: enum
+    required: false
+    values: [active, idle, sleeping, waiting, deep_think, event]
+    source: "briefing.subjective_time.recommended_mode（规则/LLM 选择后最终推荐模式）"
+
+  - name: llm_mode_request
+    type: enum
+    required: false
+    values: [waiting, deep_think]
+    source: "LLM 文本或工具参数显式声明的 mode_request"
+
+  - name: llm_mode_selected
+    type: bool
+    required: false
+    source: "本 tick 是否由 LLM 自主选择 waiting/deep_think"
+
 # ---------------------------------------------------------------------------
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.3"
+  schema_version: "1.4"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}

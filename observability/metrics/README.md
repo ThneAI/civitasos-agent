@@ -1,7 +1,7 @@
 # Observability Metrics — F.0.a 指标采集器
 
 > **关联文档**: [WISDOM_EVOLUTION_ROADMAP.md](../../../civitasos/doc/plan/WISDOM_EVOLUTION_ROADMAP.md) Gate F.0.a
-> **状态**: DRAFT v1.3 (自审后修订；schema + 接口已定，M4 已切到 H.2-lite 可计算，II-1 identity prompt 已可观测)
+> **状态**: DRAFT v1.4 (自审后修订；schema + 接口已定，M4 已切到 H.2-lite 可计算，II-1 identity prompt 与 G.2 subjective-time mode request 已可观测)
 >
 > **v1.1 变更摘要**（自审 RCA 触发）:
 > - M3 操作化：阈值与「行为模式改变」给出可计算定义
@@ -13,6 +13,7 @@
 > - F.0.a 通过标准从「6 项均可工作」改为「6 项均有可工作示例 OR 明确空载并标注启用阶段」
 > - v1.2 新增 `lessons_count` 采集列，M4 从固定 null 升级为 H.2-lite（fail→success + lessons 增长）
 > - v1.3 新增 `identity_state / identity_remaining_epochs / identity_prompt_injected`，用于观测 II-1 institutional identity 是否进入决策面
+> - v1.4 新增 `subjective_lifecycle_stage / subjective_recommended_mode / llm_mode_request / llm_mode_selected`，用于观测 G.2 中 LLM 是否自主选择 `waiting/deep_think`
 
 ---
 
@@ -94,12 +95,16 @@ observability/metrics/
 | `identity_state` | enum | briefing.identity.state（II-1 institutional identity 摘要） | optional |
 | `identity_remaining_epochs` | int | briefing.identity.remaining_epochs（若可计算） | optional |
 | `identity_prompt_injected` | bool | 本 tick 是否将 institutional identity 摘要注入 system prompt | optional |
-| `mode` | enum | LoopMode (active/idle/sleeping/event) — F.0 阶段 runtime 未暴露，固定写 `active` | optional |
+| `mode` | enum | LoopMode (active/idle/sleeping/waiting/deep_think/event)；无法读取时默认 `active` | optional |
 | `is_wait` | bool | Decision.action == "wait" | ✅ |
 | `lessons_count` | int | memory 中 lessons_learned 长度快照（每 tick 采样） | optional |
 | `wait_references_telos` | bool | F.0 阶段固定 `false`（M6 已弱化为 wait_ratio）；H.1 后基于 `served_intent_layer` 重新计算 | optional |
+| `subjective_lifecycle_stage` | enum | briefing.subjective_time.lifecycle_stage（G.2 Agent 主观时间） | optional |
+| `subjective_recommended_mode` | enum | briefing.subjective_time.recommended_mode（规则/LLM 选择后最终推荐模式） | optional |
+| `llm_mode_request` | enum | LLM 显式声明的 `mode_request: waiting/deep_think` | optional |
+| `llm_mode_selected` | bool | 本 tick 是否由 LLM 自主选择 waiting/deep_think | optional |
 
-**Schema 版本**：v1.3。冻结后只允许追加新列，不允许修改/删除。
+**Schema 版本**：v1.4。冻结后只允许追加新列，不允许修改/删除。
 
 ### CSV 转义策略（v1.1 新增）
 
