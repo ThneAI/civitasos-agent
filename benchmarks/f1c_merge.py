@@ -58,6 +58,7 @@ _DEFAULT_G2_SELECTED_PER_TASK_RATIO = 1.0
 _DEFAULT_G3_RELATION_MEMORY_HIT_FLOOR = 0.80
 _DEFAULT_G3_RELATION_AWARE_DECISION_FLOOR = 0.80
 _DEFAULT_G3_TIME_CONSISTENCY_FLOOR = 0.95
+_DEFAULT_G3_LLM_RELATION_REF_FLOOR = 1.0
 _DIM_WEIGHTS = {
     "completion_rate": 0.30,
     "latency_score": 0.20,
@@ -392,6 +393,62 @@ def _evaluate_g3_raw_time_consistency(
     }
 
 
+def _evaluate_g3_raw_relation_trace(
+    runs: list[tuple[str, Path]],
+    *,
+    max_examples: int = 20,
+) -> dict[str, object]:
+    """Check that relation-aware LLM ticks carry structured memory refs."""
+    total = 0
+    with_refs = 0
+    missing_sample: list[dict[str, str]] = []
+
+    for alias, run_dir in runs:
+        raw_dir = run_dir / "raw_ticks"
+        if not raw_dir.exists():
+            continue
+        for csv_path in sorted(raw_dir.glob("*.csv")):
+            with csv_path.open(newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    if str(row.get("decision_source") or "").strip() != "llm":
+                        continue
+                    relation_context_id = str(row.get("relation_context_id") or "").strip()
+                    relation_memory_refs = str(row.get("relation_memory_refs") or "").strip()
+                    time_window_id = str(row.get("time_window_id") or "").strip()
+                    challenge_bucket = str(row.get("challenge_deadline_bucket") or "").strip()
+                    if not any((
+                        relation_context_id,
+                        relation_memory_refs,
+                        time_window_id,
+                        challenge_bucket,
+                    )):
+                        continue
+                    total += 1
+                    if relation_memory_refs:
+                        with_refs += 1
+                        continue
+                    if len(missing_sample) < max_examples:
+                        missing_sample.append(
+                            {
+                                "agent_alias": alias,
+                                "task_id": csv_path.stem,
+                                "decision_action": str(row.get("decision_action") or ""),
+                                "tick_seq": str(row.get("tick_seq") or ""),
+                                "relation_context_id": relation_context_id,
+                                "time_window_id": time_window_id,
+                            },
+                        )
+
+    ratio = (with_refs / total) if total else None
+    return {
+        "raw_llm_relation_trace_rows": total,
+        "raw_llm_relation_ref_rows": with_refs,
+        "raw_llm_relation_ref_ratio": ratio,
+        "raw_llm_relation_ref_missing_sample": missing_sample,
+    }
+
+
 def _evaluate_g2_gate(
     *,
     runs: list[tuple[str, Path]],
@@ -476,6 +533,7 @@ def _evaluate_g3_gate(
     min_relation_memory_hit_ratio: float = _DEFAULT_G3_RELATION_MEMORY_HIT_FLOOR,
     min_relation_aware_decision_ratio: float = _DEFAULT_G3_RELATION_AWARE_DECISION_FLOOR,
     min_cross_agent_time_consistency_ratio: float = _DEFAULT_G3_TIME_CONSISTENCY_FLOOR,
+    min_llm_relation_ref_ratio: float = _DEFAULT_G3_LLM_RELATION_REF_FLOOR,
 ) -> dict[str, object]:
     rows = _load_g2_final_metric_rows(final_metrics_csv)
     relation_rows: list[dict[str, str]] = []
@@ -530,20 +588,43 @@ def _evaluate_g3_gate(
             "raw_time_window_inconsistent_sample": [],
         }
     )
+    raw_relation_trace = (
+        _evaluate_g3_raw_relation_trace(runs)
+        if runs is not None
+        else {
+            "raw_llm_relation_trace_rows": 0,
+            "raw_llm_relation_ref_rows": 0,
+            "raw_llm_relation_ref_ratio": None,
+            "raw_llm_relation_ref_missing_sample": [],
+        }
+    )
     raw_ratio = raw_consistency["raw_cross_agent_time_consistency_ratio"]
     if raw_ratio is not None and raw_ratio < min_cross_agent_time_consistency_ratio:
         failure_reasons.append(
             "raw cross-agent time consistency ratio "
             f"{raw_ratio:.4f} < {min_cross_agent_time_consistency_ratio:.4f}",
         )
+    raw_ref_ratio = raw_relation_trace["raw_llm_relation_ref_ratio"]
+    if relation_rows and raw_ref_ratio is None and runs is not None:
+        failure_reasons.append("raw LLM relation trace rows are missing")
+    elif raw_ref_ratio is not None and raw_ref_ratio < min_llm_relation_ref_ratio:
+        failure_reasons.append(
+            "raw LLM relation ref ratio "
+            f"{raw_ref_ratio:.4f} < {min_llm_relation_ref_ratio:.4f}",
+        )
 
-    if not relation_rows and raw_consistency["raw_time_window_task_count"] == 0:
+    if (
+        not relation_rows
+        and raw_consistency["raw_time_window_task_count"] == 0
+        and raw_relation_trace["raw_llm_relation_trace_rows"] == 0
+    ):
         return {
             "passed": True,
             "skipped": True,
             "reason": "no relation-aware G.3 rows in final_metrics",
             "relation_rows": 0,
             **raw_consistency,
+            **raw_relation_trace,
             "failure_reasons": [],
         }
 
@@ -554,7 +635,9 @@ def _evaluate_g3_gate(
         "min_relation_memory_hit_ratio": min_relation_memory_hit_ratio,
         "min_relation_aware_decision_ratio": min_relation_aware_decision_ratio,
         "min_cross_agent_time_consistency_ratio": min_cross_agent_time_consistency_ratio,
+        "min_llm_relation_ref_ratio": min_llm_relation_ref_ratio,
         **raw_consistency,
+        **raw_relation_trace,
         "failure_reasons": failure_reasons,
     }
 

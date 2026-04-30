@@ -26,6 +26,26 @@ TASKS="${TASKS:-}"
 WALL_CLOCK_PER_TICK_S="${WALL_CLOCK_PER_TICK_S:-60}"
 REQUIRE_PRECHECK="${REQUIRE_PRECHECK:-1}"
 BASELINE_RUNS_ROOT="${BASELINE_RUNS_ROOT:-}"
+GATE_MIN_COMMON_TASKS="${GATE_MIN_COMMON_TASKS:-}"
+if [ -z "$GATE_MIN_COMMON_TASKS" ]; then
+  MANIFEST_TASK_COUNT="$("$PYTHON" - <<'PY' "$MANIFEST"
+import sys
+from benchmarks.task_loader import load_manifest
+print(len(load_manifest(sys.argv[1]).tasks))
+PY
+)"
+  if [ "$MANIFEST_TASK_COUNT" -lt 30 ]; then
+    GATE_MIN_COMMON_TASKS="$MANIFEST_TASK_COUNT"
+  else
+    GATE_MIN_COMMON_TASKS="30"
+  fi
+fi
+if [ -z "${REQUIRE_G3_ACTIVE:-}" ]; then
+  case "$MANIFEST" in
+    benchmarks/v2/*|*/benchmarks/v2/*) REQUIRE_G3_ACTIVE=1 ;;
+    *) REQUIRE_G3_ACTIVE=0 ;;
+  esac
+fi
 
 export CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED="${CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED:-1}"
 export CIVITASOS_IDENTITY_EMERGENCE_ENABLED="${CIVITASOS_IDENTITY_EMERGENCE_ENABLED:-1}"
@@ -44,6 +64,9 @@ echo "  backend          : $BACKEND_URL"
 echo "  llm              : $AGENT_LLM ($LLM_BASE_URL)"
 echo "  agents           : $AGENTS"
 echo "  tasks            : ${TASKS:-<all>}"
+echo "  manifest         : $MANIFEST"
+echo "  min_common_tasks : $GATE_MIN_COMMON_TASKS"
+echo "  require_g3_active: $REQUIRE_G3_ACTIVE"
 echo "  institutional_on : $CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED"
 echo "  identity_on      : $CIVITASOS_IDENTITY_EMERGENCE_ENABLED"
 echo "  birth_sponsor    : $CIVITASOS_BIRTH_SPONSOR"
@@ -71,14 +94,18 @@ TASKS="$TASKS" \
 WALL_CLOCK_PER_TICK_S="$WALL_CLOCK_PER_TICK_S" \
 ./benchmarks/run_f1c.sh
 
-"$PYTHON" -m benchmarks.f1c_merge --runs-root "$RUNS_ROOT"
+"$PYTHON" -m benchmarks.f1c_merge \
+  --runs-root "$RUNS_ROOT" \
+  --manifest "$MANIFEST" \
+  --gate-min-common-tasks "$GATE_MIN_COMMON_TASKS"
 
-"$PYTHON" - <<'PY' "$RUNS_ROOT"
+"$PYTHON" - <<'PY' "$RUNS_ROOT" "$REQUIRE_G3_ACTIVE"
 import json
 import sys
 from pathlib import Path
 
 runs_root = Path(sys.argv[1])
+require_g3_active = sys.argv[2] == "1"
 summary_path = runs_root / "merge_summary.json"
 if not summary_path.exists():
     raise SystemExit(f"merge summary missing: {summary_path}")
@@ -88,8 +115,10 @@ integrity_ok = bool(summary.get("integrity_gate", {}).get("passed", False))
 sentinel_ok = bool(summary.get("sentinel_gate", {}).get("passed", False))
 ii2_ok = bool(summary.get("ii2_gate", {}).get("passed", False))
 g2_ok = bool(summary.get("g2_gate", {}).get("passed", False))
-g3_ok = bool(summary.get("g3_gate", {}).get("passed", False))
-if not (integrity_ok and sentinel_ok and ii2_ok and g2_ok and g3_ok):
+g3_gate = summary.get("g3_gate", {})
+g3_ok = bool(g3_gate.get("passed", False))
+g3_active_ok = (not require_g3_active) or (not bool(g3_gate.get("skipped", False)))
+if not (integrity_ok and sentinel_ok and ii2_ok and g2_ok and g3_ok and g3_active_ok):
     print(json.dumps(
         {
             "passed": False,
@@ -98,6 +127,8 @@ if not (integrity_ok and sentinel_ok and ii2_ok and g2_ok and g3_ok):
             "ii2_gate": summary.get("ii2_gate"),
             "g2_gate": summary.get("g2_gate"),
             "g3_gate": summary.get("g3_gate"),
+            "require_g3_active": require_g3_active,
+            "g3_active_ok": g3_active_ok,
         },
         indent=2,
     ))
@@ -110,6 +141,7 @@ print(json.dumps(
         "ii2_gate": summary.get("ii2_gate"),
         "g2_gate": summary.get("g2_gate"),
         "g3_gate": summary.get("g3_gate"),
+        "require_g3_active": require_g3_active,
     },
     indent=2,
 ))

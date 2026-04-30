@@ -27,6 +27,8 @@ def _write_raw_ticks(
     llm_mode_requests: list[str] | None = None,
     llm_mode_selected: list[bool] | None = None,
     time_window_ids: list[str] | None = None,
+    relation_context_ids: list[str] | None = None,
+    relation_memory_refs: list[str] | None = None,
 ) -> None:
     raw_dir = run_dir / "raw_ticks"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -51,6 +53,10 @@ def _write_raw_ticks(
             row["llm_mode_selected"] = "true" if llm_mode_selected[idx] else "false"
         if time_window_ids is not None:
             row["time_window_id"] = time_window_ids[idx]
+        if relation_context_ids is not None:
+            row["relation_context_id"] = relation_context_ids[idx]
+        if relation_memory_refs is not None:
+            row["relation_memory_refs"] = relation_memory_refs[idx]
         rows.append(row)
     fieldnames = list(rows[0].keys()) if rows else ["decision_action"]
     with p.open("w", newline="", encoding="utf-8") as fh:
@@ -477,6 +483,54 @@ def test_g3_gate_fails_when_raw_time_windows_disagree(tmp_path: Path) -> None:
     assert any("raw cross-agent time consistency ratio" in r for r in gate["failure_reasons"])
 
 
+def test_g3_gate_checks_raw_llm_relation_refs(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    for run_dir, refs in (
+        (alpha, ["relation:G01:prior", "relation:G01:prior"]),
+        (beta, ["", ""]),
+    ):
+        _write_raw_ticks(
+            run_dir,
+            "G01_happy_01",
+            ["wait", "task_execute"],
+            decision_sources=["llm", "llm"],
+            relation_context_ids=["rel-g01", "rel-g01"],
+            relation_memory_refs=refs,
+            time_window_ids=["tw-g01", "tw-g01"],
+        )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": alias,
+                "run_id": f"rid-{alias}",
+                "agent_id": f"did:{alias}",
+                "category_id": "G01",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "g3_relation_memory_hit_ratio": "1.0",
+                "g3_relation_aware_decision_ratio": "1.0",
+                "g3_cross_agent_time_consistency_ratio": "1.0",
+            }
+            for alias in ("alpha", "beta")
+        ],
+    )
+
+    gate = _evaluate_g3_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha), ("beta", beta)],
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_llm_relation_trace_rows"] == 4
+    assert gate["raw_llm_relation_ref_rows"] == 2
+    assert gate["raw_llm_relation_ref_ratio"] == 0.5
+    assert any("raw LLM relation ref ratio" in r for r in gate["failure_reasons"])
+
+
 def test_ii2_scorecard_builds_four_dimension_scores(tmp_path: Path) -> None:
     alpha = tmp_path / "baseline-alpha-20260101T000000Z"
     beta = tmp_path / "baseline-beta-20260101T000000Z"
@@ -514,7 +568,11 @@ def test_ii2_scorecard_builds_four_dimension_scores(tmp_path: Path) -> None:
     assert isinstance(gate["failure_reasons"], list)
 
 
-def test_ii2_scorecard_recognizes_generic_m2_observation(tmp_path: Path) -> None:
+def test_ii2_scorecard_recognizes_generic_m2_observation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED", raising=False)
     alpha = tmp_path / "baseline-alpha-20260101T000000Z"
     beta = tmp_path / "baseline-beta-20260101T000000Z"
     alpha.mkdir()
