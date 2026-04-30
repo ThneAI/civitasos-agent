@@ -15,6 +15,14 @@ Integrity gate (default):
   - flag pairs where score >= 0.95
   - pass if flagged_pair_ratio <= 0.25 AND flagged_task_ratio <= 0.50
     with at least 30 common tasks.
+
+G.2 gate (default):
+  - every final_metrics row must have g2_mode_choice_observable_ratio
+  - each agent must emit raw llm_mode_selected at least once per task.
+
+G.3 gate (auto):
+  - skipped when no relation-aware rows are present
+  - enforced once g3_* final_metrics values are emitted.
 """
 from __future__ import annotations
 
@@ -45,6 +53,11 @@ _RUN_DIR_RE = re.compile(r"^baseline-(?P<alias>[a-z]+)-(?P<ts>\d{8}T\d{6}Z)$")
 _DEFAULT_SURVIVAL_THRESHOLD = 0.55
 _DEFAULT_COMPLETION_FLOOR = 0.95
 _DEFAULT_LATENCY_TARGET_MS = 20000.0
+_DEFAULT_G2_OBSERVABLE_ROW_RATIO = 1.0
+_DEFAULT_G2_SELECTED_PER_TASK_RATIO = 1.0
+_DEFAULT_G3_RELATION_MEMORY_HIT_FLOOR = 0.80
+_DEFAULT_G3_RELATION_AWARE_DECISION_FLOOR = 0.80
+_DEFAULT_G3_TIME_CONSISTENCY_FLOOR = 0.95
 _DIM_WEIGHTS = {
     "completion_rate": 0.30,
     "latency_score": 0.20,
@@ -280,6 +293,270 @@ def _parse_csv_bool(raw: str | None) -> bool | None:
     if s == "false":
         return False
     return None
+
+
+def _count_g2_llm_mode_selected(run_dir: Path) -> dict[str, int]:
+    raw_dir = run_dir / "raw_ticks"
+    counts = {
+        "raw_tick_rows": 0,
+        "llm_mode_selected": 0,
+        "llm_waiting_selected": 0,
+        "llm_deep_think_selected": 0,
+    }
+    if not raw_dir.exists():
+        return counts
+
+    for csv_path in sorted(raw_dir.glob("*.csv")):
+        with csv_path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                counts["raw_tick_rows"] += 1
+                if _parse_csv_bool(row.get("llm_mode_selected")) is not True:
+                    continue
+                counts["llm_mode_selected"] += 1
+                mode_request = str(row.get("llm_mode_request") or "").strip()
+                if mode_request == "waiting":
+                    counts["llm_waiting_selected"] += 1
+                elif mode_request == "deep_think":
+                    counts["llm_deep_think_selected"] += 1
+    return counts
+
+
+def _load_g2_final_metric_rows(final_metrics_csv: Path) -> list[dict[str, str]]:
+    with final_metrics_csv.open(newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def _g3_time_windows_by_task(run_dir: Path) -> dict[str, set[str]]:
+    raw_dir = run_dir / "raw_ticks"
+    if not raw_dir.exists():
+        return {}
+    out: dict[str, set[str]] = {}
+    for csv_path in sorted(raw_dir.glob("*.csv")):
+        windows: set[str] = set()
+        with csv_path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                value = str(row.get("time_window_id") or "").strip()
+                if value:
+                    windows.add(value)
+        if windows:
+            out[csv_path.stem] = windows
+    return out
+
+
+def _evaluate_g3_raw_time_consistency(
+    runs: list[tuple[str, Path]],
+    *,
+    max_examples: int = 20,
+) -> dict[str, object]:
+    per_alias = {
+        alias: _g3_time_windows_by_task(run_dir)
+        for alias, run_dir in runs
+    }
+    task_ids = set().union(*(set(mapping.keys()) for mapping in per_alias.values()))
+    comparable = 0
+    consistent = 0
+    inconsistent_sample: list[dict[str, object]] = []
+
+    for task_id in sorted(task_ids):
+        windows_by_alias = {
+            alias: windows.get(task_id, set())
+            for alias, windows in per_alias.items()
+        }
+        if sum(1 for values in windows_by_alias.values() if values) < 2:
+            continue
+        comparable += 1
+        all_present = all(bool(values) for values in windows_by_alias.values())
+        shared = set.intersection(*windows_by_alias.values()) if all_present else set()
+        if shared:
+            consistent += 1
+            continue
+        if len(inconsistent_sample) < max_examples:
+            inconsistent_sample.append(
+                {
+                    "task_id": task_id,
+                    "windows_by_agent": {
+                        alias: sorted(values)
+                        for alias, values in windows_by_alias.items()
+                    },
+                },
+            )
+
+    ratio = (consistent / comparable) if comparable else None
+    return {
+        "raw_time_window_task_count": comparable,
+        "raw_time_window_consistent_task_count": consistent,
+        "raw_cross_agent_time_consistency_ratio": ratio,
+        "raw_time_window_inconsistent_sample": inconsistent_sample,
+    }
+
+
+def _evaluate_g2_gate(
+    *,
+    runs: list[tuple[str, Path]],
+    final_metrics_csv: Path,
+    min_observable_row_ratio: float = _DEFAULT_G2_OBSERVABLE_ROW_RATIO,
+    min_selected_per_task_ratio: float = _DEFAULT_G2_SELECTED_PER_TASK_RATIO,
+) -> dict[str, object]:
+    rows = _load_g2_final_metric_rows(final_metrics_csv)
+    total_rows = len(rows)
+    observable_rows = 0
+    expected_tasks_by_alias: Counter[str] = Counter()
+    missing_rows: list[dict[str, str]] = []
+
+    for row in rows:
+        alias = row.get("agent_alias", "")
+        task_count = int(_safe_float(row.get("task_count")) or 0)
+        if alias:
+            expected_tasks_by_alias[alias] += task_count
+        if _safe_float(row.get("g2_mode_choice_observable_ratio")) is not None:
+            observable_rows += 1
+            continue
+        if len(missing_rows) < 20:
+            missing_rows.append(
+                {
+                    "agent_alias": alias,
+                    "category_id": row.get("category_id", ""),
+                    "task_count": row.get("task_count", ""),
+                },
+            )
+
+    observable_row_ratio = (observable_rows / total_rows) if total_rows else 0.0
+    failure_reasons: list[str] = []
+    if total_rows == 0:
+        failure_reasons.append("final_metrics has no rows")
+    if observable_row_ratio < min_observable_row_ratio:
+        failure_reasons.append(
+            "g2 observable final_metrics row ratio "
+            f"{observable_row_ratio:.4f} < {min_observable_row_ratio:.4f}",
+        )
+
+    per_agent: list[dict[str, object]] = []
+    for alias, run_dir in runs:
+        expected_tasks = int(expected_tasks_by_alias.get(alias, 0))
+        counts = _count_g2_llm_mode_selected(run_dir)
+        selected = counts["llm_mode_selected"]
+        selected_per_task_ratio = (selected / expected_tasks) if expected_tasks else 0.0
+        if expected_tasks == 0:
+            failure_reasons.append(f"{alias}: expected task count is 0")
+        elif selected_per_task_ratio < min_selected_per_task_ratio:
+            failure_reasons.append(
+                f"{alias}: raw llm_mode_selected/task_count "
+                f"{selected_per_task_ratio:.4f} < {min_selected_per_task_ratio:.4f} "
+                f"({selected}/{expected_tasks})",
+            )
+        per_agent.append(
+            {
+                "agent_alias": alias,
+                "run_dir": str(run_dir),
+                "expected_task_count": expected_tasks,
+                **counts,
+                "selected_per_task_ratio": selected_per_task_ratio,
+            },
+        )
+
+    return {
+        "passed": not failure_reasons,
+        "min_observable_row_ratio": min_observable_row_ratio,
+        "min_selected_per_task_ratio": min_selected_per_task_ratio,
+        "final_metrics_rows": total_rows,
+        "observable_rows": observable_rows,
+        "observable_row_ratio": observable_row_ratio,
+        "missing_rows_sample": missing_rows,
+        "per_agent": sorted(per_agent, key=lambda row: str(row["agent_alias"])),
+        "failure_reasons": failure_reasons,
+    }
+
+
+def _evaluate_g3_gate(
+    *,
+    final_metrics_csv: Path,
+    runs: list[tuple[str, Path]] | None = None,
+    min_relation_memory_hit_ratio: float = _DEFAULT_G3_RELATION_MEMORY_HIT_FLOOR,
+    min_relation_aware_decision_ratio: float = _DEFAULT_G3_RELATION_AWARE_DECISION_FLOOR,
+    min_cross_agent_time_consistency_ratio: float = _DEFAULT_G3_TIME_CONSISTENCY_FLOOR,
+) -> dict[str, object]:
+    rows = _load_g2_final_metric_rows(final_metrics_csv)
+    relation_rows: list[dict[str, str]] = []
+    failure_reasons: list[str] = []
+    for row in rows:
+        values = {
+            "g3_relation_memory_hit_ratio": _safe_float(
+                row.get("g3_relation_memory_hit_ratio"),
+            ),
+            "g3_relation_aware_decision_ratio": _safe_float(
+                row.get("g3_relation_aware_decision_ratio"),
+            ),
+            "g3_cross_agent_time_consistency_ratio": _safe_float(
+                row.get("g3_cross_agent_time_consistency_ratio"),
+            ),
+        }
+        if all(value is None for value in values.values()):
+            continue
+        relation_rows.append(row)
+        checks = (
+            (
+                "g3_relation_memory_hit_ratio",
+                values["g3_relation_memory_hit_ratio"],
+                min_relation_memory_hit_ratio,
+            ),
+            (
+                "g3_relation_aware_decision_ratio",
+                values["g3_relation_aware_decision_ratio"],
+                min_relation_aware_decision_ratio,
+            ),
+            (
+                "g3_cross_agent_time_consistency_ratio",
+                values["g3_cross_agent_time_consistency_ratio"],
+                min_cross_agent_time_consistency_ratio,
+            ),
+        )
+        for field, value, floor in checks:
+            if value is not None and value >= floor:
+                continue
+            failure_reasons.append(
+                f"{row.get('agent_alias', '')}/{row.get('category_id', '')}: "
+                f"{field} {0.0 if value is None else value:.4f} < {floor:.4f}",
+            )
+
+    raw_consistency = (
+        _evaluate_g3_raw_time_consistency(runs)
+        if runs is not None
+        else {
+            "raw_time_window_task_count": 0,
+            "raw_time_window_consistent_task_count": 0,
+            "raw_cross_agent_time_consistency_ratio": None,
+            "raw_time_window_inconsistent_sample": [],
+        }
+    )
+    raw_ratio = raw_consistency["raw_cross_agent_time_consistency_ratio"]
+    if raw_ratio is not None and raw_ratio < min_cross_agent_time_consistency_ratio:
+        failure_reasons.append(
+            "raw cross-agent time consistency ratio "
+            f"{raw_ratio:.4f} < {min_cross_agent_time_consistency_ratio:.4f}",
+        )
+
+    if not relation_rows and raw_consistency["raw_time_window_task_count"] == 0:
+        return {
+            "passed": True,
+            "skipped": True,
+            "reason": "no relation-aware G.3 rows in final_metrics",
+            "relation_rows": 0,
+            **raw_consistency,
+            "failure_reasons": [],
+        }
+
+    return {
+        "passed": not failure_reasons,
+        "skipped": False,
+        "relation_rows": len(relation_rows),
+        "min_relation_memory_hit_ratio": min_relation_memory_hit_ratio,
+        "min_relation_aware_decision_ratio": min_relation_aware_decision_ratio,
+        "min_cross_agent_time_consistency_ratio": min_cross_agent_time_consistency_ratio,
+        **raw_consistency,
+        "failure_reasons": failure_reasons,
+    }
 
 
 def _identity_prompt_observability(run_dir: Path) -> dict[str, object]:
@@ -616,7 +893,10 @@ def _row_with_alias(alias: str, agg) -> dict[str, str]:
                    "m5_tick_latency_p99_ms", "m5_task_latency_p50_ms",
                    "m5_task_latency_p95_ms", "m6_wait_ratio",
                    "g2_mode_choice_observable_ratio", "g2_llm_waiting_ratio",
-                   "g2_llm_deep_think_ratio"):
+                   "g2_llm_deep_think_ratio",
+                   "g3_relation_memory_hit_ratio",
+                   "g3_relation_aware_decision_ratio",
+                   "g3_cross_agent_time_consistency_ratio"):
             v = agg.metrics.get(col)
             out[col] = "" if v is None else f"{v:.6f}" if isinstance(v, float) else str(v)
         else:
@@ -756,6 +1036,7 @@ def merge(
     gate_max_flagged_pair_ratio: float = 0.25,
     gate_max_flagged_task_ratio: float = 0.50,
     gate_min_common_tasks: int = 30,
+    enable_g2_gate: bool = True,
 ) -> dict:
     runs = _discover_runs(runs_root)
     if not runs:
@@ -803,6 +1084,18 @@ def merge(
     )
     sentinel_gate = _evaluate_sentinel_gate(runs)
     identity_prompt_observability = _aggregate_identity_prompt_observability(runs)
+    if enable_g2_gate:
+        g2_gate = _evaluate_g2_gate(
+            runs=runs,
+            final_metrics_csv=out_csv,
+        )
+    else:
+        g2_gate = {
+            "passed": True,
+            "skipped": True,
+            "failure_reasons": [],
+        }
+    g3_gate = _evaluate_g3_gate(final_metrics_csv=out_csv, runs=runs)
 
     summary = {
         "runs_root": str(runs_root),
@@ -832,6 +1125,8 @@ def merge(
         },
         "sentinel_gate": sentinel_gate,
         "identity_prompt_observability": identity_prompt_observability,
+        "g2_gate": g2_gate,
+        "g3_gate": g3_gate,
     }
     ii2_scorecard = _build_ii2_scorecard(
         runs=runs,
@@ -856,6 +1151,11 @@ def main() -> int:
     p.add_argument("--gate-max-flagged-pair-ratio", type=float, default=0.25)
     p.add_argument("--gate-max-flagged-task-ratio", type=float, default=0.50)
     p.add_argument("--gate-min-common-tasks", type=int, default=30)
+    p.add_argument(
+        "--skip-g2-gate",
+        action="store_true",
+        help="Skip G.2 subjective-time hard gate; use only for historical run replay.",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
     logging.basicConfig(
@@ -870,6 +1170,7 @@ def main() -> int:
         gate_max_flagged_pair_ratio=args.gate_max_flagged_pair_ratio,
         gate_max_flagged_task_ratio=args.gate_max_flagged_task_ratio,
         gate_min_common_tasks=args.gate_min_common_tasks,
+        enable_g2_gate=not args.skip_g2_gate,
     )
     print(json.dumps(summary, indent=2))
     if not summary["integrity_gate"]["passed"]:
@@ -890,8 +1191,20 @@ def main() -> int:
             "; ".join(summary["sentinel_gate"]["failure_reasons"]),
         )
         return 4
+    if not summary["g2_gate"]["passed"]:
+        logger.error(
+            "G.2 subjective-time gate FAILED: %s",
+            "; ".join(summary["g2_gate"]["failure_reasons"]),
+        )
+        return 6
+    if not summary["g3_gate"]["passed"]:
+        logger.error(
+            "G.3 relation-time gate FAILED: %s",
+            "; ".join(summary["g3_gate"]["failure_reasons"]),
+        )
+        return 7
     logger.info(
-        "F.1.c integrity+sentinel gates PASSED: pair_ratio=%.4f task_ratio=%.4f",
+        "F.1.c integrity+sentinel, G.2, and G.3 gates PASSED: pair_ratio=%.4f task_ratio=%.4f",
         summary["jaccard_flagged_ratio"],
         summary["jaccard_flagged_task_ratio"],
     )

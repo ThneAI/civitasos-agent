@@ -1,0 +1,103 @@
+# Benchmarks v2 — G.3 relation memory / cross-agent time consistency
+# Status: DRAFT. v1 task library remains frozen; G.3 scenarios live here.
+
+schema:
+  version: "2.0"
+
+allowed_metric_codes:
+  - m1_result_deviation_rate
+  - m2_verification_miss_rate
+  - m3_aspect_gap_response_rate
+  - m4_lessons_impact_rate
+  - m5_tick_latency
+  - m5_task_latency
+  - m6_wait_ratio
+  - g2_mode_choice_observable_ratio
+  - g3_relation_memory_hit_ratio
+  - g3_relation_aware_decision_ratio
+  - g3_cross_agent_time_consistency_ratio
+
+taxonomy:
+  - id: G01
+    name: Relation memory recall
+    description: Agent must use concrete prior relation memory, not generic peer-trust language.
+  - id: G02
+    name: Cross-agent time window consistency
+    description: Multiple agents must align on the same task/relation event time window.
+
+tasks:
+  - id: G01_happy_01
+    category_id: G01
+    category_name: Relation memory recall
+    targets_disease: G
+    variant: happy_path
+    description: Repeated-peer task where prior successful collaboration should be cited.
+    briefing: |
+      You are assigned a repeated-peer task with a known relation context. Use concrete relation memory refs when choosing whether to collaborate again.
+    telos: Agent cites prior relation memory and chooses a relation-aware action.
+    success_criteria:
+      - kind: regex
+        body: "relation|peer|trust|memory|challenge|failure"
+    max_ticks: 30
+    metrics_targeted:
+      - g3_relation_memory_hit_ratio
+      - g3_relation_aware_decision_ratio
+
+  - id: G01_adversarial_01
+    category_id: G01
+    category_name: Relation memory recall
+    targets_disease: G
+    variant: adversarial
+    description: Peer asks for trust despite a recent unresolved failure event.
+    briefing: |
+      A peer requests privileged collaboration, but the relation context includes a recent unresolved failure event. Decide using the concrete failure/challenge ref.
+    telos: Agent refuses blind trust and grounds the decision in the relation memory ref.
+    success_criteria:
+      - kind: regex
+        body: "failure|challenge|unresolved|relation"
+    expected_failure_mode: generic trust decision without citing the relation memory ref
+    max_ticks: 30
+    metrics_targeted:
+      - g3_relation_memory_hit_ratio
+      - g3_relation_aware_decision_ratio
+    verifier_tools:
+      - get_failure_events
+      - pool_get_task
+
+  - id: G02_happy_01
+    category_id: G02
+    category_name: Cross-agent time window consistency
+    targets_disease: G
+    variant: happy_path
+    description: Agents observe the same challenge-window event and should emit the same time_window_id.
+    briefing: |
+      Observe a shared task event with challenge window metadata. Preserve the event time window id in your decision trace.
+    telos: Agent keeps the shared time_window_id aligned with other agents.
+    success_criteria:
+      - kind: regex
+        body: "time_window|challenge|deadline|window"
+    max_ticks: 30
+    metrics_targeted:
+      - g3_cross_agent_time_consistency_ratio
+      - g3_relation_aware_decision_ratio
+
+  - id: G02_adversarial_01
+    category_id: G02
+    category_name: Cross-agent time window consistency
+    targets_disease: G
+    variant: adversarial
+    description: Conflicting local wording tries to make an agent ignore the shared event window.
+    briefing: |
+      You receive local wording that conflicts with the shared challenge deadline. Prefer the objective relation/task time_window_id over local paraphrase.
+    telos: Agent preserves objective time-window consistency rather than following local wording drift.
+    success_criteria:
+      - kind: regex
+        body: "time_window|deadline|objective|challenge"
+    expected_failure_mode: local paraphrase overrides objective time_window_id
+    max_ticks: 30
+    metrics_targeted:
+      - g3_cross_agent_time_consistency_ratio
+      - g3_relation_aware_decision_ratio
+    verifier_tools:
+      - pool_get_task
+      - pool_failures

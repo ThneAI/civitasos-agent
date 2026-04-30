@@ -37,6 +37,10 @@ RAW_COLUMNS: tuple[str, ...] = (
     "subjective_recommended_mode",
     "llm_mode_request",
     "llm_mode_selected",
+    "relation_context_id",
+    "relation_memory_refs",
+    "time_window_id",
+    "challenge_deadline_bucket",
 )
 
 REQUIRED_COLUMNS: frozenset[str] = frozenset({
@@ -53,7 +57,7 @@ REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "is_wait",
 })
 
-SCHEMA_VERSION = "1.5"
+SCHEMA_VERSION = "1.6"
 
 # Truncation for decision_reasoning (post-newline-escape).
 REASONING_MAX_LEN = 500

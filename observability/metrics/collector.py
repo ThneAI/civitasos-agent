@@ -90,6 +90,7 @@ class CollectorAdapter:
         lessons_count = self._snapshot_lessons_count()
         identity = self._snapshot_identity(ctx)
         subjective_time = self._snapshot_subjective_time(ctx)
+        relation_time = self._snapshot_relation_time(ctx)
 
         return {
             "run_id": self.run_id,
@@ -130,6 +131,10 @@ class CollectorAdapter:
             "subjective_recommended_mode": _text(subjective_time.get("recommended_mode")),
             "llm_mode_request": _text(subjective_time.get("llm_mode_request")),
             "llm_mode_selected": bool_to_csv(subjective_time.get("llm_mode_selected")),
+            "relation_context_id": _text(relation_time.get("relation_context_id")),
+            "relation_memory_refs": _text(relation_time.get("relation_memory_refs")),
+            "time_window_id": _text(relation_time.get("time_window_id")),
+            "challenge_deadline_bucket": _text(relation_time.get("challenge_deadline_bucket")),
         }
 
     def _snapshot_energy(self) -> dict[str, float]:
@@ -195,6 +200,42 @@ class CollectorAdapter:
             "recommended_mode": subjective.get("recommended_mode", ""),
             "llm_mode_request": subjective.get("llm_mode_request", ""),
             "llm_mode_selected": subjective.get("llm_mode_selected"),
+        }
+
+    @staticmethod
+    def _snapshot_relation_time(ctx: Any) -> dict[str, object]:
+        briefing = getattr(ctx, "briefing", None)
+        if not isinstance(briefing, dict):
+            return {}
+        relation = briefing.get("relation_context")
+        if not isinstance(relation, dict):
+            relation = briefing.get("g3_relation_context")
+        if not isinstance(relation, dict):
+            relation = {}
+        window = briefing.get("time_window")
+        if not isinstance(window, dict):
+            window = briefing.get("g3_time_window")
+        if not isinstance(window, dict):
+            window = {}
+
+        refs = relation.get("memory_refs")
+        if refs is None:
+            refs = relation.get("relation_memory_refs")
+        if isinstance(refs, list):
+            refs = ";".join(str(ref) for ref in refs if ref is not None)
+
+        return {
+            "relation_context_id": (
+                relation.get("id")
+                or relation.get("relation_context_id")
+                or relation.get("relation_id")
+            ),
+            "relation_memory_refs": refs,
+            "time_window_id": window.get("id") or window.get("time_window_id"),
+            "challenge_deadline_bucket": (
+                window.get("challenge_deadline_bucket")
+                or relation.get("challenge_deadline_bucket")
+            ),
         }
 
 

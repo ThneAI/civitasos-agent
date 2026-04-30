@@ -7,6 +7,8 @@ from pathlib import Path
 from benchmarks.f1c_merge import (
     _aggregate_identity_prompt_observability,
     _build_ii2_scorecard,
+    _evaluate_g2_gate,
+    _evaluate_g3_gate,
     _evaluate_integrity_gate,
     _evaluate_sentinel_gate,
     _inter_agent_jaccard,
@@ -22,6 +24,9 @@ def _write_raw_ticks(
     decision_sources: list[str] | None = None,
     identity_states: list[str] | None = None,
     identity_prompt_injected: list[bool] | None = None,
+    llm_mode_requests: list[str] | None = None,
+    llm_mode_selected: list[bool] | None = None,
+    time_window_ids: list[str] | None = None,
 ) -> None:
     raw_dir = run_dir / "raw_ticks"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -40,6 +45,12 @@ def _write_raw_ticks(
             row["identity_state"] = identity_states[idx]
         if identity_prompt_injected is not None:
             row["identity_prompt_injected"] = "true" if identity_prompt_injected[idx] else "false"
+        if llm_mode_requests is not None:
+            row["llm_mode_request"] = llm_mode_requests[idx]
+        if llm_mode_selected is not None:
+            row["llm_mode_selected"] = "true" if llm_mode_selected[idx] else "false"
+        if time_window_ids is not None:
+            row["time_window_id"] = time_window_ids[idx]
         rows.append(row)
     fieldnames = list(rows[0].keys()) if rows else ["decision_action"]
     with p.open("w", newline="", encoding="utf-8") as fh:
@@ -107,6 +118,25 @@ def _write_final_metrics(path: Path) -> None:
     ]
     with path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+
+
+def _write_g2_final_metrics(path: Path, rows: list[dict[str, str]]) -> None:
+    fieldnames = [
+        "agent_alias",
+        "run_id",
+        "agent_id",
+        "category_id",
+        "targets_disease",
+        "task_count",
+        "g2_mode_choice_observable_ratio",
+        "g3_relation_memory_hit_ratio",
+        "g3_relation_aware_decision_ratio",
+        "g3_cross_agent_time_consistency_ratio",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)
 
@@ -240,6 +270,211 @@ def test_sentinel_gate_fails_on_failed_or_give_up(tmp_path: Path) -> None:
     assert isinstance(reasons, list)
     assert any("alpha" in r for r in reasons)
     assert any("beta" in r for r in reasons)
+
+
+def test_g2_gate_passes_when_rows_observable_and_raw_selection_covers_tasks(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    alpha.mkdir()
+    beta.mkdir()
+    _write_raw_ticks(
+        alpha,
+        "T01",
+        ["wait", "task_execute"],
+        llm_mode_requests=["waiting", ""],
+        llm_mode_selected=[True, False],
+    )
+    _write_raw_ticks(
+        alpha,
+        "T02",
+        ["wait", "task_execute"],
+        llm_mode_requests=["deep_think", ""],
+        llm_mode_selected=[True, False],
+    )
+    _write_raw_ticks(
+        beta,
+        "T01",
+        ["wait", "task_execute"],
+        llm_mode_requests=["waiting", ""],
+        llm_mode_selected=[True, False],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "A01",
+                "targets_disease": "A",
+                "task_count": "2",
+                "g2_mode_choice_observable_ratio": "1.0",
+            },
+            {
+                "agent_alias": "beta",
+                "run_id": "rid-beta",
+                "agent_id": "did:beta",
+                "category_id": "A01",
+                "targets_disease": "A",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "0.5",
+            },
+        ],
+    )
+
+    gate = _evaluate_g2_gate(
+        runs=[("alpha", alpha), ("beta", beta)],
+        final_metrics_csv=final_metrics,
+    )
+
+    assert gate["passed"] is True
+    assert gate["observable_row_ratio"] == 1.0
+    per_agent = {row["agent_alias"]: row for row in gate["per_agent"]}
+    assert per_agent["alpha"]["expected_task_count"] == 2
+    assert per_agent["alpha"]["llm_mode_selected"] == 2
+    assert per_agent["alpha"]["llm_waiting_selected"] == 1
+    assert per_agent["alpha"]["llm_deep_think_selected"] == 1
+
+
+def test_g2_gate_fails_on_blank_ratio_and_missing_raw_selection(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    alpha.mkdir()
+    _write_raw_ticks(
+        alpha,
+        "T01",
+        ["wait", "task_execute"],
+        llm_mode_requests=["waiting", ""],
+        llm_mode_selected=[True, False],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "A01",
+                "targets_disease": "A",
+                "task_count": "2",
+                "g2_mode_choice_observable_ratio": "",
+            },
+        ],
+    )
+
+    gate = _evaluate_g2_gate(
+        runs=[("alpha", alpha)],
+        final_metrics_csv=final_metrics,
+    )
+
+    assert gate["passed"] is False
+    reasons = gate["failure_reasons"]
+    assert any("g2 observable final_metrics row ratio" in r for r in reasons)
+    assert any("raw llm_mode_selected/task_count" in r for r in reasons)
+    assert gate["missing_rows_sample"] == [
+        {"agent_alias": "alpha", "category_id": "A01", "task_count": "2"},
+    ]
+
+
+def test_g3_gate_skips_when_no_relation_rows(tmp_path: Path) -> None:
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "A01",
+                "targets_disease": "A",
+                "task_count": "2",
+                "g2_mode_choice_observable_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_g3_gate(final_metrics_csv=final_metrics)
+
+    assert gate["passed"] is True
+    assert gate["skipped"] is True
+    assert gate["relation_rows"] == 0
+
+
+def test_g3_gate_fails_when_relation_row_below_floor(tmp_path: Path) -> None:
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G3",
+                "targets_disease": "G",
+                "task_count": "2",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "g3_relation_memory_hit_ratio": "0.5",
+                "g3_relation_aware_decision_ratio": "1.0",
+                "g3_cross_agent_time_consistency_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_g3_gate(final_metrics_csv=final_metrics)
+
+    assert gate["passed"] is False
+    assert gate["skipped"] is False
+    assert gate["relation_rows"] == 1
+    assert any("g3_relation_memory_hit_ratio" in r for r in gate["failure_reasons"])
+
+
+def test_g3_gate_fails_when_raw_time_windows_disagree(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    gamma = tmp_path / "baseline-gamma-20260101T000000Z"
+    for run_dir, window_id in (
+        (alpha, "tw-shared"),
+        (beta, "tw-drifted"),
+        (gamma, "tw-shared"),
+    ):
+        _write_raw_ticks(
+            run_dir,
+            "G02_happy_01",
+            ["wait", "task_execute"],
+            time_window_ids=[window_id, ""],
+        )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": alias,
+                "run_id": f"rid-{alias}",
+                "agent_id": f"did:{alias}",
+                "category_id": "G02",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "g3_relation_memory_hit_ratio": "1.0",
+                "g3_relation_aware_decision_ratio": "1.0",
+                "g3_cross_agent_time_consistency_ratio": "1.0",
+            }
+            for alias in ("alpha", "beta", "gamma")
+        ],
+    )
+
+    gate = _evaluate_g3_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha), ("beta", beta), ("gamma", gamma)],
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_time_window_task_count"] == 1
+    assert gate["raw_cross_agent_time_consistency_ratio"] == 0.0
+    assert any("raw cross-agent time consistency ratio" in r for r in gate["failure_reasons"])
 
 
 def test_ii2_scorecard_builds_four_dimension_scores(tmp_path: Path) -> None:

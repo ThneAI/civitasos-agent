@@ -27,6 +27,11 @@ class TickRow:
     subjective_recommended_mode: str = ""
     llm_mode_request: str = ""
     llm_mode_selected: bool = False
+    decision_reasoning: str = ""
+    relation_context_id: str = ""
+    relation_memory_refs: str = ""
+    time_window_id: str = ""
+    challenge_deadline_bucket: str = ""
 
 
 @dataclass
@@ -67,6 +72,7 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 timestamp=raw.get("timestamp", ""),
                 phase_reached=raw.get("phase_reached", ""),
                 decision_action=raw.get("decision_action", ""),
+                decision_reasoning=raw.get("decision_reasoning", ""),
                 eval_success=_optbool(raw.get("eval_success")),
                 eval_duration_ms=_optint(raw.get("eval_duration_ms")),
                 aspect_gap=_float(raw.get("aspect_gap"), 0.0),
@@ -77,6 +83,10 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 subjective_recommended_mode=raw.get("subjective_recommended_mode", ""),
                 llm_mode_request=raw.get("llm_mode_request", ""),
                 llm_mode_selected=_optbool(raw.get("llm_mode_selected")) or False,
+                relation_context_id=raw.get("relation_context_id", ""),
+                relation_memory_refs=raw.get("relation_memory_refs", ""),
+                time_window_id=raw.get("time_window_id", ""),
+                challenge_deadline_bucket=raw.get("challenge_deadline_bucket", ""),
             )
 
 

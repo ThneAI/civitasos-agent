@@ -178,3 +178,31 @@ def test_subjective_time_snapshot_used(tmp_path: Path) -> None:
     assert row["subjective_recommended_mode"] == "deep_think"
     assert row["llm_mode_request"] == "deep_think"
     assert row["llm_mode_selected"] == "true"
+
+
+def test_relation_time_snapshot_used(tmp_path: Path) -> None:
+    csv_path = tmp_path / "T.csv"
+    briefing = {
+        "relation_context": {
+            "id": "relctx-1",
+            "memory_refs": ["failure:1", "challenge:2"],
+        },
+        "time_window": {
+            "id": "tw-1",
+            "challenge_deadline_bucket": "2026-05-01T00:00:00Z/5s",
+        },
+    }
+    with RawWriter(csv_path) as writer:
+        adapter = CollectorAdapter(
+            run_id="R",
+            agent_id="A",
+            loop=_make_loop(),
+            writer=writer,
+        )
+        adapter.bind_task("T")
+        adapter(_make_ctx(briefing=briefing))
+    row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
+    assert row["relation_context_id"] == "relctx-1"
+    assert row["relation_memory_refs"] == "failure:1;challenge:2"
+    assert row["time_window_id"] == "tw-1"
+    assert row["challenge_deadline_bucket"] == "2026-05-01T00:00:00Z/5s"

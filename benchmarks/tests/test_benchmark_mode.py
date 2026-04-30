@@ -117,6 +117,28 @@ def test_prefer_target_rule_picks_matching_task(monkeypatch):
     assert decision.params["task_id"] == "backend_42"
 
 
+def test_prefer_target_rule_injects_g3_relation_context_for_v2_tasks(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G01_happy_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+
+    briefing = {"pool_tasks": [{"task_id": "backend_42"}]}
+    decision = rule_fn(briefing, {})
+
+    assert decision is not None
+    assert decision.action == "pool_claim"
+    assert briefing["relation_context"]["id"] == (
+        "bench-relation:G01:alpha-beta-gamma:G01_happy_01"
+    )
+    assert briefing["relation_context"]["memory_refs"] == [
+        "relation:G01:prior_success",
+        "challenge:G01_happy_01:latest",
+    ]
+    assert briefing["time_window"]["id"] == "bench-window:G01_happy_01"
+
+
 def test_prefer_target_rule_claims_even_when_pool_snapshot_has_no_match(monkeypatch):
     monkeypatch.setenv("BENCHMARK_TASK_ID", "R01_test_01")
     monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
@@ -260,6 +282,40 @@ def test_prefer_target_rule_no_reclaim_after_active_disappears(monkeypatch):
     d = rule_fn({"active_tasks": []}, {})
     assert d is not None
     assert d.action == "wait"
+
+
+def test_g2_mode_probe_delegates_to_llm_before_backend_target(monkeypatch, tmp_path):
+    task_file = tmp_path / "task_id.txt"
+    backend_file = tmp_path / "backend_task_id.txt"
+    task_file.write_text("R01_test_01", encoding="utf-8")
+    backend_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "R01_test_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "bootstrap-target")
+    monkeypatch.setenv("BENCHMARK_TASK_ID_FILE", str(task_file))
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID_FILE", str(backend_file))
+    monkeypatch.setenv("BENCHMARK_G2_MODE_PROBE_ENABLED", "1")
+    monkeypatch.setenv("BENCHMARK_G2_MODE_PROBE_MAX_TICKS", "1")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {
+        "pool_tasks": [{"task_id": "seed"}],
+        "active_tasks": [{"task_id": "not-target"}],
+        "opportunities": [{"id": "opp"}],
+        "urgency": [{"task_id": "urgent"}],
+    }
+
+    d1 = rule_fn(briefing, {})
+    assert d1 is None
+    assert briefing["benchmark_g2_mode_probe"]["enabled"] is True
+    assert briefing["active_tasks"] == []
+    assert briefing["pool_tasks"] == []
+    assert briefing["opportunities"] == []
+    assert briefing["urgency"] == []
+
+    d2 = rule_fn(briefing, {})
+    assert d2 is not None
+    assert d2.action == "wait"
 
 
 # ── on_reflect installation ─────────────────────────────────────────

@@ -388,6 +388,29 @@ class Orchestrator:
 
         # Publish current task ids for benchmark_mode rule/collector inside agent.py.
         session.task_id_file.write_text(task.id, encoding="utf-8")
+        pre_task_probe_ticks = 0
+        if _env_bool("BENCHMARK_G2_MODE_PROBE_ENABLED", default=False):
+            # Hold back the backend target id briefly so benchmark_mode can let
+            # the real LLM make one no-active-task subjective-time decision.
+            session.backend_task_id_file.write_text("", encoding="utf-8")
+            pre_task_probe_ticks = _wait_for_g2_mode_probe_ticks(
+                raw_csv=raw_csv,
+                proc=session.proc,
+                min_ticks=_env_int("BENCHMARK_G2_MODE_PROBE_TICKS", 1, min_value=0),
+                timeout_s=_env_float("BENCHMARK_G2_MODE_PROBE_TIMEOUT_S", 90.0, min_value=0.0),
+                poll_interval_s=self._cfg.poll_interval_s,
+            )
+            if pre_task_probe_ticks > 0:
+                logger.info(
+                    "[orch-g2-probe] task=%s observed %d pre-task tick(s)",
+                    task.id,
+                    pre_task_probe_ticks,
+                )
+            else:
+                logger.warning(
+                    "[orch-g2-probe] task=%s produced no pre-task tick before timeout",
+                    task.id,
+                )
 
         backend_task_id: str
         try:
@@ -440,7 +463,7 @@ class Orchestrator:
             _IDENTITY_PROBE_GRACE_TICKS_DEFAULT,
             min_value=0,
         )
-        tick_limit_budget = task.max_ticks
+        tick_limit_budget = task.max_ticks + pre_task_probe_ticks
         claim_spin_grace_used = False
         identity_probe_grace_used = False
         t0 = time.monotonic()
@@ -1038,6 +1061,51 @@ def _env_int(name: str, default: int, *, min_value: int = 0) -> int:
     if value < min_value:
         return min_value
     return value
+
+
+def _env_float(name: str, default: float, *, min_value: float = 0.0) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r; fallback to %.1f", name, raw, default)
+        return default
+    if value < min_value:
+        return min_value
+    return value
+
+
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _wait_for_g2_mode_probe_ticks(
+    *,
+    raw_csv: Path,
+    proc: subprocess.Popen[Any],
+    min_ticks: int,
+    timeout_s: float,
+    poll_interval_s: float,
+) -> int:
+    """Wait for benchmark-mode pre-task subjective-time probe rows."""
+    if min_ticks <= 0 or timeout_s <= 0:
+        return 0
+    start_seq = _tail_tick_seq(raw_csv)
+    deadline = time.monotonic() + timeout_s
+    last_seq = start_seq
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return max(0, last_seq - start_seq)
+        last_seq = _tail_tick_seq(raw_csv)
+        if last_seq - start_seq >= min_ticks:
+            return max(0, last_seq - start_seq)
+        time.sleep(max(poll_interval_s, 0.05))
+    return max(0, _tail_tick_seq(raw_csv) - start_seq)
 
 
 def _terminate(proc: subprocess.Popen[Any], grace_s: float, *, then_kill: bool = False) -> None:

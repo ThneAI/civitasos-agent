@@ -9,13 +9,16 @@ from observability.metrics.computers import (
     m5_reaction_latency,
     m6_wait_ratio,
     g2_subjective_mode,
+    g3_relation_time,
 )
 from observability.metrics.computers._loader import TaskRun, TickRow
 
 
 def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
           gap: float = 0.0, ts: str = "", lessons_count: int = 0,
-          llm_mode_request: str = "", llm_mode_selected: bool = False) -> TickRow:
+          llm_mode_request: str = "", llm_mode_selected: bool = False,
+          relation_context_id: str = "", relation_memory_refs: str = "",
+          time_window_id: str = "", decision_reasoning: str = "") -> TickRow:
     return TickRow(
         run_id="R", agent_id="A", task_id="T",
         tick_seq=seq,
@@ -29,6 +32,10 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
         lessons_count=lessons_count,
         llm_mode_request=llm_mode_request,
         llm_mode_selected=llm_mode_selected,
+        relation_context_id=relation_context_id,
+        relation_memory_refs=relation_memory_refs,
+        time_window_id=time_window_id,
+        decision_reasoning=decision_reasoning,
     )
 
 
@@ -241,3 +248,35 @@ def test_g2_subjective_mode_no_wait_ticks_returns_null_observable_ratio() -> Non
     assert out["g2_mode_choice_observable_ratio"] is None
     assert out["g2_llm_waiting_ratio"] is None
     assert out["g2_llm_deep_think_ratio"] is None
+
+
+# --- G.3 ---------------------------------------------------------------
+
+def test_g3_relation_time_empty_when_no_relation_context() -> None:
+    t = TaskRun(task_id="T", ticks=[_tick(1, action="task_execute")])
+    out = g3_relation_time.compute([t])
+    assert out["g3_relation_memory_hit_ratio"] is None
+    assert out["g3_relation_aware_decision_ratio"] is None
+    assert out["g3_cross_agent_time_consistency_ratio"] is None
+
+
+def test_g3_relation_time_ratios_for_relation_aware_tasks() -> None:
+    with_memory = TaskRun(task_id="T1", ticks=[
+        _tick(
+            1,
+            relation_context_id="rel-1",
+            relation_memory_refs="failure:1;challenge:2",
+            time_window_id="tw-1",
+        ),
+    ])
+    without_memory = TaskRun(task_id="T2", ticks=[
+        _tick(
+            1,
+            relation_context_id="rel-2",
+            decision_reasoning="peer trust changed after prior challenge",
+        ),
+    ])
+    out = g3_relation_time.compute([with_memory, without_memory])
+    assert out["g3_relation_memory_hit_ratio"] == 0.5
+    assert out["g3_relation_aware_decision_ratio"] == 1.0
+    assert out["g3_cross_agent_time_consistency_ratio"] == 0.5

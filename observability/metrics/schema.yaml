@@ -1,4 +1,4 @@
-# Raw Tick CSV Schema — F.0.a v1.5
+# Raw Tick CSV Schema — F.0.a v1.6
 # 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
 # v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
@@ -6,8 +6,9 @@
 # v1.3 变更：新增 institutional identity 观测列（identity_state / remaining_epochs / prompt_injected）。
 # v1.4 变更：新增 G.2 subjective-time 与 LLM 自主 waiting/deep_think 选择观测列。
 # v1.5 变更：final_metrics 新增 G.2 mode-choice 聚合指标。
+# v1.6 变更：新增 G.3 relation memory / cross-agent time consistency 空载观测列与聚合列。
 
-schema_version: "1.5"
+schema_version: "1.6"
 artifact: "raw_tick"
 
 columns:
@@ -171,11 +172,31 @@ columns:
     required: false
     source: "本 tick 是否由 LLM 自主选择 waiting/deep_think"
 
+  - name: relation_context_id
+    type: string
+    required: false
+    source: "G.3 relation context stable id（无 relation context 时为空）"
+
+  - name: relation_memory_refs
+    type: string
+    required: false
+    source: "G.3 决策引用的 relation memory / failure / challenge refs，多个 ref 用 ; 分隔"
+
+  - name: time_window_id
+    type: string
+    required: false
+    source: "G.3 同一 task/relation event 的跨 Agent 可比对时间窗口 id"
+
+  - name: challenge_deadline_bucket
+    type: string
+    required: false
+    source: "G.3 challenge_deadline_at 的稳定 bucket，用于跨 Agent 时间一致性检查"
+
 # ---------------------------------------------------------------------------
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.5"
+  schema_version: "1.6"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
@@ -214,4 +235,13 @@ final_metrics:
     - {name: g2_llm_deep_think_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'G.2：LLM 显式选择 deep_think / 所有显式 mode_request'}
+    - {name: g3_relation_memory_hit_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'G.3：relation-aware 任务中引用 relation memory / failure / challenge ref 的比例；无 relation-aware 任务时为 null'}
+    - {name: g3_relation_aware_decision_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'G.3：relation-aware 任务中决策 trace 带 peer/relation-specific evidence 的比例；无 relation-aware 任务时为 null'}
+    - {name: g3_cross_agent_time_consistency_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'G.3：本 agent 对 relation-aware 任务输出 time_window_id 的覆盖率；merge 阶段再做跨 Agent 一致性检查'}
     - {name: notes, type: string, required: false}

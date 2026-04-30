@@ -21,6 +21,7 @@ def _load_yaml() -> dict:
 def test_schema_version_matches_yaml() -> None:
     data = _load_yaml()
     assert data["schema_version"] == SCHEMA_VERSION
+    assert data["final_metrics"]["schema_version"] == SCHEMA_VERSION
 
 
 def test_columns_match_yaml_order() -> None:

@@ -39,11 +39,20 @@ AGENT_IDS_FILE="$RUNS_ROOT/agent_ids.json"
 #   BENCHMARK_IDENTITY_PROBE_ENABLED=1 → emit one capability-differentiated
 #                             bridge action before LLM execute so short happy
 #                             path tasks remain inter-agent observable
+#   BENCHMARK_G2_MODE_PROBE_ENABLED=1 → before each backend task is claimable,
+#                             insert one real no-active-task LLM tick so G.2
+#                             waiting/deep_think mode choice is observable
 export LLM_DISABLE_THINKING="${LLM_DISABLE_THINKING:-0}"
 export BENCHMARK_TICK_INTERVAL_S="${BENCHMARK_TICK_INTERVAL_S:-0.1}"
 export BENCHMARK_IDLE_INTERVAL_S="${BENCHMARK_IDLE_INTERVAL_S:-1.0}"
+export BENCHMARK_WAIT_INTERVAL_S="${BENCHMARK_WAIT_INTERVAL_S:-1.0}"
+export BENCHMARK_DEEP_THINK_INTERVAL_S="${BENCHMARK_DEEP_THINK_INTERVAL_S:-1.0}"
 export BENCHMARK_IDENTITY_PROBE_ENABLED="${BENCHMARK_IDENTITY_PROBE_ENABLED:-1}"
 export BENCHMARK_IDENTITY_PROBE_GRACE_TICKS="${BENCHMARK_IDENTITY_PROBE_GRACE_TICKS:-2}"
+export BENCHMARK_G2_MODE_PROBE_ENABLED="${BENCHMARK_G2_MODE_PROBE_ENABLED:-1}"
+export BENCHMARK_G2_MODE_PROBE_TICKS="${BENCHMARK_G2_MODE_PROBE_TICKS:-1}"
+export BENCHMARK_G2_MODE_PROBE_MAX_TICKS="${BENCHMARK_G2_MODE_PROBE_MAX_TICKS:-1}"
+export BENCHMARK_G2_MODE_PROBE_TIMEOUT_S="${BENCHMARK_G2_MODE_PROBE_TIMEOUT_S:-90}"
 
 # Smoke knobs
 SMOKE="${SMOKE:-0}"

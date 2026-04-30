@@ -1,7 +1,7 @@
 # Observability Metrics — F.0.a 指标采集器
 
 > **关联文档**: [WISDOM_EVOLUTION_ROADMAP.md](../../../civitasos/doc/plan/WISDOM_EVOLUTION_ROADMAP.md) Gate F.0.a
-> **状态**: DRAFT v1.5 (自审后修订；schema + 接口已定，M4 已切到 H.2-lite 可计算，II-1 identity prompt 与 G.2 subjective-time mode request 已可观测并可聚合)
+> **状态**: DRAFT v1.6 (自审后修订；schema + 接口已定，M4 已切到 H.2-lite 可计算，II-1 identity prompt、G.2 subjective-time mode request、G.3 relation-time 空载字段已可观测)
 >
 > **v1.1 变更摘要**（自审 RCA 触发）:
 > - M3 操作化：阈值与「行为模式改变」给出可计算定义
@@ -15,6 +15,7 @@
 > - v1.3 新增 `identity_state / identity_remaining_epochs / identity_prompt_injected`，用于观测 II-1 institutional identity 是否进入决策面
 > - v1.4 新增 `subjective_lifecycle_stage / subjective_recommended_mode / llm_mode_request / llm_mode_selected`，用于观测 G.2 中 LLM 是否自主选择 `waiting/deep_think`
 > - v1.5 在 final_metrics 新增 `g2_mode_choice_observable_ratio / g2_llm_waiting_ratio / g2_llm_deep_think_ratio`
+> - v1.6 新增 G.3 relation memory / cross-agent time consistency 空载字段与聚合列
 
 ---
 
@@ -59,7 +60,8 @@ observability/metrics/
 │   ├── m4_lessons_impact.py    # H.2-lite 可计算（无信号时返回 null+notes）
 │   ├── m5_reaction_latency.py  # 输出 per-tick + per-task 双层
 │   ├── m6_wait_ratio.py        # F.0 弱化版；H.1 后拆为 idle_thinking + purposeful_wait
-│   └── g2_subjective_mode.py   # G.2 mode-choice 聚合指标
+│   ├── g2_subjective_mode.py   # G.2 mode-choice 聚合指标
+│   └── g3_relation_time.py     # G.3 relation memory / time-window 空载聚合指标
 └── tests/
     ├── test_schema.py          # schema 字段完备性
     ├── test_collector.py       # adapter 注入与 tick 解析
@@ -105,8 +107,12 @@ observability/metrics/
 | `subjective_recommended_mode` | enum | briefing.subjective_time.recommended_mode（规则/LLM 选择后最终推荐模式） | optional |
 | `llm_mode_request` | enum | LLM 显式声明的 `mode_request: waiting/deep_think` | optional |
 | `llm_mode_selected` | bool | 本 tick 是否由 LLM 自主选择 waiting/deep_think | optional |
+| `relation_context_id` | string | G.3 relation context stable id | optional |
+| `relation_memory_refs` | string | G.3 决策引用的 relation memory / failure / challenge refs，`;` 分隔 | optional |
+| `time_window_id` | string | G.3 同一 task/relation event 的跨 Agent 可比对时间窗口 id | optional |
+| `challenge_deadline_bucket` | string | G.3 challenge deadline 的稳定 bucket | optional |
 
-**Schema 版本**：v1.5。冻结后只允许追加新列，不允许修改/删除。
+**Schema 版本**：v1.6。冻结后只允许追加新列，不允许修改/删除。
 
 ### CSV 转义策略（v1.1 新增）
 
@@ -142,7 +148,27 @@ observability/metrics/
 | `g2_mode_choice_observable_ratio` | float \| null | LLM 显式 `mode_request` tick / wait tick |
 | `g2_llm_waiting_ratio` | float \| null | LLM 显式选择 `waiting` / 所有显式 mode_request |
 | `g2_llm_deep_think_ratio` | float \| null | LLM 显式选择 `deep_think` / 所有显式 mode_request |
+| `g3_relation_memory_hit_ratio` | float \| null | relation-aware 任务中引用 relation memory / failure / challenge ref 的比例 |
+| `g3_relation_aware_decision_ratio` | float \| null | relation-aware 任务中决策 trace 带 peer/relation-specific evidence 的比例 |
+| `g3_cross_agent_time_consistency_ratio` | float \| null | 本 agent 对 relation-aware 任务输出 `time_window_id` 的覆盖率；merge 阶段再做跨 Agent 一致性检查 |
 | `notes` | string | 特殊情况说明（数据不足、指标空载等） |
+
+### G.2 Gate Thresholds
+
+`benchmarks.f1c_merge` 默认执行 G.2 hard gate：
+
+- `g2_mode_choice_observable_ratio` 在 `final_metrics` 中必须 100% 非空。
+- 每个 Agent 的 raw `llm_mode_selected` 数量必须大于等于该 Agent 的 `task_count` 总和。
+
+历史数据回放可使用 `--skip-g2-gate`，但正式 Gate / nightly 不应跳过。
+
+### G.3 Gate Status
+
+`benchmarks.f1c_merge` 已输出 `g3_gate`。当前 v1 任务没有 relation-aware 行时自动标记 `skipped=true` 且通过；一旦 v2 relation-aware 任务产生 `g3_*` 行，默认按初始阈值检查：
+
+- `g3_relation_memory_hit_ratio >= 0.80`
+- `g3_relation_aware_decision_ratio >= 0.80`
+- `g3_cross_agent_time_consistency_ratio >= 0.95`
 
 ---
 

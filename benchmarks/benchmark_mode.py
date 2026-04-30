@@ -136,6 +136,25 @@ def _identity_probe_enabled() -> bool:
     return raw not in {"0", "false", "off", "no"}
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _env_int(name: str, default: int, *, min_value: int = 0) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("benchmark_mode: invalid %s=%r; fallback to %d", name, raw, default)
+        return default
+    return max(value, min_value)
+
+
 def _identity_probe_action(agent_caps: list[str]) -> str:
     cap_set = set(agent_caps)
     if {"trading", "analysis"} & cap_set:
@@ -145,6 +164,44 @@ def _identity_probe_action(agent_caps: list[str]) -> str:
     if {"scholar", "research"} & cap_set:
         return "identity_probe_scholar"
     return "identity_probe_general"
+
+
+def _g3_relation_context_enabled(task_id: str) -> bool:
+    if not task_id.startswith(("G01_", "G02_")):
+        return False
+    return _env_flag("BENCHMARK_G3_RELATION_CONTEXT_ENABLED", default=True)
+
+
+def _inject_g3_relation_context(briefing: dict[str, Any], task_id: str) -> None:
+    """Attach deterministic G.3 relation/time context for v2 benchmark tasks."""
+    if not task_id or not _g3_relation_context_enabled(task_id):
+        return
+    family = task_id.split("_", 1)[0]
+    relation_id = f"bench-relation:{family}:alpha-beta-gamma"
+    context_id = f"{relation_id}:{task_id}"
+    time_window_id = f"bench-window:{task_id}"
+    deadline_bucket = f"bench-deadline:{task_id}"
+
+    briefing.setdefault(
+        "relation_context",
+        {
+            "id": context_id,
+            "relation_id": relation_id,
+            "peer_did": "did:civ:bench:peer",
+            "memory_refs": [
+                f"relation:{family}:prior_success",
+                f"challenge:{task_id}:latest",
+            ],
+            "challenge_deadline_bucket": deadline_bucket,
+        },
+    )
+    briefing.setdefault(
+        "time_window",
+        {
+            "id": time_window_id,
+            "challenge_deadline_bucket": deadline_bucket,
+        },
+    )
 
 
 def _verification_probe_decision(
@@ -257,16 +314,24 @@ def _install_fast_intervals() -> None:
     try:
         active = float(os.getenv("BENCHMARK_TICK_INTERVAL_S", "0.1"))
         idle = float(os.getenv("BENCHMARK_IDLE_INTERVAL_S", "1.0"))
+        waiting = float(os.getenv("BENCHMARK_WAIT_INTERVAL_S", str(idle)))
+        deep_think = float(os.getenv("BENCHMARK_DEEP_THINK_INTERVAL_S", str(idle)))
     except ValueError as exc:
         logger.warning("benchmark_mode: bad interval env: %s", exc)
         return
     LM = _loop_mod.LoopMode
     _loop_mod._INTERVALS[LM.ACTIVE] = active
     _loop_mod._INTERVALS[LM.IDLE] = idle
+    _loop_mod._INTERVALS[LM.WAITING] = waiting
+    _loop_mod._INTERVALS[LM.DEEP_THINK] = deep_think
     # Leave SLEEPING/EVENT untouched.
     logger.info(
-        "benchmark_mode: loop intervals overridden (ACTIVE=%.2fs, IDLE=%.2fs)",
-        active, idle,
+        "benchmark_mode: loop intervals overridden "
+        "(ACTIVE=%.2fs, IDLE=%.2fs, WAITING=%.2fs, DEEP_THINK=%.2fs)",
+        active,
+        idle,
+        waiting,
+        deep_think,
     )
 
 
@@ -400,6 +465,8 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
     backend_task_id_file = os.environ.get("BENCHMARK_BACKEND_TASK_ID_FILE", "").strip()
     identity_probe_enabled = _identity_probe_enabled()
     identity_probe_action = _identity_probe_action(agent_caps)
+    g2_mode_probe_enabled = _env_flag("BENCHMARK_G2_MODE_PROBE_ENABLED", default=False)
+    g2_mode_probe_max_ticks = _env_int("BENCHMARK_G2_MODE_PROBE_MAX_TICKS", 1, min_value=0)
     probe_rate = _probe_rate()
     probe_seed = os.environ.get("BENCHMARK_VERIFICATION_PROBE_SEED", "f1c-m2").strip() or "f1c-m2"
     configured_probe_actions = _probe_actions()
@@ -430,6 +497,7 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
         "verification_decided": set(),
         "identity_probed": set(),
         "resource_blocked_reported": set(),
+        "g2_mode_probe_attempts": {},
         "adversarial_seen": 0,
         "adversarial_probed": 0,
     }
@@ -437,8 +505,36 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
     def benchmark_prefer_target_task(
         briefing: dict, _memories: dict,
     ) -> Decision | None:
+        current_task_id = _read_text_file(task_id_file) if task_id_file else benchmark_task_id
+        _inject_g3_relation_context(briefing, current_task_id)
         target_tid = _read_text_file(backend_task_id_file) if backend_task_id_file else backend_task_id
         if not target_tid:
+            attempts_by_task = state["g2_mode_probe_attempts"]
+            attempts = int(attempts_by_task.get(current_task_id, 0)) if current_task_id else 0
+            if (
+                g2_mode_probe_enabled
+                and current_task_id
+                and attempts < g2_mode_probe_max_ticks
+            ):
+                attempts_by_task[current_task_id] = attempts + 1
+                # Mutate the per-tick briefing in benchmark mode only so the
+                # LLM sees a real no-active-task subjective-time choice window,
+                # not the soon-to-arrive orchestrator target task.
+                briefing["active_tasks"] = []
+                briefing["pool_tasks"] = []
+                briefing["opportunities"] = []
+                briefing["urgency"] = []
+                briefing["benchmark_g2_mode_probe"] = {
+                    "enabled": True,
+                    "task_id": current_task_id,
+                    "attempt": attempts + 1,
+                    "instruction": (
+                        "No backend task is claimable yet. Choose an autonomous "
+                        "subjective-time mode and emit mode_request: waiting or "
+                        "mode_request: deep_think."
+                    ),
+                }
+                return None
             return Decision(
                 action="wait",
                 reasoning="benchmark mode: waiting for orchestrator target task id",
@@ -463,8 +559,6 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
             if tid == target_tid:
                 state["seen_active"] = True
                 if llm_execute:
-                    current_task_id = _read_text_file(task_id_file) if task_id_file else benchmark_task_id
-
                     # A02 special-case: keep scenario semantics ("report blocked")
                     # but close backend task through successful task_execute bridge.
                     if (

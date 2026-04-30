@@ -5,7 +5,7 @@
 # - Institutional Identity ON
 # - Identity Emergence ON
 # - F.1.c run + merge
-# - hard-check integrity/sentinel/ii2 gates
+# - hard-check integrity/sentinel/ii2/g2/g3 gates
 #
 # Optional:
 #   BASELINE_RUNS_ROOT=runs/F1c_m2_full_2026-04-23 \
@@ -87,13 +87,17 @@ summary = json.loads(summary_path.read_text(encoding="utf-8"))
 integrity_ok = bool(summary.get("integrity_gate", {}).get("passed", False))
 sentinel_ok = bool(summary.get("sentinel_gate", {}).get("passed", False))
 ii2_ok = bool(summary.get("ii2_gate", {}).get("passed", False))
-if not (integrity_ok and sentinel_ok and ii2_ok):
+g2_ok = bool(summary.get("g2_gate", {}).get("passed", False))
+g3_ok = bool(summary.get("g3_gate", {}).get("passed", False))
+if not (integrity_ok and sentinel_ok and ii2_ok and g2_ok and g3_ok):
     print(json.dumps(
         {
             "passed": False,
             "integrity_gate": summary.get("integrity_gate"),
             "sentinel_gate": summary.get("sentinel_gate"),
             "ii2_gate": summary.get("ii2_gate"),
+            "g2_gate": summary.get("g2_gate"),
+            "g3_gate": summary.get("g3_gate"),
         },
         indent=2,
     ))
@@ -104,6 +108,8 @@ print(json.dumps(
         "integrity_gate": summary.get("integrity_gate"),
         "sentinel_gate": summary.get("sentinel_gate"),
         "ii2_gate": summary.get("ii2_gate"),
+        "g2_gate": summary.get("g2_gate"),
+        "g3_gate": summary.get("g3_gate"),
     },
     indent=2,
 ))
