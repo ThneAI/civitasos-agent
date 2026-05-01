@@ -115,6 +115,26 @@ class FakeBackendAgent:
         }
 
 
+class FakeRevisionBackendAgent(FakeBackendAgent):
+    def pool_get_task(self, task_id: str) -> dict[str, Any]:
+        payload = super().pool_get_task(task_id)
+        payload["task"]["governed_revision_context"] = {
+            "approved": True,
+            "status": "approved",
+            "authority": "governance_council",
+            "source": "backend_governance_read_model",
+            "revision_id": "rev-backend-1",
+            "proposal_id": "prop-backend-1",
+            "decision_id": "prop-backend-1",
+            "rule_id": "h0e_constitutional_guard",
+            "old_value": "review_required_v1",
+            "new_value": "review_required_v2",
+            "iem_anchor_hash": "sha256:anchor",
+            "decision_proof": {"proof_hash": "sha256:proof"},
+        }
+        return payload
+
+
 # ── install_if_present ──────────────────────────────────────────────
 
 def test_install_no_op_when_env_unset(monkeypatch):
@@ -366,6 +386,34 @@ def test_pre_expect_hook_injects_h0e_governed_revision(monkeypatch):
     assert revision["authority"] == "governance_council"
     assert revision["rule_id"] == "h0e_constitutional_guard"
     assert energy_state.reputation == 0.55
+
+
+def test_pre_expect_hook_prefers_backend_h0e_governed_revision(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G08_h0e_governed_revision_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    runner._agent = FakeRevisionBackendAgent()
+    runner._loop = SimpleNamespace(
+        _energy=SimpleNamespace(
+            state=SimpleNamespace(
+                balance=500.0,
+                balance_cap=10000.0,
+                risk_score=0.0,
+                reputation=0.5,
+            )
+        )
+    )
+    benchmark_mode.install(runner)
+
+    briefing: dict[str, Any] = {"pool_tasks": [{"task_id": "backend_42"}]}
+    assert runner._on_perceive_fn is not None
+    runner._on_perceive_fn(briefing)
+
+    revision = briefing["governed_revision_context"]
+    assert briefing["h0e_expectation_context"]["source"] == "backend_governance_read_model"
+    assert revision["revision_id"] == "rev-backend-1"
+    assert revision["proposal_id"] == "prop-backend-1"
+    assert revision["decision_proof"]["proof_hash"] == "sha256:proof"
 
 
 def test_backend_g3_time_window_is_comparable_across_backend_tasks(monkeypatch):

@@ -282,6 +282,58 @@ class Orchestrator:
             logger.warning("[orch-faucet] unexpected error: %s", exc)
             return False
 
+    def _backend_task_extra_input(self, task: TaskSpec, *, task_dir: Path) -> dict[str, Any]:
+        """Build extra backend task input for stage-specific read models."""
+        if "h0e" not in task.id.lower():
+            return {}
+        if not _env_bool("BENCHMARK_H0E_BACKEND_REVISION_SEED_ENABLED", default=True):
+            return {}
+        client = self._cfg.backend_client
+        if client is None:
+            return {}
+        try:
+            sdk = client._sdk  # type: ignore[attr-defined]
+            proposer = str(getattr(sdk, "_agent_id", "") or self._cfg.orch_agent_name)
+            revision_payload = client.create_normative_revision(
+                proposer=proposer,
+                rule_id="h0e_constitutional_guard",
+                old_value="review_required_v1",
+                new_value="review_required_v2",
+                authority="governance_council",
+                iem_anchor={
+                    "schema_version": "iem:v1",
+                    "benchmark_task_id": task.id,
+                    "storage_hint": f"civitasos://benchmark/{task.id}/iem/latest",
+                },
+            )
+            revision = revision_payload.get("governed_revision_context") or {}
+            proposal = revision_payload.get("proposal") or {}
+            proposal_id = str(revision.get("proposal_id") or proposal.get("id") or "")
+            revision_id = str(revision.get("revision_id") or "")
+            if not proposal_id or not revision_id:
+                raise ValueError(f"normative revision response missing ids: {revision_payload}")
+            finalized = client.finalize_governance_proposal(proposal_id, approved=True)
+            finalized_revision = finalized.get("governed_revision_context") or revision
+            (task_dir / "h0e_governed_revision.json").write_text(
+                json.dumps(finalized_revision, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return {
+                "benchmark_task_id": task.id,
+                "governed_revision_id": revision_id,
+                "governance_proposal_id": proposal_id,
+            }
+        except Exception as exc:  # noqa: BLE001
+            if _env_bool("BENCHMARK_H0E_REQUIRE_BACKEND_SOURCE", default=False):
+                raise
+            logger.warning(
+                "[orch-h0e] task=%s backend governed revision seed failed; "
+                "benchmark_mode may fall back to synthetic context: %s",
+                task.id,
+                exc,
+            )
+            return {}
+
     def _rotate_orchestrator_identity(self) -> None:
         """Generate a fresh orchestrator key and re-register it for continued escrow."""
         from civitasos import CivitasAgent  # type: ignore[import-not-found]
@@ -422,6 +474,7 @@ class Orchestrator:
                 )
 
         backend_task_id: str
+        extra_input = self._backend_task_extra_input(task, task_dir=task_dir)
         try:
             backend_task_id = self._cfg.backend_client.create(
                 briefing=task.briefing,
@@ -429,6 +482,7 @@ class Orchestrator:
                 capability=self._cfg.backend_capability,
                 reward=self._cfg.backend_reward,
                 deadline_secs=self._cfg.backend_deadline_secs,
+                extra_input=extra_input,
             )
         except Exception as exc:  # noqa: BLE001
             status = getattr(exc, "status_code", None)
@@ -451,6 +505,7 @@ class Orchestrator:
                 capability=self._cfg.backend_capability,
                 reward=self._cfg.backend_reward,
                 deadline_secs=self._cfg.backend_deadline_secs,
+                extra_input=extra_input,
             )
 
         (task_dir / "backend_task_id.txt").write_text(backend_task_id, encoding="utf-8")
@@ -611,6 +666,7 @@ class Orchestrator:
             assert self._cfg.backend_client is not None  # guaranteed by __post_init__
             assert self._cfg.target_agent_id is not None
             self._seed_backend_relation_failures(task, task_dir=task_dir)
+            extra_input = self._backend_task_extra_input(task, task_dir=task_dir)
             try:
                 backend_task_id = self._cfg.backend_client.create(
                     briefing=task.briefing,
@@ -618,6 +674,7 @@ class Orchestrator:
                     capability=self._cfg.backend_capability,
                     reward=self._cfg.backend_reward,
                     deadline_secs=self._cfg.backend_deadline_secs,
+                    extra_input=extra_input,
                 )
             except Exception as exc:  # noqa: BLE001
                 # On 402 (Insufficient funds) rotate the orchestrator identity
@@ -642,6 +699,7 @@ class Orchestrator:
                     capability=self._cfg.backend_capability,
                     reward=self._cfg.backend_reward,
                     deadline_secs=self._cfg.backend_deadline_secs,
+                    extra_input=extra_input,
                 )
             (task_dir / "backend_task_id.txt").write_text(backend_task_id, encoding="utf-8")
             env["BENCHMARK_BACKEND_TASK_ID"] = backend_task_id

@@ -116,6 +116,7 @@ class BackendTaskClient:
         capability: str | None = None,
         reward: int = 100,
         deadline_secs: int = 3600,
+        extra_input: dict[str, Any] | None = None,
     ) -> str:
         """Post a benchmark task locked to ``target_agent_id`` (D3).
 
@@ -123,12 +124,15 @@ class BackendTaskClient:
         the SDK raises on backend errors — orchestrator decides retry policy.
         """
         cap = capability or self._default_capability
+        input_data: dict[str, Any] = {"description": briefing}
+        if extra_input:
+            input_data.update(extra_input)
         resp: dict[str, Any] | Any
         for attempt in range(self._create_max_retries + 1):
             try:
                 resp = self._sdk.pool_post(
                     required_capability=cap,
-                    input_data={"description": briefing},
+                    input_data=input_data,
                     reward=reward,
                     deadline_secs=deadline_secs,
                     allowed_agents=[target_agent_id],
@@ -156,6 +160,59 @@ class BackendTaskClient:
         if not task_id:
             raise ValueError(f"pool_post response missing task_id: {resp}")
         return str(task_id)
+
+    def create_normative_revision(
+        self,
+        *,
+        proposer: str,
+        rule_id: str,
+        old_value: Any,
+        new_value: Any,
+        authority: str = "governance_council",
+        iem_anchor: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a backend governance-store Normative revision proposal."""
+        payload: dict[str, Any] = {
+            "proposer": proposer,
+            "rule_id": rule_id,
+            "old_value": old_value,
+            "new_value": new_value,
+            "authority": authority,
+            "source": "backend_governance_read_model",
+        }
+        if iem_anchor:
+            payload["iem_anchor"] = iem_anchor
+        create = getattr(self._sdk, "create_normative_revision", None)
+        if callable(create):
+            return _expect_mapping(create(**payload), "create_normative_revision")
+        post = getattr(self._sdk, "_post", None)
+        if callable(post):
+            return _expect_mapping(
+                post("/governance-store/normative-revisions", payload),
+                "create_normative_revision",
+            )
+        raise AttributeError("SDK does not support governance-store normative revisions")
+
+    def finalize_governance_proposal(
+        self,
+        proposal_id: str,
+        *,
+        approved: bool = True,
+    ) -> dict[str, Any]:
+        """Finalize a governance-store proposal and return its read model payload."""
+        finalize = getattr(self._sdk, "finalize_proposal", None)
+        if callable(finalize):
+            return _expect_mapping(
+                finalize(proposal_id, approved=approved),
+                "finalize_governance_proposal",
+            )
+        post = getattr(self._sdk, "_post", None)
+        if callable(post):
+            return _expect_mapping(
+                post(f"/governance-store/proposals/{proposal_id}/finalize", {"approved": approved}),
+                "finalize_governance_proposal",
+            )
+        raise AttributeError("SDK does not support governance-store proposal finalization")
 
     # -- read -----------------------------------------------------------
 
@@ -421,6 +478,18 @@ def _is_claim_cooldown(exc: Exception) -> bool:
 def _looks_already_claimed(exc: Exception) -> bool:
     msg = str(exc).lower()
     return "already claimed" in msg or "may already be claimed" in msg
+
+
+def _expect_mapping(value: Any, operation: str) -> dict[str, Any]:
+    """Unwrap SDK ApiResponse-or-dict payloads into a mapping."""
+    success = getattr(value, "success", True)
+    if success is False:
+        error = getattr(value, "error", None) or f"{operation} failed"
+        raise RuntimeError(str(error))
+    payload = getattr(value, "data", value)
+    if isinstance(payload, dict):
+        return payload
+    raise ValueError(f"{operation} returned non-dict: {type(payload).__name__}")
 
 
 def _unwrap_task_record(rec: dict[str, Any], task_id: str) -> dict[str, Any]:

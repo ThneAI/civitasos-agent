@@ -283,25 +283,37 @@ def _inject_h0e_expectation_context(
     task_id: str,
     *,
     runner: Any | None = None,
+    backend_task_id: str = "",
 ) -> None:
     """Attach benchmark-only H0-E governed revision read-model evidence."""
     if not _h0e_expectation_context_enabled(task_id):
         return
 
+    backend_revision = _build_backend_h0e_governed_revision_context(
+        briefing,
+        task_id=task_id,
+        backend_task_id=backend_task_id,
+        runner=runner,
+    )
+    source = "backend_governance_read_model" if backend_revision is not None else "benchmark_h0e_smoke"
     briefing["h0e_expectation_context"] = {
         "benchmark_task_id": task_id,
-        "source": "benchmark_h0e_smoke",
+        "backend_task_id": backend_task_id,
+        "source": source,
     }
-    briefing["governed_revision_context"] = {
-        "approved": True,
-        "status": "approved",
-        "authority": "governance_council",
-        "source": "backend_governance_read_model",
-        "revision_id": f"h0e-revision:{task_id}",
-        "rule_id": "h0e_constitutional_guard",
-        "old_value": "review_required_v1",
-        "new_value": "review_required_v2",
-    }
+    if backend_revision is not None:
+        briefing["governed_revision_context"] = backend_revision
+    else:
+        briefing["governed_revision_context"] = {
+            "approved": True,
+            "status": "approved",
+            "authority": "governance_council",
+            "source": "backend_governance_read_model",
+            "revision_id": f"h0e-revision:{task_id}",
+            "rule_id": "h0e_constitutional_guard",
+            "old_value": "review_required_v1",
+            "new_value": "review_required_v2",
+        }
     briefing["governance_context"] = {
         "actual_participation": 0.85,
         "pending_votes": 0,
@@ -315,6 +327,30 @@ def _inject_h0e_expectation_context(
         risk_score=8.0,
         reputation=0.55,
     )
+
+
+def _build_backend_h0e_governed_revision_context(
+    briefing: dict[str, Any],
+    *,
+    task_id: str,
+    backend_task_id: str,
+    runner: Any | None,
+) -> dict[str, Any] | None:
+    if not backend_task_id or not _env_flag("BENCHMARK_H0E_BACKEND_CONTEXT_ENABLED", default=True):
+        return None
+    task = _lookup_backend_task_snapshot(briefing, backend_task_id=backend_task_id, runner=runner)
+    if not task:
+        return None
+    raw = task.get("governed_revision_context")
+    if raw is None:
+        raw = task.get("normative_revision_context")
+    if not isinstance(raw, dict):
+        return None
+    revision = dict(raw)
+    revision.setdefault("source", "backend_governance_read_model")
+    revision.setdefault("benchmark_task_id", task_id)
+    revision.setdefault("task_id", backend_task_id)
+    return revision
 
 
 def _set_loop_energy(
@@ -793,7 +829,12 @@ def _install_g3_pre_expect_context(
         target_tid = _read_text_file(backend_task_id_file) if backend_task_id_file else backend_task_id
         _inject_h0c_expectation_context(briefing, current_task_id, runner=runner)
         _inject_h0d_expectation_context(briefing, current_task_id, runner=runner)
-        _inject_h0e_expectation_context(briefing, current_task_id, runner=runner)
+        _inject_h0e_expectation_context(
+            briefing,
+            current_task_id,
+            runner=runner,
+            backend_task_id=target_tid,
+        )
         if not target_tid:
             return
         _inject_g3_relation_context(
@@ -1017,7 +1058,12 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
         target_tid = _read_text_file(backend_task_id_file) if backend_task_id_file else backend_task_id
         _inject_h0c_expectation_context(briefing, current_task_id, runner=runner)
         _inject_h0d_expectation_context(briefing, current_task_id, runner=runner)
-        _inject_h0e_expectation_context(briefing, current_task_id, runner=runner)
+        _inject_h0e_expectation_context(
+            briefing,
+            current_task_id,
+            runner=runner,
+            backend_task_id=target_tid,
+        )
         if not target_tid:
             attempts_by_task = state["g2_mode_probe_attempts"]
             attempts = int(attempts_by_task.get(current_task_id, 0)) if current_task_id else 0

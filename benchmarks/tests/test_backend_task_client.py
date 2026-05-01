@@ -150,6 +150,13 @@ class RateLimitError(RuntimeError):
         self.status_code = 429
 
 
+class FakeApiResponse:
+    def __init__(self, data: dict[str, Any], *, success: bool = True) -> None:
+        self.success = success
+        self.data = data
+        self.error = None
+
+
 # ── create ───────────────────────────────────────────────────────────
 
 def test_create_passes_allowed_agents_and_returns_task_id():
@@ -170,6 +177,70 @@ def test_create_uses_explicit_capability_over_default():
     client = BackendTaskClient(sdk, default_capability="general")
     client.create(briefing="x", target_agent_id="a", capability="reasoning")
     assert sdk.post_calls[0]["required_capability"] == "reasoning"
+
+
+def test_create_merges_extra_input_into_backend_task_payload():
+    sdk = FakeSDK()
+    client = BackendTaskClient(sdk, default_capability="bench")
+    client.create(
+        briefing="do X",
+        target_agent_id="alpha-bench",
+        extra_input={"governed_revision_id": "rev-1", "governance_proposal_id": "prop-1"},
+    )
+    assert sdk.post_calls[0]["input_data"] == {
+        "description": "do X",
+        "governed_revision_id": "rev-1",
+        "governance_proposal_id": "prop-1",
+    }
+
+
+def test_create_normative_revision_unwraps_sdk_response():
+    class GovSDK(FakeSDK):
+        def __init__(self) -> None:
+            super().__init__()
+            self.normative_calls: list[dict[str, Any]] = []
+
+        def create_normative_revision(self, **kwargs: Any) -> FakeApiResponse:
+            self.normative_calls.append(kwargs)
+            return FakeApiResponse({
+                "proposal": {"id": "prop-1"},
+                "governed_revision_context": {"revision_id": "rev-1"},
+            })
+
+    sdk = GovSDK()
+    client = BackendTaskClient(sdk)
+    payload = client.create_normative_revision(
+        proposer="did:orch",
+        rule_id="h0e_constitutional_guard",
+        old_value="v1",
+        new_value="v2",
+        iem_anchor={"schema_version": "iem:v1"},
+    )
+    assert payload["proposal"]["id"] == "prop-1"
+    assert payload["governed_revision_context"]["revision_id"] == "rev-1"
+    assert sdk.normative_calls[0]["source"] == "backend_governance_read_model"
+    assert sdk.normative_calls[0]["iem_anchor"] == {"schema_version": "iem:v1"}
+
+
+def test_finalize_governance_proposal_unwraps_sdk_response():
+    class GovSDK(FakeSDK):
+        def __init__(self) -> None:
+            super().__init__()
+            self.finalize_calls: list[tuple[str, bool]] = []
+
+        def finalize_proposal(self, proposal_id: str, approved: bool = True) -> FakeApiResponse:
+            self.finalize_calls.append((proposal_id, approved))
+            return FakeApiResponse({
+                "finalized": True,
+                "governed_revision_context": {"revision_id": "rev-1", "approved": True},
+            })
+
+    sdk = GovSDK()
+    client = BackendTaskClient(sdk)
+    payload = client.finalize_governance_proposal("prop-1", approved=True)
+    assert payload["finalized"] is True
+    assert payload["governed_revision_context"]["approved"] is True
+    assert sdk.finalize_calls == [("prop-1", True)]
 
 
 def test_create_accepts_id_field_when_no_task_id():
