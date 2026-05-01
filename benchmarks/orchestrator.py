@@ -27,6 +27,7 @@ import time
 import uuid
 from collections import deque
 import csv
+import hashlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -294,17 +295,19 @@ class Orchestrator:
         try:
             sdk = client._sdk  # type: ignore[attr-defined]
             proposer = str(getattr(sdk, "_agent_id", "") or self._cfg.orch_agent_name)
+            profile = _h0e_revision_seed_profile(task.id)
+            replay = _h0e_iem_anchor_replay_payload(task.id, profile)
+            (task_dir / "h0e_iem_anchor_replay.json").write_text(
+                json.dumps(replay, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
             revision_payload = client.create_normative_revision(
                 proposer=proposer,
-                rule_id="h0e_constitutional_guard",
-                old_value="review_required_v1",
-                new_value="review_required_v2",
-                authority="governance_council",
-                iem_anchor={
-                    "schema_version": "iem:v1",
-                    "benchmark_task_id": task.id,
-                    "storage_hint": f"civitasos://benchmark/{task.id}/iem/latest",
-                },
+                rule_id=str(profile["rule_id"]),
+                old_value=profile["old_value"],
+                new_value=profile["new_value"],
+                authority=str(profile["authority"]),
+                iem_anchor=replay["anchor"],
             )
             revision = revision_payload.get("governed_revision_context") or {}
             proposal = revision_payload.get("proposal") or {}
@@ -312,6 +315,7 @@ class Orchestrator:
             revision_id = str(revision.get("revision_id") or "")
             if not proposal_id or not revision_id:
                 raise ValueError(f"normative revision response missing ids: {revision_payload}")
+            self._seed_h0e_governance_votes(client, proposal_id, proposer=proposer)
             finalized = client.finalize_governance_proposal(proposal_id, approved=True)
             finalized_revision = finalized.get("governed_revision_context") or revision
             (task_dir / "h0e_governed_revision.json").write_text(
@@ -333,6 +337,26 @@ class Orchestrator:
                 exc,
             )
             return {}
+
+    def _seed_h0e_governance_votes(
+        self,
+        client: BackendTaskClient,
+        proposal_id: str,
+        *,
+        proposer: str,
+    ) -> None:
+        voters: list[str] = []
+        for candidate in (proposer, self._cfg.target_agent_id):
+            if candidate and candidate not in voters:
+                voters.append(candidate)
+        for idx, voter_id in enumerate(voters[:2]):
+            client.cast_governance_vote(
+                proposal_id,
+                voter_id=voter_id,
+                choice="yes",
+                stake=144 if idx == 0 else 121,
+                delegated=False,
+            )
 
     def _rotate_orchestrator_identity(self) -> None:
         """Generate a fresh orchestrator key and re-register it for continued escrow."""
@@ -1187,6 +1211,88 @@ def _tail_actions_all_pool_claim(csv_path: Path, *, window: int) -> bool:
         if eval_success in {"false", "0"}:
             saw_failed_eval = True
     return saw_failed_eval
+
+
+def _h0e_revision_seed_profile(task_id: str) -> dict[str, Any]:
+    task_key = task_id.lower()
+    if "arbitration" in task_key:
+        return {
+            "authority": "arbitration_panel",
+            "rule_id": "h0e_arbitration_guard",
+            "old_value": "appeal_review_required_v1",
+            "new_value": "appeal_review_required_v2",
+        }
+    if "constitutional" in task_key or "constitution" in task_key:
+        return {
+            "authority": "constitutional_stewards",
+            "rule_id": "h0e_constitutional_steward_guard",
+            "old_value": "steward_ratification_required_v1",
+            "new_value": "steward_ratification_required_v2",
+        }
+    return {
+        "authority": "governance_council",
+        "rule_id": "h0e_constitutional_guard",
+        "old_value": "review_required_v1",
+        "new_value": "review_required_v2",
+    }
+
+
+def _h0e_iem_anchor_replay_payload(task_id: str, profile: dict[str, Any]) -> dict[str, Any]:
+    rule_id = str(profile["rule_id"])
+    authority = str(profile["authority"])
+    state = {
+        "schema_version": "iem:v1",
+        "identity_id": f"benchmark:{task_id}",
+        "expectation_vector": {
+            rule_id: {
+                "state_kind": "normative",
+                "lifecycle_state": "revised",
+                "authority": authority,
+            },
+        },
+        "precision_vector": {rule_id: 1.0},
+        "desire_vector": {},
+        "domain_weight_matrix": {"constitutional": 1.0},
+        "drift_parameters": {},
+        "relation_expectation_matrix": {},
+    }
+    update_log = [
+        {
+            "target": "normative_state",
+            "parameter_name": rule_id,
+            "old_value": profile["old_value"],
+            "new_value": profile["new_value"],
+            "rule": "governed_revision",
+            "update_params": {
+                "authority": authority,
+                "domain": "constitutional",
+                "rule_id": rule_id,
+            },
+            "constitution_verdict": "approved: governed revision read model",
+            "local_update_blocked": False,
+        },
+    ]
+    state_hash = _canonical_json_hash(state)
+    update_log_hash = _canonical_json_hash(update_log)
+    anchor = {
+        "schema_version": "iem:v1",
+        "version_id": f"iem:v1:{state_hash.removeprefix('sha256:')[:12]}",
+        "state_hash": state_hash,
+        "latest_update_log_hash": update_log_hash,
+        "storage_hint": f"civitasos://benchmark/{task_id}/iem/latest",
+        "benchmark_task_id": task_id,
+    }
+    return {"state": state, "update_log": update_log, "anchor": anchor}
+
+
+def _canonical_json_hash(payload: Any) -> str:
+    blob = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(blob).hexdigest()}"
 
 
 def _env_int(name: str, default: int, *, min_value: int = 0) -> int:

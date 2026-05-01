@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import re
@@ -72,6 +73,10 @@ _DEFAULT_H0_PREDICTED_UPDATE_FLOOR = 1.0
 _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR = 0.0
 _DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR = 1.0
 _DEFAULT_H0_GOVERNED_REVISION_FLOOR = 1.0
+_DEFAULT_H0_DECISION_PROOF_HASH_FLOOR = 1.0
+_DEFAULT_H0_IEM_ANCHOR_REPLAY_FLOOR = 1.0
+_DEFAULT_H0_VOTE_REFS_FLOOR = 1.0
+_DEFAULT_H0_AUTHORITY_KIND_FLOOR = 1
 _DIM_WEIGHTS = {
     "completion_rate": 0.30,
     "latency_score": 0.20,
@@ -1143,6 +1148,189 @@ def _evaluate_h0_raw_relation_expectation(
     }
 
 
+def _evaluate_h0_governed_revision_evidence(
+    runs: list[tuple[str, Path]],
+    *,
+    max_examples: int = 20,
+) -> dict[str, object]:
+    evidence_files = 0
+    proof_hash_valid = 0
+    anchor_replay_valid = 0
+    vote_refs_present = 0
+    authority_kinds: set[str] = set()
+    failure_sample: list[dict[str, str]] = []
+
+    for alias, run_dir in runs:
+        tasks_dir = run_dir / "tasks"
+        if not tasks_dir.exists():
+            continue
+        for evidence_path in sorted(tasks_dir.glob("*/h0e_governed_revision.json")):
+            evidence_files += 1
+            try:
+                evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                _append_h0e_evidence_failure(
+                    failure_sample,
+                    max_examples=max_examples,
+                    alias=alias,
+                    evidence_path=evidence_path,
+                    reason=f"unreadable evidence: {exc}",
+                )
+                continue
+            if not isinstance(evidence, dict):
+                _append_h0e_evidence_failure(
+                    failure_sample,
+                    max_examples=max_examples,
+                    alias=alias,
+                    evidence_path=evidence_path,
+                    reason="evidence is not an object",
+                )
+                continue
+
+            authority = str(evidence.get("authority") or "")
+            proof = evidence.get("decision_proof")
+            if isinstance(proof, dict):
+                authority = authority or str(proof.get("authority") or "")
+                vote_refs = proof.get("vote_refs")
+                if isinstance(vote_refs, list) and len(vote_refs) >= 2:
+                    vote_refs_present += 1
+                elif len(failure_sample) < max_examples:
+                    _append_h0e_evidence_failure(
+                        failure_sample,
+                        max_examples=max_examples,
+                        alias=alias,
+                        evidence_path=evidence_path,
+                        reason="decision_proof.vote_refs has fewer than 2 entries",
+                    )
+                if _decision_proof_hashes_valid(proof):
+                    proof_hash_valid += 1
+                else:
+                    _append_h0e_evidence_failure(
+                        failure_sample,
+                        max_examples=max_examples,
+                        alias=alias,
+                        evidence_path=evidence_path,
+                        reason="decision_proof hash replay failed",
+                    )
+            else:
+                _append_h0e_evidence_failure(
+                    failure_sample,
+                    max_examples=max_examples,
+                    alias=alias,
+                    evidence_path=evidence_path,
+                    reason="decision_proof missing",
+                )
+
+            kind = _governed_authority_kind(authority)
+            if kind:
+                authority_kinds.add(kind)
+            if _iem_anchor_replay_valid(evidence, evidence_path):
+                anchor_replay_valid += 1
+            else:
+                _append_h0e_evidence_failure(
+                    failure_sample,
+                    max_examples=max_examples,
+                    alias=alias,
+                    evidence_path=evidence_path,
+                    reason="iem_anchor replay/hash check failed",
+                )
+
+    def _evidence_ratio(num: int) -> float | None:
+        return (num / evidence_files) if evidence_files else None
+
+    return {
+        "raw_h0_governed_revision_evidence_files": evidence_files,
+        "raw_h0_decision_proof_hash_valid_files": proof_hash_valid,
+        "raw_h0_decision_proof_hash_valid_ratio": _evidence_ratio(proof_hash_valid),
+        "raw_h0_iem_anchor_replay_valid_files": anchor_replay_valid,
+        "raw_h0_iem_anchor_replay_valid_ratio": _evidence_ratio(anchor_replay_valid),
+        "raw_h0_vote_refs_present_files": vote_refs_present,
+        "raw_h0_vote_refs_present_ratio": _evidence_ratio(vote_refs_present),
+        "raw_h0_governed_revision_authority_kinds": sorted(authority_kinds),
+        "raw_h0_governed_revision_authority_kind_count": len(authority_kinds),
+        "raw_h0_governed_revision_evidence_failure_sample": failure_sample,
+    }
+
+
+def _append_h0e_evidence_failure(
+    sample: list[dict[str, str]],
+    *,
+    max_examples: int,
+    alias: str,
+    evidence_path: Path,
+    reason: str,
+) -> None:
+    if len(sample) >= max_examples:
+        return
+    sample.append({
+        "agent_alias": alias,
+        "task_id": evidence_path.parent.name,
+        "evidence_path": str(evidence_path),
+        "reason": reason,
+    })
+
+
+def _decision_proof_hashes_valid(proof: dict[str, object]) -> bool:
+    vote_refs = proof.get("vote_refs")
+    if not isinstance(vote_refs, list):
+        return False
+    if proof.get("votes_hash") != _hash_json_payload(vote_refs):
+        return False
+    proof_hash = proof.get("proof_hash")
+    if not isinstance(proof_hash, str) or not proof_hash.startswith("sha256:"):
+        return False
+    proof_without_hash = dict(proof)
+    proof_without_hash.pop("proof_hash", None)
+    return proof_hash == _hash_json_payload(proof_without_hash)
+
+
+def _iem_anchor_replay_valid(evidence: dict[str, object], evidence_path: Path) -> bool:
+    anchor = evidence.get("iem_anchor")
+    if not isinstance(anchor, dict):
+        return False
+    anchor_hash = _hash_json_payload(anchor)
+    if evidence.get("iem_anchor_hash") != anchor_hash:
+        return False
+    proof = evidence.get("decision_proof")
+    if isinstance(proof, dict) and proof.get("iem_anchor_hash") != anchor_hash:
+        return False
+    replay_path = evidence_path.with_name("h0e_iem_anchor_replay.json")
+    try:
+        replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(replay, dict):
+        return False
+    if replay.get("anchor") != anchor:
+        return False
+    if anchor.get("state_hash") != _hash_json_payload(replay.get("state")):
+        return False
+    if anchor.get("latest_update_log_hash") != _hash_json_payload(replay.get("update_log")):
+        return False
+    return True
+
+
+def _governed_authority_kind(authority: str) -> str | None:
+    value = authority.strip().lower()
+    if "arbitration" in value:
+        return "arbitration"
+    if "constitution" in value or "steward" in value:
+        return "constitution"
+    if "governance" in value or "council" in value:
+        return "governance"
+    return None
+
+
+def _hash_json_payload(payload: object) -> str:
+    blob = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(blob).hexdigest()}"
+
+
 def _h0_final_metric_counts(rows: list[dict[str, str]]) -> dict[str, object]:
     fields = (
         "h0_expectation_trace_ratio",
@@ -1194,11 +1382,18 @@ def _evaluate_h0_gate(
     min_desired_slow_drift_ratio: float = _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR,
     min_normative_governance_trigger_ratio: float = _DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR,
     min_governed_revision_ratio: float = _DEFAULT_H0_GOVERNED_REVISION_FLOOR,
+    min_decision_proof_hash_ratio: float = _DEFAULT_H0_DECISION_PROOF_HASH_FLOOR,
+    min_iem_anchor_replay_ratio: float = _DEFAULT_H0_IEM_ANCHOR_REPLAY_FLOOR,
+    min_vote_refs_ratio: float = _DEFAULT_H0_VOTE_REFS_FLOOR,
+    min_authority_kind_count: int = _DEFAULT_H0_AUTHORITY_KIND_FLOOR,
 ) -> dict[str, object]:
     rows = _load_g2_final_metric_rows(final_metrics_csv)
     final_counts = _h0_final_metric_counts(rows)
     raw = (
-        _evaluate_h0_raw_relation_expectation(runs)
+        {
+            **_evaluate_h0_raw_relation_expectation(runs),
+            **_evaluate_h0_governed_revision_evidence(runs),
+        }
         if runs is not None
         else {
             "raw_h0_trace_rows": 0,
@@ -1232,9 +1427,19 @@ def _evaluate_h0_gate(
             "raw_h0_governed_revision_event_rows": 0,
             "raw_h0_governed_revision_rows": 0,
             "raw_h0_governed_revision_ratio": None,
+            "raw_h0_governed_revision_evidence_files": 0,
+            "raw_h0_decision_proof_hash_valid_files": 0,
+            "raw_h0_decision_proof_hash_valid_ratio": None,
+            "raw_h0_iem_anchor_replay_valid_files": 0,
+            "raw_h0_iem_anchor_replay_valid_ratio": None,
+            "raw_h0_vote_refs_present_files": 0,
+            "raw_h0_vote_refs_present_ratio": None,
+            "raw_h0_governed_revision_authority_kinds": [],
+            "raw_h0_governed_revision_authority_kind_count": 0,
             "raw_h0_missing_trace_sample": [],
             "raw_h0_identity_missing_trace_sample": [],
             "raw_h0_governance_missing_trigger_sample": [],
+            "raw_h0_governed_revision_evidence_failure_sample": [],
         }
     )
 
@@ -1245,6 +1450,7 @@ def _evaluate_h0_gate(
     raw_expanded_rows = int(raw["raw_h0_expanded_domain_event_rows"])
     raw_constitutional_rows = int(raw["raw_h0_constitutional_surprise_rows"])
     raw_governed_revision_rows = int(raw["raw_h0_governed_revision_event_rows"])
+    raw_governed_revision_evidence_files = int(raw["raw_h0_governed_revision_evidence_files"])
     if not require_active and final_h0_rows == 0 and raw_h0_rows == 0 and raw_failure_rows == 0:
         return {
             "passed": True,
@@ -1383,6 +1589,36 @@ def _evaluate_h0_gate(
                 f"{0.0 if value is None else value:.4f} < "
                 f"{min_governed_revision_ratio:.4f}",
             )
+    if raw_governed_revision_evidence_files > 0:
+        evidence_checks = [
+            (
+                "raw_h0_decision_proof_hash_valid_ratio",
+                raw["raw_h0_decision_proof_hash_valid_ratio"],
+                min_decision_proof_hash_ratio,
+            ),
+            (
+                "raw_h0_iem_anchor_replay_valid_ratio",
+                raw["raw_h0_iem_anchor_replay_valid_ratio"],
+                min_iem_anchor_replay_ratio,
+            ),
+            (
+                "raw_h0_vote_refs_present_ratio",
+                raw["raw_h0_vote_refs_present_ratio"],
+                min_vote_refs_ratio,
+            ),
+        ]
+        for field, value, floor in evidence_checks:
+            if value is not None and value >= floor:
+                continue
+            failure_reasons.append(
+                f"{field} {0.0 if value is None else value:.4f} < {floor:.4f}",
+            )
+        authority_kind_count = int(raw["raw_h0_governed_revision_authority_kind_count"])
+        if authority_kind_count < min_authority_kind_count:
+            failure_reasons.append(
+                "raw_h0_governed_revision_authority_kind_count "
+                f"{authority_kind_count} < {min_authority_kind_count}",
+            )
 
     return {
         "passed": not failure_reasons,
@@ -1399,6 +1635,10 @@ def _evaluate_h0_gate(
         "min_desired_slow_drift_ratio": min_desired_slow_drift_ratio,
         "min_normative_governance_trigger_ratio": min_normative_governance_trigger_ratio,
         "min_governed_revision_ratio": min_governed_revision_ratio,
+        "min_decision_proof_hash_ratio": min_decision_proof_hash_ratio,
+        "min_iem_anchor_replay_ratio": min_iem_anchor_replay_ratio,
+        "min_vote_refs_ratio": min_vote_refs_ratio,
+        "min_authority_kind_count": min_authority_kind_count,
         **final_counts,
         **raw,
         "failure_reasons": failure_reasons,
@@ -1890,6 +2130,10 @@ def merge(
     h0_min_desired_slow_drift_ratio: float = _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR,
     h0_min_normative_governance_trigger_ratio: float = _DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR,
     h0_min_governed_revision_ratio: float = _DEFAULT_H0_GOVERNED_REVISION_FLOOR,
+    h0_min_decision_proof_hash_ratio: float = _DEFAULT_H0_DECISION_PROOF_HASH_FLOOR,
+    h0_min_iem_anchor_replay_ratio: float = _DEFAULT_H0_IEM_ANCHOR_REPLAY_FLOOR,
+    h0_min_vote_refs_ratio: float = _DEFAULT_H0_VOTE_REFS_FLOOR,
+    h0_min_authority_kind_count: int = _DEFAULT_H0_AUTHORITY_KIND_FLOOR,
 ) -> dict:
     runs = _discover_runs(runs_root)
     if not runs:
@@ -1971,6 +2215,10 @@ def merge(
         min_desired_slow_drift_ratio=h0_min_desired_slow_drift_ratio,
         min_normative_governance_trigger_ratio=h0_min_normative_governance_trigger_ratio,
         min_governed_revision_ratio=h0_min_governed_revision_ratio,
+        min_decision_proof_hash_ratio=h0_min_decision_proof_hash_ratio,
+        min_iem_anchor_replay_ratio=h0_min_iem_anchor_replay_ratio,
+        min_vote_refs_ratio=h0_min_vote_refs_ratio,
+        min_authority_kind_count=h0_min_authority_kind_count,
     )
 
     summary = {
@@ -2128,6 +2376,30 @@ def main() -> int:
         default=_DEFAULT_H0_GOVERNED_REVISION_FLOOR,
         help="Require H0-E governed revision rows to emit approved governed revision evidence.",
     )
+    p.add_argument(
+        "--h0-min-decision-proof-hash-ratio",
+        type=float,
+        default=_DEFAULT_H0_DECISION_PROOF_HASH_FLOOR,
+        help="Require H0-E governed revision evidence files to have recomputable decision proof hashes.",
+    )
+    p.add_argument(
+        "--h0-min-iem-anchor-replay-ratio",
+        type=float,
+        default=_DEFAULT_H0_IEM_ANCHOR_REPLAY_FLOOR,
+        help="Require H0-E governed revision evidence files to have replayable IEM anchors.",
+    )
+    p.add_argument(
+        "--h0-min-vote-refs-ratio",
+        type=float,
+        default=_DEFAULT_H0_VOTE_REFS_FLOOR,
+        help="Require H0-E governed revision evidence files to carry at least two vote_refs.",
+    )
+    p.add_argument(
+        "--h0-min-authority-kind-count",
+        type=int,
+        default=_DEFAULT_H0_AUTHORITY_KIND_FLOOR,
+        help="Require at least this many governed authority kinds across H0-E evidence files.",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
     logging.basicConfig(
@@ -2159,6 +2431,10 @@ def main() -> int:
         h0_min_desired_slow_drift_ratio=args.h0_min_desired_slow_drift_ratio,
         h0_min_normative_governance_trigger_ratio=args.h0_min_normative_governance_trigger_ratio,
         h0_min_governed_revision_ratio=args.h0_min_governed_revision_ratio,
+        h0_min_decision_proof_hash_ratio=args.h0_min_decision_proof_hash_ratio,
+        h0_min_iem_anchor_replay_ratio=args.h0_min_iem_anchor_replay_ratio,
+        h0_min_vote_refs_ratio=args.h0_min_vote_refs_ratio,
+        h0_min_authority_kind_count=args.h0_min_authority_kind_count,
     )
     print(json.dumps(summary, indent=2))
     if not summary["integrity_gate"]["passed"]:

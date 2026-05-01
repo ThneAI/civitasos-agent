@@ -193,6 +193,44 @@ class BackendTaskClient:
             )
         raise AttributeError("SDK does not support governance-store normative revisions")
 
+    def cast_governance_vote(
+        self,
+        proposal_id: str,
+        *,
+        voter_id: str,
+        choice: str = "yes",
+        stake: int = 100,
+        delegated: bool = False,
+    ) -> dict[str, Any]:
+        """Cast a governance-store vote for deterministic decision proofs."""
+        vote = getattr(self._sdk, "vote_governance_proposal", None)
+        if callable(vote):
+            return _expect_mapping(
+                vote(
+                    proposal_id,
+                    voter_id=voter_id,
+                    choice=choice,
+                    stake=stake,
+                    delegated=delegated,
+                ),
+                "cast_governance_vote",
+            )
+        post = getattr(self._sdk, "_post", None)
+        if callable(post):
+            return _expect_mapping(
+                post(
+                    f"/governance-store/proposals/{proposal_id}/vote",
+                    {
+                        "voter_id": voter_id,
+                        "choice": choice,
+                        "stake": stake,
+                        "delegated": delegated,
+                    },
+                ),
+                "cast_governance_vote",
+            )
+        raise AttributeError("SDK does not support governance-store voting")
+
     def finalize_governance_proposal(
         self,
         proposal_id: str,

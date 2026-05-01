@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -163,6 +164,84 @@ def _write_raw_ticks(
         w = csv.DictWriter(fh, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)
+
+
+def _json_hash(payload: object) -> str:
+    blob = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(blob).hexdigest()}"
+
+
+def _write_h0e_evidence(
+    run_dir: Path,
+    task_id: str,
+    *,
+    authority: str = "governance_council",
+    corrupt_proof_hash: bool = False,
+) -> None:
+    task_dir = run_dir / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "schema_version": "iem:v1",
+        "identity_id": f"benchmark:{task_id}",
+        "expectation_vector": {"h0e_constitutional_guard": {"authority": authority}},
+        "precision_vector": {"h0e_constitutional_guard": 1.0},
+        "desire_vector": {},
+        "domain_weight_matrix": {"constitutional": 1.0},
+        "drift_parameters": {},
+        "relation_expectation_matrix": {},
+    }
+    update_log = [{"rule": "governed_revision", "authority": authority}]
+    anchor = {
+        "schema_version": "iem:v1",
+        "version_id": "iem:v1:test-anchor",
+        "state_hash": _json_hash(state),
+        "latest_update_log_hash": _json_hash(update_log),
+        "storage_hint": f"civitasos://benchmark/{task_id}/iem/latest",
+        "benchmark_task_id": task_id,
+    }
+    vote_refs = [
+        {"voter_id": "did:alpha", "choice": "yes", "stake": 144, "effective_power": 12.0, "voted_at": 1, "delegated": False},
+        {"voter_id": "did:beta", "choice": "yes", "stake": 121, "effective_power": 11.0, "voted_at": 2, "delegated": False},
+    ]
+    proof = {
+        "proposal_id": "prop-1",
+        "revision_id": "rev-1",
+        "status": "approved",
+        "authority": authority,
+        "vote_count": 2,
+        "yes_power": 23.0,
+        "no_power": 0.0,
+        "abstain_power": 0.0,
+        "finalized_at": 3,
+        "proposal_hash": "sha256:proposal",
+        "votes_hash": _json_hash(vote_refs),
+        "vote_refs": vote_refs,
+        "iem_anchor_hash": _json_hash(anchor),
+    }
+    proof["proof_hash"] = "sha256:bad" if corrupt_proof_hash else _json_hash(proof)
+    (task_dir / "h0e_iem_anchor_replay.json").write_text(
+        json.dumps({"state": state, "update_log": update_log, "anchor": anchor}),
+        encoding="utf-8",
+    )
+    (task_dir / "h0e_governed_revision.json").write_text(
+        json.dumps({
+            "revision_id": "rev-1",
+            "proposal_id": "prop-1",
+            "approved": True,
+            "status": "approved",
+            "authority": authority,
+            "source": "backend_governance_read_model",
+            "iem_anchor": anchor,
+            "iem_anchor_hash": _json_hash(anchor),
+            "decision_proof": proof,
+        }),
+        encoding="utf-8",
+    )
 
 
 def _write_summary(
@@ -1022,6 +1101,7 @@ def test_h0_gate_passes_on_governed_revision_trace(tmp_path: Path) -> None:
         h0_predicted_update_present=[True, True],
         h0_governed_revision_present=[True, True],
     )
+    _write_h0e_evidence(alpha, "G08_h0e_governed_revision_01")
     final_metrics = tmp_path / "final_metrics.csv"
     _write_g2_final_metrics(
         final_metrics,
@@ -1054,6 +1134,65 @@ def test_h0_gate_passes_on_governed_revision_trace(tmp_path: Path) -> None:
     assert gate["raw_h0_governed_revision_event_rows"] == 2
     assert gate["raw_h0_governed_revision_rows"] == 2
     assert gate["raw_h0_governed_revision_ratio"] == 1.0
+    assert gate["raw_h0_decision_proof_hash_valid_ratio"] == 1.0
+    assert gate["raw_h0_iem_anchor_replay_valid_ratio"] == 1.0
+    assert gate["raw_h0_vote_refs_present_ratio"] == 1.0
+    assert gate["raw_h0_governed_revision_authority_kinds"] == ["governance"]
+
+
+def test_h0_gate_fails_on_invalid_governed_revision_proof_hash(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        ["task_execute"],
+        h0_expectation_trace_present=[True],
+        h0_survival_surprise_present=[True],
+        h0_economic_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_identity_action_bias_present=[True],
+        h0_predicted_update_present=[True],
+        h0_governed_revision_present=[True],
+    )
+    _write_h0e_evidence(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        corrupt_proof_hash=True,
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G08",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_governed_revision_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_h0_decision_proof_hash_valid_ratio"] == 0.0
+    assert any(
+        "raw_h0_decision_proof_hash_valid_ratio" in reason
+        for reason in gate["failure_reasons"]
+    )
 
 
 def test_h0_gate_fails_when_required_trace_missing(tmp_path: Path) -> None:

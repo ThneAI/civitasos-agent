@@ -243,6 +243,49 @@ def test_finalize_governance_proposal_unwraps_sdk_response():
     assert sdk.finalize_calls == [("prop-1", True)]
 
 
+def test_cast_governance_vote_unwraps_sdk_response():
+    class GovSDK(FakeSDK):
+        def __init__(self) -> None:
+            super().__init__()
+            self.vote_calls: list[dict[str, Any]] = []
+
+        def vote_governance_proposal(
+            self,
+            proposal_id: str,
+            *,
+            voter_id: str,
+            choice: str = "yes",
+            stake: int = 100,
+            delegated: bool = False,
+        ) -> FakeApiResponse:
+            self.vote_calls.append({
+                "proposal_id": proposal_id,
+                "voter_id": voter_id,
+                "choice": choice,
+                "stake": stake,
+                "delegated": delegated,
+            })
+            return FakeApiResponse({"proposal_id": proposal_id, "voter_id": voter_id})
+
+    sdk = GovSDK()
+    client = BackendTaskClient(sdk)
+    payload = client.cast_governance_vote(
+        "prop-1",
+        voter_id="did:alpha",
+        choice="yes",
+        stake=144,
+    )
+    assert payload["proposal_id"] == "prop-1"
+    assert payload["voter_id"] == "did:alpha"
+    assert sdk.vote_calls == [{
+        "proposal_id": "prop-1",
+        "voter_id": "did:alpha",
+        "choice": "yes",
+        "stake": 144,
+        "delegated": False,
+    }]
+
+
 def test_create_accepts_id_field_when_no_task_id():
     class WeirdSDK(FakeSDK):
         def pool_post(self, **kwargs):
