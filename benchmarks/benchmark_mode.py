@@ -172,6 +172,72 @@ def _g3_relation_context_enabled(task_id: str) -> bool:
     return _env_flag("BENCHMARK_G3_RELATION_CONTEXT_ENABLED", default=True)
 
 
+def _h0c_expectation_context_enabled(task_id: str) -> bool:
+    return "h0c" in str(task_id or "").lower() and _env_flag(
+        "BENCHMARK_H0C_EXPECTATION_CONTEXT_ENABLED",
+        default=True,
+    )
+
+
+def _inject_h0c_expectation_context(
+    briefing: dict[str, Any],
+    task_id: str,
+    *,
+    runner: Any | None = None,
+) -> None:
+    """Attach benchmark-only H0-C identity/evolution pressure."""
+    if not _h0c_expectation_context_enabled(task_id):
+        return
+
+    task_key = str(task_id or "").lower()
+    briefing["h0c_expectation_context"] = {
+        "benchmark_task_id": task_id,
+        "source": "benchmark_h0c_smoke",
+    }
+
+    identity = briefing.setdefault("identity", {})
+    if isinstance(identity, dict) and ("survival" in task_key or "normative" in task_key):
+        identity.update({"state": "PROVISIONAL", "remaining_epochs": 0, "at_risk": True})
+
+    economics = briefing.setdefault("economics", {})
+    if isinstance(economics, dict) and ("economic" in task_key or "survival" in task_key):
+        economics.update({
+            "balance": 20.0,
+            "balance_cap": 1000.0,
+            "staked_amount": 0.0,
+            "risk_score": 20.0,
+        })
+        _set_loop_energy(runner, balance=20.0, balance_cap=1000.0, risk_score=20.0)
+
+    if "normative" in task_key:
+        briefing["normative_context"] = {
+            "breach": True,
+            "rule_id": "h0c_smoke_constitutional_guard",
+            "expected_value": 1.0,
+            "actual_value": 0.0,
+            "precision": 1.0,
+            "stake": 1.0,
+            "source": "benchmark_h0c_smoke",
+        }
+
+
+def _set_loop_energy(
+    runner: Any | None,
+    *,
+    balance: float,
+    balance_cap: float,
+    risk_score: float,
+) -> None:
+    loop = getattr(runner, "_loop", None) if runner is not None else None
+    energy = getattr(loop, "_energy", None) if loop is not None else None
+    state = getattr(energy, "state", None) if energy is not None else None
+    if state is None:
+        return
+    state.balance = balance
+    state.balance_cap = balance_cap
+    state.risk_score = risk_score
+
+
 def _inject_g3_relation_context(
     briefing: dict[str, Any],
     task_id: str,
@@ -634,6 +700,7 @@ def _install_g3_pre_expect_context(
             runner=runner,
             backend_task_id=target_tid,
         )
+        _inject_h0c_expectation_context(briefing, current_task_id, runner=runner)
 
     register(_on_perceive)
 
@@ -886,6 +953,7 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
             runner=runner,
             backend_task_id=target_tid,
         )
+        _inject_h0c_expectation_context(briefing, current_task_id, runner=runner)
         if target_tid != state["current_target"]:
             state["current_target"] = target_tid
             state["seen_active"] = False

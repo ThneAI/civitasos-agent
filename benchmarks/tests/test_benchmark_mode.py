@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -275,6 +276,45 @@ def test_pre_expect_hook_injects_g3_relation_context_before_decide(monkeypatch):
     assert decision is not None
     assert decision.action == "pool_claim"
     assert backend_agent.pool_get_task_calls == ["backend_42"]
+
+
+def test_pre_expect_hook_injects_h0c_identity_context(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G06_h0c_normative_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    runner._agent = FakeBackendAgent()
+    energy_state = SimpleNamespace(balance=500.0, balance_cap=10000.0, risk_score=0.0)
+    runner._loop = SimpleNamespace(_energy=SimpleNamespace(state=energy_state))
+    benchmark_mode.install(runner)
+
+    briefing: dict[str, Any] = {"pool_tasks": [{"task_id": "backend_42"}]}
+    assert runner._on_perceive_fn is not None
+    runner._on_perceive_fn(briefing)
+
+    assert briefing["h0c_expectation_context"]["source"] == "benchmark_h0c_smoke"
+    assert briefing["identity"]["at_risk"] is True
+    assert briefing["identity"]["remaining_epochs"] == 0
+    assert briefing["normative_context"]["breach"] is True
+    assert briefing["normative_context"]["rule_id"] == "h0c_smoke_constitutional_guard"
+
+
+def test_h0c_economic_context_updates_loop_energy(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G06_h0c_economic_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    runner._agent = FakeBackendAgent()
+    energy_state = SimpleNamespace(balance=500.0, balance_cap=10000.0, risk_score=0.0)
+    runner._loop = SimpleNamespace(_energy=SimpleNamespace(state=energy_state))
+    benchmark_mode.install(runner)
+
+    briefing: dict[str, Any] = {"pool_tasks": [{"task_id": "backend_42"}]}
+    assert runner._on_perceive_fn is not None
+    runner._on_perceive_fn(briefing)
+
+    assert briefing["economics"]["balance"] == 20.0
+    assert briefing["economics"]["balance_cap"] == 1000.0
+    assert energy_state.balance == 20.0
+    assert energy_state.balance_cap == 1000.0
 
 
 def test_backend_g3_time_window_is_comparable_across_backend_tasks(monkeypatch):
