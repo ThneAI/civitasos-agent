@@ -28,7 +28,8 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
           h0_verdict: bool = False, h0_update: bool = False,
           h0_relation_bias: bool = False, h0_normative_blocked: bool = False,
           h0_identity_bias: bool = False, h0_constitutional: bool = False,
-          h0_governance_trigger: bool = False, h0_predicted_update: bool = False,
+          h0_governance_trigger: bool = False, h0_governed_revision: bool = False,
+          h0_predicted_update: bool = False,
           h0_desired_slow_drift: bool = False) -> TickRow:
     return TickRow(
         run_id="R", agent_id="A", task_id="T",
@@ -65,6 +66,7 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
         h0_identity_action_bias_present=h0_identity_bias,
         h0_constitutional_surprise_present=h0_constitutional,
         h0_normative_governance_trigger_present=h0_governance_trigger,
+        h0_governed_revision_present=h0_governed_revision,
         h0_predicted_update_present=h0_predicted_update,
         h0_desired_slow_drift_present=h0_desired_slow_drift,
     )
@@ -318,6 +320,7 @@ def test_h0_expectation_trace_ratios() -> None:
             h0_identity_bias=True,
             h0_constitutional=True,
             h0_governance_trigger=True,
+            h0_governed_revision=True,
             h0_predicted_update=True,
             h0_desired_slow_drift=True,
         ),
@@ -339,6 +342,7 @@ def test_h0_expectation_trace_ratios() -> None:
     assert out["h0_identity_action_bias_ratio"] == 0.5
     assert out["h0_constitutional_surprise_ratio"] == 0.5
     assert out["h0_normative_governance_trigger_ratio"] == 0.5
+    assert out["h0_governed_revision_ratio"] == 0.5
     assert out["h0_predicted_update_ratio"] == 0.5
     assert out["h0_desired_slow_drift_ratio"] == 0.5
 

@@ -71,6 +71,7 @@ _DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR = 1.0
 _DEFAULT_H0_PREDICTED_UPDATE_FLOOR = 1.0
 _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR = 0.0
 _DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR = 1.0
+_DEFAULT_H0_GOVERNED_REVISION_FLOOR = 1.0
 _DIM_WEIGHTS = {
     "completion_rate": 0.30,
     "latency_score": 0.20,
@@ -941,6 +942,8 @@ def _evaluate_h0_raw_relation_expectation(
     desired_slow_drift_rows = 0
     constitutional_rows = 0
     governance_trigger_rows = 0
+    governed_revision_event_rows = 0
+    governed_revision_rows = 0
     missing_sample: list[dict[str, str]] = []
     identity_missing_sample: list[dict[str, str]] = []
     governance_missing_sample: list[dict[str, str]] = []
@@ -965,6 +968,7 @@ def _evaluate_h0_raw_relation_expectation(
                     identity_action_bias = _raw_bool(row.get("h0_identity_action_bias_present"))
                     constitutional_surprise = _raw_bool(row.get("h0_constitutional_surprise_present"))
                     governance_trigger = _raw_bool(row.get("h0_normative_governance_trigger_present"))
+                    governed_revision = _raw_bool(row.get("h0_governed_revision_present"))
                     predicted_update = _raw_bool(row.get("h0_predicted_update_present"))
                     desired_slow_drift = _raw_bool(row.get("h0_desired_slow_drift_present"))
                     if any((
@@ -981,6 +985,7 @@ def _evaluate_h0_raw_relation_expectation(
                         identity_action_bias,
                         constitutional_surprise,
                         governance_trigger,
+                        governed_revision,
                         predicted_update,
                         desired_slow_drift,
                     )):
@@ -1050,6 +1055,11 @@ def _evaluate_h0_raw_relation_expectation(
                                 "h0_normative_local_update_blocked": str(row.get("h0_normative_local_update_blocked") or ""),
                             })
 
+                    if "h0e" in csv_path.stem.lower() or governed_revision:
+                        governed_revision_event_rows += 1
+                        if governed_revision:
+                            governed_revision_rows += 1
+
                     if not _raw_bool(row.get("relation_pair_failure_events_present")):
                         continue
                     failure_rows += 1
@@ -1092,6 +1102,9 @@ def _evaluate_h0_raw_relation_expectation(
     def _constitutional_ratio(num: int) -> float | None:
         return (num / constitutional_rows) if constitutional_rows else None
 
+    def _governed_revision_ratio(num: int) -> float | None:
+        return (num / governed_revision_event_rows) if governed_revision_event_rows else None
+
     return {
         "raw_h0_trace_rows": h0_trace_rows,
         "raw_h0_relation_failure_event_rows": failure_rows,
@@ -1121,6 +1134,9 @@ def _evaluate_h0_raw_relation_expectation(
         "raw_h0_constitutional_surprise_rows": constitutional_rows,
         "raw_h0_normative_governance_trigger_rows": governance_trigger_rows,
         "raw_h0_normative_governance_trigger_ratio": _constitutional_ratio(governance_trigger_rows),
+        "raw_h0_governed_revision_event_rows": governed_revision_event_rows,
+        "raw_h0_governed_revision_rows": governed_revision_rows,
+        "raw_h0_governed_revision_ratio": _governed_revision_ratio(governed_revision_rows),
         "raw_h0_missing_trace_sample": missing_sample,
         "raw_h0_identity_missing_trace_sample": identity_missing_sample,
         "raw_h0_governance_missing_trigger_sample": governance_missing_sample,
@@ -1143,6 +1159,7 @@ def _h0_final_metric_counts(rows: list[dict[str, str]]) -> dict[str, object]:
         "h0_identity_action_bias_ratio",
         "h0_constitutional_surprise_ratio",
         "h0_normative_governance_trigger_ratio",
+        "h0_governed_revision_ratio",
         "h0_predicted_update_ratio",
         "h0_desired_slow_drift_ratio",
     )
@@ -1176,6 +1193,7 @@ def _evaluate_h0_gate(
     min_predicted_update_ratio: float = _DEFAULT_H0_PREDICTED_UPDATE_FLOOR,
     min_desired_slow_drift_ratio: float = _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR,
     min_normative_governance_trigger_ratio: float = _DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR,
+    min_governed_revision_ratio: float = _DEFAULT_H0_GOVERNED_REVISION_FLOOR,
 ) -> dict[str, object]:
     rows = _load_g2_final_metric_rows(final_metrics_csv)
     final_counts = _h0_final_metric_counts(rows)
@@ -1211,6 +1229,9 @@ def _evaluate_h0_gate(
             "raw_h0_constitutional_surprise_rows": 0,
             "raw_h0_normative_governance_trigger_rows": 0,
             "raw_h0_normative_governance_trigger_ratio": None,
+            "raw_h0_governed_revision_event_rows": 0,
+            "raw_h0_governed_revision_rows": 0,
+            "raw_h0_governed_revision_ratio": None,
             "raw_h0_missing_trace_sample": [],
             "raw_h0_identity_missing_trace_sample": [],
             "raw_h0_governance_missing_trigger_sample": [],
@@ -1223,6 +1244,7 @@ def _evaluate_h0_gate(
     raw_identity_rows = int(raw["raw_h0_identity_event_rows"])
     raw_expanded_rows = int(raw["raw_h0_expanded_domain_event_rows"])
     raw_constitutional_rows = int(raw["raw_h0_constitutional_surprise_rows"])
+    raw_governed_revision_rows = int(raw["raw_h0_governed_revision_event_rows"])
     if not require_active and final_h0_rows == 0 and raw_h0_rows == 0 and raw_failure_rows == 0:
         return {
             "passed": True,
@@ -1270,9 +1292,12 @@ def _evaluate_h0_gate(
             ):
                 if int(final_counts[field]) == 0:
                     failure_reasons.append(f"H.0 active required but {field} is absent")
-        if raw_failure_rows == 0 and raw_identity_rows == 0:
+        if raw_governed_revision_rows > 0:
+            if int(final_counts["h0_governed_revision_ratio"]) == 0:
+                failure_reasons.append("H.0 active required but h0_governed_revision_ratio is absent")
+        if raw_failure_rows == 0 and raw_identity_rows == 0 and raw_governed_revision_rows == 0:
             failure_reasons.append(
-                "H.0 active required but raw relation-pair failure and identity rows are missing",
+                "H.0 active required but raw relation-pair failure, identity, and governed revision rows are missing",
             )
 
     relation_checks = [
@@ -1350,6 +1375,14 @@ def _evaluate_h0_gate(
                 f"{0.0 if value is None else value:.4f} < "
                 f"{min_normative_governance_trigger_ratio:.4f}",
             )
+    if raw_governed_revision_rows > 0:
+        value = raw["raw_h0_governed_revision_ratio"]
+        if value is None or value < min_governed_revision_ratio:
+            failure_reasons.append(
+                "raw_h0_governed_revision_ratio "
+                f"{0.0 if value is None else value:.4f} < "
+                f"{min_governed_revision_ratio:.4f}",
+            )
 
     return {
         "passed": not failure_reasons,
@@ -1365,6 +1398,7 @@ def _evaluate_h0_gate(
         "min_predicted_update_ratio": min_predicted_update_ratio,
         "min_desired_slow_drift_ratio": min_desired_slow_drift_ratio,
         "min_normative_governance_trigger_ratio": min_normative_governance_trigger_ratio,
+        "min_governed_revision_ratio": min_governed_revision_ratio,
         **final_counts,
         **raw,
         "failure_reasons": failure_reasons,
@@ -1855,6 +1889,7 @@ def merge(
     h0_min_predicted_update_ratio: float = _DEFAULT_H0_PREDICTED_UPDATE_FLOOR,
     h0_min_desired_slow_drift_ratio: float = _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR,
     h0_min_normative_governance_trigger_ratio: float = _DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR,
+    h0_min_governed_revision_ratio: float = _DEFAULT_H0_GOVERNED_REVISION_FLOOR,
 ) -> dict:
     runs = _discover_runs(runs_root)
     if not runs:
@@ -1935,6 +1970,7 @@ def merge(
         min_predicted_update_ratio=h0_min_predicted_update_ratio,
         min_desired_slow_drift_ratio=h0_min_desired_slow_drift_ratio,
         min_normative_governance_trigger_ratio=h0_min_normative_governance_trigger_ratio,
+        min_governed_revision_ratio=h0_min_governed_revision_ratio,
     )
 
     summary = {
@@ -2086,6 +2122,12 @@ def main() -> int:
         default=_DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR,
         help="Require constitutional surprise rows to emit normative governance triggers.",
     )
+    p.add_argument(
+        "--h0-min-governed-revision-ratio",
+        type=float,
+        default=_DEFAULT_H0_GOVERNED_REVISION_FLOOR,
+        help="Require H0-E governed revision rows to emit approved governed revision evidence.",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
     logging.basicConfig(
@@ -2116,6 +2158,7 @@ def main() -> int:
         h0_min_predicted_update_ratio=args.h0_min_predicted_update_ratio,
         h0_min_desired_slow_drift_ratio=args.h0_min_desired_slow_drift_ratio,
         h0_min_normative_governance_trigger_ratio=args.h0_min_normative_governance_trigger_ratio,
+        h0_min_governed_revision_ratio=args.h0_min_governed_revision_ratio,
     )
     print(json.dumps(summary, indent=2))
     if not summary["integrity_gate"]["passed"]:

@@ -1,4 +1,4 @@
-# Raw Tick CSV Schema — F.0.a v1.11
+# Raw Tick CSV Schema — F.0.a v1.12
 # 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
 # v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
@@ -12,8 +12,9 @@
 # v1.9 变更：新增 G.3.5 R2R relation id、relation_pair、relation-pair failure ref provenance 观测列与聚合列。
 # v1.10 变更：新增 H0-C identity/evolution observability：identity action bias、constitutional surprise、governance trigger、predicted update、desired slow drift。
 # v1.11 变更：新增 H0-D reputation/task/governance expectation trace observability 与 expanded domain 聚合指标。
+# v1.12 变更：新增 H0-E governed revision read model 观测列与聚合指标。
 
-schema_version: "1.11"
+schema_version: "1.12"
 artifact: "raw_tick"
 
 columns:
@@ -300,6 +301,11 @@ columns:
     required: false
     source: "H0-C：Normative breach 是否只生成 governance trigger"
 
+  - name: h0_governed_revision_present
+    type: bool
+    required: false
+    source: "H0-E：governed revision read model 是否批准并应用 Normative State revision"
+
   - name: h0_predicted_update_present
     type: bool
     required: false
@@ -314,13 +320,13 @@ columns:
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.11"
+  schema_version: "1.12"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
     - {name: agent_id, type: string, required: true}
     - {name: category_id, type: string, required: true,
-      constraint: 'matches /^[RVSAG]0[1-7]$/'}
+      constraint: 'matches /^[RVSAG]0[1-8]$/'}
     - {name: targets_disease, type: enum, required: true,
        values: [R, V, S, A, G]}
     - {name: task_count, type: int, required: true}
@@ -413,6 +419,9 @@ final_metrics:
     - {name: h0_normative_governance_trigger_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'H0-C：traced ticks 中 Normative breach 生成 governance trigger 的比例'}
+    - {name: h0_governed_revision_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-E：traced ticks 中 governed revision read model 应用 Normative State revision 的比例'}
     - {name: h0_predicted_update_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'H0-C：traced ticks 中 Predicted State 生成 precision-weighted update 的比例'}

@@ -52,6 +52,7 @@ class TickRow:
     h0_identity_action_bias_present: bool = False
     h0_constitutional_surprise_present: bool = False
     h0_normative_governance_trigger_present: bool = False
+    h0_governed_revision_present: bool = False
     h0_predicted_update_present: bool = False
     h0_desired_slow_drift_present: bool = False
 
@@ -129,6 +130,7 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 h0_identity_action_bias_present=_optbool(raw.get("h0_identity_action_bias_present")) or False,
                 h0_constitutional_surprise_present=_optbool(raw.get("h0_constitutional_surprise_present")) or False,
                 h0_normative_governance_trigger_present=_optbool(raw.get("h0_normative_governance_trigger_present")) or False,
+                h0_governed_revision_present=_optbool(raw.get("h0_governed_revision_present")) or False,
                 h0_predicted_update_present=_optbool(raw.get("h0_predicted_update_present")) or False,
                 h0_desired_slow_drift_present=_optbool(raw.get("h0_desired_slow_drift_present")) or False,
             )

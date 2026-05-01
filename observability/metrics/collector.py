@@ -174,6 +174,9 @@ class CollectorAdapter:
             "h0_normative_governance_trigger_present": bool_to_csv(
                 h0["normative_governance_trigger_present"]
             ),
+            "h0_governed_revision_present": bool_to_csv(
+                h0["governed_revision_present"]
+            ),
             "h0_predicted_update_present": bool_to_csv(h0["predicted_update_present"]),
             "h0_desired_slow_drift_present": bool_to_csv(
                 h0["desired_slow_drift_present"]
@@ -333,6 +336,7 @@ class CollectorAdapter:
                 action_bias,
                 drive,
             ),
+            "governed_revision_present": _governed_revision_present(updates),
             "predicted_update_present": _update_rule_or_target_present(
                 updates,
                 rules={"precision_weighted_delta"},
@@ -438,6 +442,20 @@ def _governance_trigger_present(
         rules={"governance_trigger"},
         targets={"normative_state"},
     )
+
+
+def _governed_revision_present(updates: Any) -> bool:
+    if not isinstance(updates, list):
+        return False
+    for update in updates:
+        if _update_rule(update) != "governed_revision":
+            continue
+        blocked = bool(getattr(update, "local_update_blocked", False))
+        if isinstance(update, dict):
+            blocked = bool(update.get("local_update_blocked", blocked))
+        if not blocked:
+            return True
+    return False
 
 
 def _contains_nested_value(value: Any, expected: str) -> bool:

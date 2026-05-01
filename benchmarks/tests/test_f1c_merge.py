@@ -48,6 +48,7 @@ def _write_raw_ticks(
     h0_identity_action_bias_present: list[bool] | None = None,
     h0_constitutional_surprise_present: list[bool] | None = None,
     h0_normative_governance_trigger_present: list[bool] | None = None,
+    h0_governed_revision_present: list[bool] | None = None,
     h0_predicted_update_present: list[bool] | None = None,
     h0_desired_slow_drift_present: list[bool] | None = None,
 ) -> None:
@@ -143,6 +144,10 @@ def _write_raw_ticks(
         if h0_normative_governance_trigger_present is not None:
             row["h0_normative_governance_trigger_present"] = (
                 "true" if h0_normative_governance_trigger_present[idx] else "false"
+            )
+        if h0_governed_revision_present is not None:
+            row["h0_governed_revision_present"] = (
+                "true" if h0_governed_revision_present[idx] else "false"
             )
         if h0_predicted_update_present is not None:
             row["h0_predicted_update_present"] = (
@@ -252,6 +257,7 @@ def _write_g2_final_metrics(path: Path, rows: list[dict[str, str]]) -> None:
         "h0_identity_action_bias_ratio",
         "h0_constitutional_surprise_ratio",
         "h0_normative_governance_trigger_ratio",
+        "h0_governed_revision_ratio",
         "h0_predicted_update_ratio",
         "h0_desired_slow_drift_ratio",
     ]
@@ -1000,6 +1006,54 @@ def test_h0_gate_passes_on_expanded_identity_domains(tmp_path: Path) -> None:
     assert gate["raw_h0_task_surprise_rows"] == 2
     assert gate["raw_h0_governance_surprise_rows"] == 2
     assert gate["raw_h0_expanded_domain_trace_ratio"] == 1.0
+
+
+def test_h0_gate_passes_on_governed_revision_trace(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        ["task_execute", "task_execute"],
+        h0_expectation_trace_present=[True, True],
+        h0_survival_surprise_present=[True, True],
+        h0_economic_surprise_present=[True, True],
+        h0_iem_update_log_present=[True, True],
+        h0_identity_action_bias_present=[True, True],
+        h0_predicted_update_present=[True, True],
+        h0_governed_revision_present=[True, True],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G08",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_governed_revision_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+    )
+
+    assert gate["passed"] is True
+    assert gate["raw_h0_governed_revision_event_rows"] == 2
+    assert gate["raw_h0_governed_revision_rows"] == 2
+    assert gate["raw_h0_governed_revision_ratio"] == 1.0
 
 
 def test_h0_gate_fails_when_required_trace_missing(tmp_path: Path) -> None:

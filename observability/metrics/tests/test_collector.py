@@ -265,6 +265,12 @@ def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
             rule=ExpectationUpdateRule.GOVERNANCE_TRIGGER,
             local_update_blocked=True,
         ),
+        ExpectationUpdate(
+            target="normative_state",
+            parameter_name="challenge_window",
+            rule=ExpectationUpdateRule.GOVERNED_REVISION,
+            local_update_blocked=False,
+        ),
     ]
     with RawWriter(csv_path) as writer:
         adapter = CollectorAdapter(
@@ -290,5 +296,6 @@ def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
     assert row["h0_identity_action_bias_present"] == "true"
     assert row["h0_constitutional_surprise_present"] == "false"
     assert row["h0_normative_governance_trigger_present"] == "true"
+    assert row["h0_governed_revision_present"] == "true"
     assert row["h0_predicted_update_present"] == "true"
     assert row["h0_desired_slow_drift_present"] == "true"

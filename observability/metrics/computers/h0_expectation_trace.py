@@ -29,6 +29,7 @@ def compute(tasks: Iterable[TaskRun]) -> dict[str, float | None]:
             "h0_identity_action_bias_ratio": None,
             "h0_constitutional_surprise_ratio": None,
             "h0_normative_governance_trigger_ratio": None,
+            "h0_governed_revision_ratio": None,
             "h0_predicted_update_ratio": None,
             "h0_desired_slow_drift_ratio": None,
         }
@@ -81,6 +82,9 @@ def compute(tasks: Iterable[TaskRun]) -> dict[str, float | None]:
         ),
         "h0_normative_governance_trigger_ratio": _ratio(
             tick.h0_normative_governance_trigger_present for tick in traced
+        ),
+        "h0_governed_revision_ratio": _ratio(
+            tick.h0_governed_revision_present for tick in traced
         ),
         "h0_predicted_update_ratio": _ratio(
             tick.h0_predicted_update_present for tick in traced
