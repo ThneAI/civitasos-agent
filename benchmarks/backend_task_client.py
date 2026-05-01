@@ -45,9 +45,18 @@ class _SDKLike(Protocol):
 
     def pool_get_task(self, task_id: str) -> dict[str, Any]: ...
 
+    def pool_claim(
+        self,
+        task_id: str,
+        agent_id: str | None = None,
+        stake_amount: int = 0,
+    ) -> dict[str, Any]: ...
+
     def pool_failures(
         self,
         agent_id: str | None = None,
+        requester_id: str | None = None,
+        relation_id: str | None = None,
         since: str | None = None,
         limit: int | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]: ...
@@ -189,6 +198,7 @@ class BackendTaskClient:
 
     @staticmethod
     def _state_from_record(task_id: str, rec: dict[str, Any]) -> BackendTaskState:
+        rec = _unwrap_task_record(rec, task_id)
         return BackendTaskState(
             task_id=task_id,
             status=str(rec.get("status", "Unknown")),
@@ -200,14 +210,25 @@ class BackendTaskClient:
         self,
         *,
         agent_id: str | None = None,
+        requester_id: str | None = None,
+        relation_id: str | None = None,
         since: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Read the G.1 failure-time index via the SDK."""
+        """Read the failure-time index via the SDK, optionally scoped by relation."""
         pool_failures = getattr(self._sdk, "pool_failures", None)
         if not callable(pool_failures):
             return []
-        resp = pool_failures(agent_id=agent_id, since=since, limit=limit)
+        try:
+            resp = pool_failures(
+                agent_id=agent_id,
+                requester_id=requester_id,
+                relation_id=relation_id,
+                since=since,
+                limit=limit,
+            )
+        except TypeError:
+            resp = pool_failures(agent_id=agent_id, since=since, limit=limit)
         if isinstance(resp, list):
             return [event for event in resp if isinstance(event, dict)]
         if not isinstance(resp, dict):
@@ -218,6 +239,71 @@ class BackendTaskClient:
         if not isinstance(failures, list):
             return []
         return [event for event in failures if isinstance(event, dict)]
+
+    def seed_failure(
+        self,
+        *,
+        briefing: str,
+        target_agent_id: str,
+        capability: str | None = None,
+        reward: int = 1,
+        deadline_secs: int = 60,
+        claim_timeout_s: float = 40.0,
+        claim_retry_interval_s: float = 1.0,
+    ) -> str:
+        """Create a real claimed+failed task as relation-pair failure memory.
+
+        G.3.5 needs a backend-grounded failure sample without making the
+        benchmark task itself fail. This helper creates a tiny precondition task
+        for the same requester/worker pair, claims it as the target agent, then
+        fails it so `/pool/failures` exposes a real relation-pair event.
+        """
+        task_id = self.create(
+            briefing=briefing,
+            target_agent_id=target_agent_id,
+            capability=capability,
+            reward=reward,
+            deadline_secs=deadline_secs,
+        )
+        self._claim_seed_task(
+            task_id,
+            target_agent_id=target_agent_id,
+            timeout_s=claim_timeout_s,
+            retry_interval_s=claim_retry_interval_s,
+        )
+        if not self.force_fail(task_id):
+            raise RuntimeError(f"failed to mark seed task {task_id!r} as failed")
+        return task_id
+
+    def _claim_seed_task(
+        self,
+        task_id: str,
+        *,
+        target_agent_id: str,
+        timeout_s: float,
+        retry_interval_s: float,
+    ) -> None:
+        pool_claim = getattr(self._sdk, "pool_claim", None)
+        if not callable(pool_claim):
+            raise RuntimeError("SDK does not support pool_claim; cannot seed failure")
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        retry_interval_s = max(0.05, retry_interval_s)
+        last_exc: Exception | None = None
+        while True:
+            try:
+                pool_claim(task_id, agent_id=target_agent_id)
+                return
+            except TypeError:
+                pool_claim(task_id)
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if _looks_already_claimed(exc):
+                    return
+                if not _is_claim_cooldown(exc) or time.monotonic() >= deadline:
+                    break
+                time.sleep(min(retry_interval_s, max(0.05, deadline - time.monotonic())))
+        raise RuntimeError(f"failed to claim seed task {task_id!r}: {last_exc}")
 
     # -- terminal-state polling ----------------------------------------
 
@@ -322,3 +408,33 @@ def _is_rate_limited(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return "http 429" in msg or "rate limit" in msg
+
+
+def _is_claim_cooldown(exc: Exception) -> bool:
+    status_code = int(getattr(exc, "status_code", 0) or 0)
+    if status_code == 429:
+        return True
+    msg = str(exc).lower()
+    return "cooldown" in msg or "too many requests" in msg or "http 429" in msg
+
+
+def _looks_already_claimed(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "already claimed" in msg or "may already be claimed" in msg
+
+
+def _unwrap_task_record(rec: dict[str, Any], task_id: str) -> dict[str, Any]:
+    """Normalize backend task responses to the raw PooledTask record.
+
+    The HTTP endpoint returns {"task": {...}} while older SDK fakes and
+    pool_list snapshots use the task object directly. Keep both shapes valid.
+    """
+    task = rec.get("task")
+    if isinstance(task, dict):
+        unwrapped = dict(task)
+    elif isinstance(rec.get("data"), dict) and isinstance(rec["data"].get("task"), dict):
+        unwrapped = dict(rec["data"]["task"])
+    else:
+        unwrapped = dict(rec)
+    unwrapped.setdefault("id", task_id)
+    return unwrapped

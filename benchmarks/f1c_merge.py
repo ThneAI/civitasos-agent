@@ -59,6 +59,12 @@ _DEFAULT_G3_RELATION_MEMORY_HIT_FLOOR = 0.80
 _DEFAULT_G3_RELATION_AWARE_DECISION_FLOOR = 0.80
 _DEFAULT_G3_TIME_CONSISTENCY_FLOOR = 0.95
 _DEFAULT_G3_LLM_RELATION_REF_FLOOR = 1.0
+_DEFAULT_G3_R2R_RELATION_ID_FLOOR = 1.0
+_DEFAULT_G3_RELATION_PAIR_CONTEXT_FLOOR = 1.0
+_DEFAULT_H0_RELATION_FAILURE_TRACE_FLOOR = 1.0
+_DEFAULT_H0_IEM_UPDATE_LOG_FLOOR = 1.0
+_DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR = 1.0
+_DEFAULT_H0_NORMATIVE_GUARD_FLOOR = 1.0
 _DIM_WEIGHTS = {
     "completion_rate": 0.30,
     "latency_score": 0.20,
@@ -127,6 +133,10 @@ def _env_flag(name: str, default: bool = False) -> bool:
         return val.strip().lower() in {"1", "true", "yes", "on"}
     except Exception:
         return default
+
+
+def _raw_bool(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() == "true"
 
 
 def _load_completion_from_summary(run_dir: Path) -> tuple[int, int]:
@@ -449,6 +459,156 @@ def _evaluate_g3_raw_relation_trace(
     }
 
 
+def _evaluate_g3_backend_relation_context_source(
+    runs: list[tuple[str, Path]],
+    *,
+    max_examples: int = 20,
+) -> dict[str, object]:
+    """Check relation-aware raw rows are backed by backend read-model context."""
+    total = 0
+    backend = 0
+    non_backend_sample: list[dict[str, str]] = []
+
+    for alias, run_dir in runs:
+        raw_dir = run_dir / "raw_ticks"
+        if not raw_dir.exists():
+            continue
+        for csv_path in sorted(raw_dir.glob("*.csv")):
+            with csv_path.open(newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    relation_context_id = str(row.get("relation_context_id") or "").strip()
+                    relation_memory_refs = str(row.get("relation_memory_refs") or "").strip()
+                    time_window_id = str(row.get("time_window_id") or "").strip()
+                    challenge_bucket = str(row.get("challenge_deadline_bucket") or "").strip()
+                    if not any((
+                        relation_context_id,
+                        relation_memory_refs,
+                        time_window_id,
+                        challenge_bucket,
+                    )):
+                        continue
+                    total += 1
+                    source = str(row.get("relation_context_source") or "").strip()
+                    if source == "backend_read_model":
+                        backend += 1
+                        continue
+                    if len(non_backend_sample) < max_examples:
+                        non_backend_sample.append(
+                            {
+                                "agent_alias": alias,
+                                "task_id": csv_path.stem,
+                                "tick_seq": str(row.get("tick_seq") or ""),
+                                "relation_context_id": relation_context_id,
+                                "time_window_id": time_window_id,
+                                "relation_context_source": source,
+                            },
+                        )
+
+    ratio = (backend / total) if total else None
+    return {
+        "raw_relation_context_source_rows": total,
+        "raw_backend_relation_context_source_rows": backend,
+        "raw_backend_relation_context_source_ratio": ratio,
+        "raw_relation_context_non_backend_sample": non_backend_sample,
+    }
+
+
+def _evaluate_g3_relation_provenance(
+    runs: list[tuple[str, Path]],
+    *,
+    max_examples: int = 20,
+) -> dict[str, object]:
+    """Check relation-aware raw rows carry R2R id and relation-pair provenance."""
+    total = 0
+    r2r = 0
+    pair = 0
+    failure_events = 0
+    failure_refs = 0
+    missing_r2r_sample: list[dict[str, str]] = []
+    missing_pair_sample: list[dict[str, str]] = []
+    missing_failure_ref_sample: list[dict[str, str]] = []
+
+    for alias, run_dir in runs:
+        raw_dir = run_dir / "raw_ticks"
+        if not raw_dir.exists():
+            continue
+        for csv_path in sorted(raw_dir.glob("*.csv")):
+            with csv_path.open(newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    relation_context_id = str(row.get("relation_context_id") or "").strip()
+                    relation_memory_refs = str(row.get("relation_memory_refs") or "").strip()
+                    time_window_id = str(row.get("time_window_id") or "").strip()
+                    challenge_bucket = str(row.get("challenge_deadline_bucket") or "").strip()
+                    if not any((
+                        relation_context_id,
+                        relation_memory_refs,
+                        time_window_id,
+                        challenge_bucket,
+                    )):
+                        continue
+                    total += 1
+                    relation_id_source = str(row.get("relation_id_source") or "").strip()
+                    pair_present = _raw_bool(row.get("relation_pair_present"))
+                    has_failure_events = _raw_bool(
+                        row.get("relation_pair_failure_events_present"),
+                    )
+                    has_failure_ref = _raw_bool(
+                        row.get("relation_pair_failure_ref_present"),
+                    )
+
+                    if relation_id_source == "r2r_registry":
+                        r2r += 1
+                    elif len(missing_r2r_sample) < max_examples:
+                        missing_r2r_sample.append({
+                            "agent_alias": alias,
+                            "task_id": csv_path.stem,
+                            "tick_seq": str(row.get("tick_seq") or ""),
+                            "relation_context_id": relation_context_id,
+                            "relation_id_source": relation_id_source,
+                        })
+
+                    if pair_present:
+                        pair += 1
+                    elif len(missing_pair_sample) < max_examples:
+                        missing_pair_sample.append({
+                            "agent_alias": alias,
+                            "task_id": csv_path.stem,
+                            "tick_seq": str(row.get("tick_seq") or ""),
+                            "relation_context_id": relation_context_id,
+                        })
+
+                    if has_failure_events:
+                        failure_events += 1
+                        if has_failure_ref:
+                            failure_refs += 1
+                        elif len(missing_failure_ref_sample) < max_examples:
+                            missing_failure_ref_sample.append({
+                                "agent_alias": alias,
+                                "task_id": csv_path.stem,
+                                "tick_seq": str(row.get("tick_seq") or ""),
+                                "relation_context_id": relation_context_id,
+                                "relation_memory_refs": relation_memory_refs,
+                            })
+
+    return {
+        "raw_g3_relation_provenance_rows": total,
+        "raw_g3_r2r_relation_id_rows": r2r,
+        "raw_g3_r2r_relation_id_ratio": (r2r / total) if total else None,
+        "raw_g3_relation_pair_rows": pair,
+        "raw_g3_relation_pair_context_ratio": (pair / total) if total else None,
+        "raw_g3_relation_pair_failure_event_rows": failure_events,
+        "raw_g3_relation_pair_failure_ref_rows": failure_refs,
+        "raw_g3_relation_pair_failure_ref_ratio": (
+            failure_refs / failure_events if failure_events else None
+        ),
+        "raw_g3_relation_id_non_r2r_sample": missing_r2r_sample,
+        "raw_g3_relation_pair_missing_sample": missing_pair_sample,
+        "raw_g3_relation_pair_failure_ref_missing_sample": missing_failure_ref_sample,
+    }
+
+
 def _evaluate_g2_gate(
     *,
     runs: list[tuple[str, Path]],
@@ -534,6 +694,10 @@ def _evaluate_g3_gate(
     min_relation_aware_decision_ratio: float = _DEFAULT_G3_RELATION_AWARE_DECISION_FLOOR,
     min_cross_agent_time_consistency_ratio: float = _DEFAULT_G3_TIME_CONSISTENCY_FLOOR,
     min_llm_relation_ref_ratio: float = _DEFAULT_G3_LLM_RELATION_REF_FLOOR,
+    min_backend_relation_context_source_ratio: float | None = None,
+    min_r2r_relation_id_ratio: float | None = None,
+    min_relation_pair_context_ratio: float | None = None,
+    min_relation_pair_failure_ref_ratio: float | None = None,
 ) -> dict[str, object]:
     rows = _load_g2_final_metric_rows(final_metrics_csv)
     relation_rows: list[dict[str, str]] = []
@@ -549,11 +713,20 @@ def _evaluate_g3_gate(
             "g3_cross_agent_time_consistency_ratio": _safe_float(
                 row.get("g3_cross_agent_time_consistency_ratio"),
             ),
+            "g3_r2r_relation_id_ratio": _safe_float(
+                row.get("g3_r2r_relation_id_ratio"),
+            ),
+            "g3_relation_pair_context_ratio": _safe_float(
+                row.get("g3_relation_pair_context_ratio"),
+            ),
+            "g3_relation_pair_failure_ref_ratio": _safe_float(
+                row.get("g3_relation_pair_failure_ref_ratio"),
+            ),
         }
         if all(value is None for value in values.values()):
             continue
         relation_rows.append(row)
-        checks = (
+        checks: list[tuple[str, float | None, float]] = [
             (
                 "g3_relation_memory_hit_ratio",
                 values["g3_relation_memory_hit_ratio"],
@@ -569,7 +742,28 @@ def _evaluate_g3_gate(
                 values["g3_cross_agent_time_consistency_ratio"],
                 min_cross_agent_time_consistency_ratio,
             ),
-        )
+        ]
+        if min_r2r_relation_id_ratio is not None:
+            checks.append((
+                "g3_r2r_relation_id_ratio",
+                values["g3_r2r_relation_id_ratio"],
+                min_r2r_relation_id_ratio,
+            ))
+        if min_relation_pair_context_ratio is not None:
+            checks.append((
+                "g3_relation_pair_context_ratio",
+                values["g3_relation_pair_context_ratio"],
+                min_relation_pair_context_ratio,
+            ))
+        if (
+            min_relation_pair_failure_ref_ratio is not None
+            and values["g3_relation_pair_failure_ref_ratio"] is not None
+        ):
+            checks.append((
+                "g3_relation_pair_failure_ref_ratio",
+                values["g3_relation_pair_failure_ref_ratio"],
+                min_relation_pair_failure_ref_ratio,
+            ))
         for field, value, floor in checks:
             if value is not None and value >= floor:
                 continue
@@ -598,6 +792,33 @@ def _evaluate_g3_gate(
             "raw_llm_relation_ref_missing_sample": [],
         }
     )
+    raw_backend_source = (
+        _evaluate_g3_backend_relation_context_source(runs)
+        if runs is not None
+        else {
+            "raw_relation_context_source_rows": 0,
+            "raw_backend_relation_context_source_rows": 0,
+            "raw_backend_relation_context_source_ratio": None,
+            "raw_relation_context_non_backend_sample": [],
+        }
+    )
+    raw_provenance = (
+        _evaluate_g3_relation_provenance(runs)
+        if runs is not None
+        else {
+            "raw_g3_relation_provenance_rows": 0,
+            "raw_g3_r2r_relation_id_rows": 0,
+            "raw_g3_r2r_relation_id_ratio": None,
+            "raw_g3_relation_pair_rows": 0,
+            "raw_g3_relation_pair_context_ratio": None,
+            "raw_g3_relation_pair_failure_event_rows": 0,
+            "raw_g3_relation_pair_failure_ref_rows": 0,
+            "raw_g3_relation_pair_failure_ref_ratio": None,
+            "raw_g3_relation_id_non_r2r_sample": [],
+            "raw_g3_relation_pair_missing_sample": [],
+            "raw_g3_relation_pair_failure_ref_missing_sample": [],
+        }
+    )
     raw_ratio = raw_consistency["raw_cross_agent_time_consistency_ratio"]
     if raw_ratio is not None and raw_ratio < min_cross_agent_time_consistency_ratio:
         failure_reasons.append(
@@ -612,11 +833,52 @@ def _evaluate_g3_gate(
             "raw LLM relation ref ratio "
             f"{raw_ref_ratio:.4f} < {min_llm_relation_ref_ratio:.4f}",
         )
+    raw_backend_ratio = raw_backend_source["raw_backend_relation_context_source_ratio"]
+    if min_backend_relation_context_source_ratio is not None:
+        if relation_rows and raw_backend_ratio is None and runs is not None:
+            failure_reasons.append("raw backend relation context source rows are missing")
+        elif raw_backend_ratio is not None and raw_backend_ratio < min_backend_relation_context_source_ratio:
+            failure_reasons.append(
+                "raw backend relation context source ratio "
+                f"{raw_backend_ratio:.4f} < {min_backend_relation_context_source_ratio:.4f}",
+            )
+
+    raw_r2r_ratio = raw_provenance["raw_g3_r2r_relation_id_ratio"]
+    if min_r2r_relation_id_ratio is not None:
+        if relation_rows and raw_r2r_ratio is None and runs is not None:
+            failure_reasons.append("raw G.3 R2R relation id rows are missing")
+        elif raw_r2r_ratio is not None and raw_r2r_ratio < min_r2r_relation_id_ratio:
+            failure_reasons.append(
+                "raw G.3 R2R relation id ratio "
+                f"{raw_r2r_ratio:.4f} < {min_r2r_relation_id_ratio:.4f}",
+            )
+
+    raw_pair_ratio = raw_provenance["raw_g3_relation_pair_context_ratio"]
+    if min_relation_pair_context_ratio is not None:
+        if relation_rows and raw_pair_ratio is None and runs is not None:
+            failure_reasons.append("raw G.3 relation pair context rows are missing")
+        elif raw_pair_ratio is not None and raw_pair_ratio < min_relation_pair_context_ratio:
+            failure_reasons.append(
+                "raw G.3 relation pair context ratio "
+                f"{raw_pair_ratio:.4f} < {min_relation_pair_context_ratio:.4f}",
+            )
+
+    raw_failure_ref_ratio = raw_provenance["raw_g3_relation_pair_failure_ref_ratio"]
+    if min_relation_pair_failure_ref_ratio is not None:
+        if relation_rows and raw_failure_ref_ratio is None and runs is not None:
+            failure_reasons.append("raw G.3 relation-pair failure ref sample is missing")
+        elif raw_failure_ref_ratio is not None and raw_failure_ref_ratio < min_relation_pair_failure_ref_ratio:
+            failure_reasons.append(
+                "raw G.3 relation-pair failure ref ratio "
+                f"{raw_failure_ref_ratio:.4f} < {min_relation_pair_failure_ref_ratio:.4f}",
+            )
 
     if (
         not relation_rows
         and raw_consistency["raw_time_window_task_count"] == 0
         and raw_relation_trace["raw_llm_relation_trace_rows"] == 0
+        and raw_backend_source["raw_relation_context_source_rows"] == 0
+        and raw_provenance["raw_g3_relation_provenance_rows"] == 0
     ):
         return {
             "passed": True,
@@ -625,6 +887,8 @@ def _evaluate_g3_gate(
             "relation_rows": 0,
             **raw_consistency,
             **raw_relation_trace,
+            **raw_backend_source,
+            **raw_provenance,
             "failure_reasons": [],
         }
 
@@ -636,8 +900,225 @@ def _evaluate_g3_gate(
         "min_relation_aware_decision_ratio": min_relation_aware_decision_ratio,
         "min_cross_agent_time_consistency_ratio": min_cross_agent_time_consistency_ratio,
         "min_llm_relation_ref_ratio": min_llm_relation_ref_ratio,
+        "min_backend_relation_context_source_ratio": min_backend_relation_context_source_ratio,
+        "min_r2r_relation_id_ratio": min_r2r_relation_id_ratio,
+        "min_relation_pair_context_ratio": min_relation_pair_context_ratio,
+        "min_relation_pair_failure_ref_ratio": min_relation_pair_failure_ref_ratio,
         **raw_consistency,
         **raw_relation_trace,
+        **raw_backend_source,
+        **raw_provenance,
+        "failure_reasons": failure_reasons,
+    }
+
+
+def _evaluate_h0_raw_relation_expectation(
+    runs: list[tuple[str, Path]],
+    *,
+    max_examples: int = 20,
+) -> dict[str, object]:
+    failure_rows = 0
+    trace_rows = 0
+    update_rows = 0
+    action_bias_rows = 0
+    normative_guard_rows = 0
+    h0_trace_rows = 0
+    missing_sample: list[dict[str, str]] = []
+
+    for alias, run_dir in runs:
+        raw_dir = run_dir / "raw_ticks"
+        if not raw_dir.exists():
+            continue
+        for csv_path in sorted(raw_dir.glob("*.csv")):
+            with csv_path.open(newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    relation_surprise = _raw_bool(row.get("h0_relation_surprise_present"))
+                    update_log = _raw_bool(row.get("h0_iem_update_log_present"))
+                    action_bias = _raw_bool(row.get("h0_relation_action_bias_present"))
+                    normative_guard = _raw_bool(row.get("h0_normative_local_update_blocked"))
+                    if any((
+                        _raw_bool(row.get("h0_expectation_trace_present")),
+                        relation_surprise,
+                        update_log,
+                        action_bias,
+                        normative_guard,
+                    )):
+                        h0_trace_rows += 1
+
+                    if not _raw_bool(row.get("relation_pair_failure_events_present")):
+                        continue
+                    failure_rows += 1
+                    if relation_surprise:
+                        trace_rows += 1
+                    if update_log:
+                        update_rows += 1
+                    if action_bias:
+                        action_bias_rows += 1
+                    if normative_guard:
+                        normative_guard_rows += 1
+                    if (
+                        relation_surprise
+                        and update_log
+                        and action_bias
+                        and normative_guard
+                    ):
+                        continue
+                    if len(missing_sample) < max_examples:
+                        missing_sample.append({
+                            "agent_alias": alias,
+                            "task_id": csv_path.stem,
+                            "tick_seq": str(row.get("tick_seq") or ""),
+                            "relation_context_id": str(row.get("relation_context_id") or ""),
+                            "h0_relation_surprise_present": str(row.get("h0_relation_surprise_present") or ""),
+                            "h0_iem_update_log_present": str(row.get("h0_iem_update_log_present") or ""),
+                            "h0_relation_action_bias_present": str(row.get("h0_relation_action_bias_present") or ""),
+                            "h0_normative_local_update_blocked": str(row.get("h0_normative_local_update_blocked") or ""),
+                        })
+
+    def _ratio(num: int) -> float | None:
+        return (num / failure_rows) if failure_rows else None
+
+    return {
+        "raw_h0_trace_rows": h0_trace_rows,
+        "raw_h0_relation_failure_event_rows": failure_rows,
+        "raw_h0_relation_failure_trace_rows": trace_rows,
+        "raw_h0_relation_failure_trace_ratio": _ratio(trace_rows),
+        "raw_h0_iem_update_log_rows": update_rows,
+        "raw_h0_iem_update_log_ratio": _ratio(update_rows),
+        "raw_h0_relation_action_bias_rows": action_bias_rows,
+        "raw_h0_relation_action_bias_ratio": _ratio(action_bias_rows),
+        "raw_h0_normative_guard_rows": normative_guard_rows,
+        "raw_h0_normative_guard_ratio": _ratio(normative_guard_rows),
+        "raw_h0_missing_trace_sample": missing_sample,
+    }
+
+
+def _h0_final_metric_counts(rows: list[dict[str, str]]) -> dict[str, object]:
+    fields = (
+        "h0_expectation_trace_ratio",
+        "h0_hard_domain_trace_ratio",
+        "h0_drive_constitution_verdict_ratio",
+        "h0_iem_update_log_ratio",
+        "h0_relation_action_bias_ratio",
+        "h0_normative_guard_ratio",
+    )
+    counts = {field: 0 for field in fields}
+    h0_rows = 0
+    for row in rows:
+        row_has_h0 = False
+        for field in fields:
+            if _safe_float(row.get(field)) is None:
+                continue
+            counts[field] += 1
+            row_has_h0 = True
+        if row_has_h0:
+            h0_rows += 1
+    counts["final_h0_rows"] = h0_rows
+    return counts
+
+
+def _evaluate_h0_gate(
+    *,
+    final_metrics_csv: Path,
+    runs: list[tuple[str, Path]] | None = None,
+    require_active: bool = False,
+    min_relation_failure_trace_ratio: float = _DEFAULT_H0_RELATION_FAILURE_TRACE_FLOOR,
+    min_iem_update_log_ratio: float = _DEFAULT_H0_IEM_UPDATE_LOG_FLOOR,
+    min_relation_action_bias_ratio: float = _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR,
+    min_normative_guard_ratio: float = _DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
+) -> dict[str, object]:
+    rows = _load_g2_final_metric_rows(final_metrics_csv)
+    final_counts = _h0_final_metric_counts(rows)
+    raw = (
+        _evaluate_h0_raw_relation_expectation(runs)
+        if runs is not None
+        else {
+            "raw_h0_trace_rows": 0,
+            "raw_h0_relation_failure_event_rows": 0,
+            "raw_h0_relation_failure_trace_rows": 0,
+            "raw_h0_relation_failure_trace_ratio": None,
+            "raw_h0_iem_update_log_rows": 0,
+            "raw_h0_iem_update_log_ratio": None,
+            "raw_h0_relation_action_bias_rows": 0,
+            "raw_h0_relation_action_bias_ratio": None,
+            "raw_h0_normative_guard_rows": 0,
+            "raw_h0_normative_guard_ratio": None,
+            "raw_h0_missing_trace_sample": [],
+        }
+    )
+
+    final_h0_rows = int(final_counts["final_h0_rows"])
+    raw_h0_rows = int(raw["raw_h0_trace_rows"])
+    raw_failure_rows = int(raw["raw_h0_relation_failure_event_rows"])
+    if not require_active and final_h0_rows == 0 and raw_h0_rows == 0 and raw_failure_rows == 0:
+        return {
+            "passed": True,
+            "skipped": True,
+            "reason": "no H.0 expectation rows in final_metrics or raw ticks",
+            "require_active": require_active,
+            **final_counts,
+            **raw,
+            "failure_reasons": [],
+        }
+
+    failure_reasons: list[str] = []
+    if require_active:
+        if final_h0_rows == 0:
+            failure_reasons.append("H.0 active required but final_metrics has no h0 rows")
+        for field in (
+            "h0_expectation_trace_ratio",
+            "h0_iem_update_log_ratio",
+            "h0_relation_action_bias_ratio",
+            "h0_normative_guard_ratio",
+        ):
+            if int(final_counts[field]) == 0:
+                failure_reasons.append(f"H.0 active required but {field} is absent")
+        if raw_failure_rows == 0:
+            failure_reasons.append(
+                "H.0 active required but raw relation-pair failure rows are missing",
+            )
+
+    checks = [
+        (
+            "raw_h0_relation_failure_trace_ratio",
+            raw["raw_h0_relation_failure_trace_ratio"],
+            min_relation_failure_trace_ratio,
+        ),
+        (
+            "raw_h0_iem_update_log_ratio",
+            raw["raw_h0_iem_update_log_ratio"],
+            min_iem_update_log_ratio,
+        ),
+        (
+            "raw_h0_relation_action_bias_ratio",
+            raw["raw_h0_relation_action_bias_ratio"],
+            min_relation_action_bias_ratio,
+        ),
+        (
+            "raw_h0_normative_guard_ratio",
+            raw["raw_h0_normative_guard_ratio"],
+            min_normative_guard_ratio,
+        ),
+    ]
+    if raw_failure_rows > 0:
+        for field, value, floor in checks:
+            if value is not None and value >= floor:
+                continue
+            failure_reasons.append(
+                f"{field} {0.0 if value is None else value:.4f} < {floor:.4f}",
+            )
+
+    return {
+        "passed": not failure_reasons,
+        "skipped": False,
+        "require_active": require_active,
+        "min_relation_failure_trace_ratio": min_relation_failure_trace_ratio,
+        "min_iem_update_log_ratio": min_iem_update_log_ratio,
+        "min_relation_action_bias_ratio": min_relation_action_bias_ratio,
+        "min_normative_guard_ratio": min_normative_guard_ratio,
+        **final_counts,
+        **raw,
         "failure_reasons": failure_reasons,
     }
 
@@ -970,16 +1451,7 @@ def _row_with_alias(alias: str, agg) -> dict[str, str]:
     """Flatten an AggregateRow to a CSV-ready dict, prepending agent_alias."""
     out: dict[str, str] = {"agent_alias": alias}
     for col in FINAL_METRIC_COLUMNS:
-        if col in ("m1_result_deviation_rate", "m2_verification_miss_rate",
-                   "m3_aspect_gap_response_rate", "m4_lessons_impact_rate",
-                   "m5_tick_latency_p50_ms", "m5_tick_latency_p95_ms",
-                   "m5_tick_latency_p99_ms", "m5_task_latency_p50_ms",
-                   "m5_task_latency_p95_ms", "m6_wait_ratio",
-                   "g2_mode_choice_observable_ratio", "g2_llm_waiting_ratio",
-                   "g2_llm_deep_think_ratio",
-                   "g3_relation_memory_hit_ratio",
-                   "g3_relation_aware_decision_ratio",
-                   "g3_cross_agent_time_consistency_ratio"):
+        if col in agg.metrics:
             v = agg.metrics.get(col)
             out[col] = "" if v is None else f"{v:.6f}" if isinstance(v, float) else str(v)
         else:
@@ -1120,6 +1592,15 @@ def merge(
     gate_max_flagged_task_ratio: float = 0.50,
     gate_min_common_tasks: int = 30,
     enable_g2_gate: bool = True,
+    g3_min_backend_source_ratio: float | None = None,
+    g3_min_r2r_relation_id_ratio: float | None = None,
+    g3_min_relation_pair_context_ratio: float | None = None,
+    g3_min_relation_pair_failure_ref_ratio: float | None = None,
+    require_h0_active: bool = False,
+    h0_min_relation_failure_trace_ratio: float = _DEFAULT_H0_RELATION_FAILURE_TRACE_FLOOR,
+    h0_min_iem_update_log_ratio: float = _DEFAULT_H0_IEM_UPDATE_LOG_FLOOR,
+    h0_min_relation_action_bias_ratio: float = _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR,
+    h0_min_normative_guard_ratio: float = _DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
 ) -> dict:
     runs = _discover_runs(runs_root)
     if not runs:
@@ -1178,7 +1659,23 @@ def merge(
             "skipped": True,
             "failure_reasons": [],
         }
-    g3_gate = _evaluate_g3_gate(final_metrics_csv=out_csv, runs=runs)
+    g3_gate = _evaluate_g3_gate(
+        final_metrics_csv=out_csv,
+        runs=runs,
+        min_backend_relation_context_source_ratio=g3_min_backend_source_ratio,
+        min_r2r_relation_id_ratio=g3_min_r2r_relation_id_ratio,
+        min_relation_pair_context_ratio=g3_min_relation_pair_context_ratio,
+        min_relation_pair_failure_ref_ratio=g3_min_relation_pair_failure_ref_ratio,
+    )
+    h0_gate = _evaluate_h0_gate(
+        final_metrics_csv=out_csv,
+        runs=runs,
+        require_active=require_h0_active,
+        min_relation_failure_trace_ratio=h0_min_relation_failure_trace_ratio,
+        min_iem_update_log_ratio=h0_min_iem_update_log_ratio,
+        min_relation_action_bias_ratio=h0_min_relation_action_bias_ratio,
+        min_normative_guard_ratio=h0_min_normative_guard_ratio,
+    )
 
     summary = {
         "runs_root": str(runs_root),
@@ -1210,6 +1707,7 @@ def merge(
         "identity_prompt_observability": identity_prompt_observability,
         "g2_gate": g2_gate,
         "g3_gate": g3_gate,
+        "h0_gate": h0_gate,
     }
     ii2_scorecard = _build_ii2_scorecard(
         runs=runs,
@@ -1239,6 +1737,59 @@ def main() -> int:
         action="store_true",
         help="Skip G.2 subjective-time hard gate; use only for historical run replay.",
     )
+    p.add_argument(
+        "--g3-min-backend-source-ratio",
+        type=float,
+        default=None,
+        help="Require relation-aware raw rows to come from backend_read_model at this minimum ratio.",
+    )
+    p.add_argument(
+        "--g3-min-r2r-relation-id-ratio",
+        type=float,
+        default=None,
+        help="Require relation-aware raw rows to use R2R registry relation ids at this minimum ratio.",
+    )
+    p.add_argument(
+        "--g3-min-relation-pair-context-ratio",
+        type=float,
+        default=None,
+        help="Require relation-aware raw rows to carry relation_pair context at this minimum ratio.",
+    )
+    p.add_argument(
+        "--g3-min-relation-pair-failure-ref-ratio",
+        type=float,
+        default=None,
+        help="Require rows with relation-pair failure events to emit relation-pair failure refs.",
+    )
+    p.add_argument(
+        "--require-h0-active",
+        action="store_true",
+        help="Require H.0 expectation traces to be present and non-skipped.",
+    )
+    p.add_argument(
+        "--h0-min-relation-failure-trace-ratio",
+        type=float,
+        default=_DEFAULT_H0_RELATION_FAILURE_TRACE_FLOOR,
+        help="Require relation-pair failure rows to emit H.0 relation surprise traces.",
+    )
+    p.add_argument(
+        "--h0-min-iem-update-log-ratio",
+        type=float,
+        default=_DEFAULT_H0_IEM_UPDATE_LOG_FLOOR,
+        help="Require relation-pair failure rows to emit H.0 IEM update logs.",
+    )
+    p.add_argument(
+        "--h0-min-relation-action-bias-ratio",
+        type=float,
+        default=_DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR,
+        help="Require relation-pair failure rows to emit H.0 relation action bias.",
+    )
+    p.add_argument(
+        "--h0-min-normative-guard-ratio",
+        type=float,
+        default=_DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
+        help="Require relation-pair failure rows to prove normative local update guard.",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
     logging.basicConfig(
@@ -1254,6 +1805,15 @@ def main() -> int:
         gate_max_flagged_task_ratio=args.gate_max_flagged_task_ratio,
         gate_min_common_tasks=args.gate_min_common_tasks,
         enable_g2_gate=not args.skip_g2_gate,
+        g3_min_backend_source_ratio=args.g3_min_backend_source_ratio,
+        g3_min_r2r_relation_id_ratio=args.g3_min_r2r_relation_id_ratio,
+        g3_min_relation_pair_context_ratio=args.g3_min_relation_pair_context_ratio,
+        g3_min_relation_pair_failure_ref_ratio=args.g3_min_relation_pair_failure_ref_ratio,
+        require_h0_active=args.require_h0_active,
+        h0_min_relation_failure_trace_ratio=args.h0_min_relation_failure_trace_ratio,
+        h0_min_iem_update_log_ratio=args.h0_min_iem_update_log_ratio,
+        h0_min_relation_action_bias_ratio=args.h0_min_relation_action_bias_ratio,
+        h0_min_normative_guard_ratio=args.h0_min_normative_guard_ratio,
     )
     print(json.dumps(summary, indent=2))
     if not summary["integrity_gate"]["passed"]:
@@ -1286,8 +1846,14 @@ def main() -> int:
             "; ".join(summary["g3_gate"]["failure_reasons"]),
         )
         return 7
+    if not summary["h0_gate"]["passed"]:
+        logger.error(
+            "H.0 expectation gate FAILED: %s",
+            "; ".join(summary["h0_gate"]["failure_reasons"]),
+        )
+        return 8
     logger.info(
-        "F.1.c integrity+sentinel, G.2, and G.3 gates PASSED: pair_ratio=%.4f task_ratio=%.4f",
+        "F.1.c integrity+sentinel, G.2, G.3, and H.0 gates PASSED: pair_ratio=%.4f task_ratio=%.4f",
         summary["jaccard_flagged_ratio"],
         summary["jaccard_flagged_task_ratio"],
     )

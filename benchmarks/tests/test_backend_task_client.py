@@ -21,6 +21,7 @@ class FakeSDK:
         self.post_calls: list[dict[str, Any]] = []
         self.get_task_calls: list[str] = []
         self.failures_calls: list[dict[str, Any]] = []
+        self.claim_calls: list[dict[str, Any]] = []
         self.confirm_calls: list[str] = []
         self.fail_calls: list[str] = []
         self._next_id = 1
@@ -41,6 +42,26 @@ class FakeSDK:
         })
         return {"task_id": tid}
 
+    def pool_claim(
+        self,
+        task_id: str,
+        agent_id: str | None = None,
+        stake_amount: int = 0,
+    ) -> dict[str, Any]:
+        self.claim_calls.append({
+            "task_id": task_id,
+            "agent_id": agent_id,
+            "stake_amount": stake_amount,
+        })
+        for task in self.tasks:
+            if task["id"] == task_id:
+                task["status"] = "Claimed"
+                task["claimed_by"] = agent_id
+                task["requester"] = "requester-1"
+                task["relation_id"] = f"rel:requester-1:{agent_id}"
+                return {"claimed": True}
+        raise LookupError(task_id)
+
     def pool_list(self) -> Any:
         if self.list_wrap:
             return {"tasks": list(self.tasks)}
@@ -56,22 +77,39 @@ class FakeSDK:
     def pool_failures(
         self,
         agent_id: str | None = None,
+        requester_id: str | None = None,
+        relation_id: str | None = None,
         since: str | None = None,
         limit: int | None = None,
     ) -> dict[str, Any]:
-        self.failures_calls.append({"agent_id": agent_id, "since": since, "limit": limit})
+        self.failures_calls.append({
+            "agent_id": agent_id,
+            "requester_id": requester_id,
+            "relation_id": relation_id,
+            "since": since,
+            "limit": limit,
+        })
         failures = []
         for task in self.tasks:
             if not task.get("failed_at"):
                 continue
             if agent_id and task.get("claimed_by") != agent_id:
                 continue
-            failures.append({
+            if requester_id and task.get("requester") != requester_id:
+                continue
+            if relation_id and task.get("relation_id") != relation_id:
+                continue
+            event = {
                 "task_id": task["id"],
                 "agent_id": task.get("claimed_by"),
                 "failed_at": task.get("failed_at"),
                 "failure_reason": task.get("failure_reason"),
-            })
+            }
+            if task.get("requester"):
+                event["requester"] = task.get("requester")
+            if task.get("relation_id"):
+                event["relation_id"] = task.get("relation_id")
+            failures.append(event)
         return {
             "failures": failures[:limit],
             "total": len(failures),
@@ -88,6 +126,12 @@ class FakeSDK:
         if self.fail_should_raise:
             raise RuntimeError("backend fail failed")
         self.fail_calls.append(task_id)
+        for task in self.tasks:
+            if task["id"] == task_id:
+                task["status"] = "Failed"
+                task["failed_at"] = "2026-05-01T12:01:00Z"
+                task["failure_reason"] = "seeded_relation_failure"
+                break
         return {"ok": True}
 
     # test helpers
@@ -203,6 +247,27 @@ def test_get_state_handles_dict_wrap():
     assert client.get_state(tid).status == "Open"
 
 
+def test_get_state_unwraps_backend_task_response():
+    class WrappedTaskSDK(FakeSDK):
+        def pool_get_task(self, task_id: str) -> dict[str, Any]:  # type: ignore[override]
+            self.get_task_calls.append(task_id)
+            return {
+                "task": {
+                    "id": task_id,
+                    "status": "Delivered",
+                    "output": {"ok": True},
+                    "challenge_deadline_at": "2026-05-01T10:00:00Z",
+                }
+            }
+
+    sdk = WrappedTaskSDK()
+    client = BackendTaskClient(sdk)
+    state = client.get_state("task_wrapped")
+    assert state.status == "Delivered"
+    assert state.output == {"ok": True}
+    assert state.challenge_deadline_at == "2026-05-01T10:00:00Z"
+
+
 def test_get_state_raises_lookuperror_when_missing():
     sdk = FakeSDK()
     client = BackendTaskClient(sdk)
@@ -249,7 +314,50 @@ def test_get_failure_events_reads_g1_failure_index():
         "failed_at": "2026-04-29T12:01:00Z",
         "failure_reason": "worker_failed",
     }]
-    assert sdk.failures_calls == [{"agent_id": "worker-1", "since": "0", "limit": 10}]
+    assert sdk.failures_calls == [{
+        "agent_id": "worker-1",
+        "requester_id": None,
+        "relation_id": None,
+        "since": "0",
+        "limit": 10,
+    }]
+
+
+def test_get_failure_events_can_scope_to_relation_pair():
+    sdk = FakeSDK()
+    client = BackendTaskClient(sdk)
+    tid = client.create(briefing="x", target_agent_id="worker-1")
+    sdk.tasks[0].update({
+        "requester": "requester-1",
+        "relation_id": "rel:requester-1:worker-1",
+        "status": "Failed",
+        "claimed_by": "worker-1",
+        "failed_at": "2026-05-01T12:01:00Z",
+        "failure_reason": "challenge_disputed",
+    })
+
+    events = client.get_failure_events(
+        agent_id="worker-1",
+        requester_id="requester-1",
+        relation_id="rel:requester-1:worker-1",
+        limit=5,
+    )
+
+    assert events == [{
+        "task_id": tid,
+        "agent_id": "worker-1",
+        "failed_at": "2026-05-01T12:01:00Z",
+        "failure_reason": "challenge_disputed",
+        "requester": "requester-1",
+        "relation_id": "rel:requester-1:worker-1",
+    }]
+    assert sdk.failures_calls == [{
+        "agent_id": "worker-1",
+        "requester_id": "requester-1",
+        "relation_id": "rel:requester-1:worker-1",
+        "since": None,
+        "limit": 5,
+    }]
 
 
 # ── wait_terminal ────────────────────────────────────────────────────
@@ -343,6 +451,37 @@ def test_force_fail_returns_true_on_success():
     client = BackendTaskClient(sdk)
     assert client.force_fail("task_y") is True
     assert sdk.fail_calls == ["task_y"]
+
+
+def test_seed_failure_creates_claimed_failed_relation_sample():
+    sdk = FakeSDK()
+    client = BackendTaskClient(sdk)
+
+    tid = client.seed_failure(
+        briefing="seed prior relation failure",
+        target_agent_id="worker-1",
+        capability="general",
+        reward=1,
+        deadline_secs=60,
+        claim_timeout_s=0.0,
+        claim_retry_interval_s=0.01,
+    )
+
+    assert tid == "task_1"
+    assert sdk.post_calls[0]["allowed_agents"] == ["worker-1"]
+    assert sdk.claim_calls == [{
+        "task_id": "task_1",
+        "agent_id": "worker-1",
+        "stake_amount": 0,
+    }]
+    assert sdk.fail_calls == ["task_1"]
+    events = client.get_failure_events(
+        agent_id="worker-1",
+        requester_id="requester-1",
+        relation_id="rel:requester-1:worker-1",
+    )
+    assert len(events) == 1
+    assert events[0]["relation_id"] == "rel:requester-1:worker-1"
 
 
 # ── state_to_sentinel (the 5-row table) ──────────────────────────────

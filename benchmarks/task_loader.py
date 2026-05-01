@@ -46,6 +46,7 @@ class TaskSpec:
     tools_allowed: list[str] = field(default_factory=lambda: ["*"])
     verifier_tools: list[str] = field(default_factory=list)
     fixtures: list[str] = field(default_factory=list)
+    backend_seed_failures: int = 0
 
 
 @dataclass
@@ -195,4 +196,5 @@ def _parse_task(
         tools_allowed=list(raw.get("tools_allowed", ["*"])),
         verifier_tools=list(raw.get("verifier_tools", [])),
         fixtures=list(fixtures),
+        backend_seed_failures=max(0, int(raw.get("backend_seed_failures", 0) or 0)),
     )

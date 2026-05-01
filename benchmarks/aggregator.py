@@ -25,6 +25,7 @@ from observability.metrics.computers import (
     m6_wait_ratio,
     g2_subjective_mode,
     g3_relation_time,
+    h0_expectation_trace,
 )
 from observability.metrics.computers._loader import TaskRun
 
@@ -52,6 +53,15 @@ FINAL_METRIC_COLUMNS: tuple[str, ...] = (
     "g3_relation_memory_hit_ratio",
     "g3_relation_aware_decision_ratio",
     "g3_cross_agent_time_consistency_ratio",
+    "g3_r2r_relation_id_ratio",
+    "g3_relation_pair_context_ratio",
+    "g3_relation_pair_failure_ref_ratio",
+    "h0_expectation_trace_ratio",
+    "h0_hard_domain_trace_ratio",
+    "h0_drive_constitution_verdict_ratio",
+    "h0_iem_update_log_ratio",
+    "h0_relation_action_bias_ratio",
+    "h0_normative_guard_ratio",
     "notes",
 )
 
@@ -113,6 +123,7 @@ def aggregate_run(run_dir: str | Path, manifest: Manifest, *, schema_yaml: str |
         m5 = m5_reaction_latency.compute(tasks)
         g2 = g2_subjective_mode.compute(tasks)
         g3 = g3_relation_time.compute(tasks)
+        h0 = h0_expectation_trace.compute(tasks)
         metrics: dict[str, float | None] = {
             "m1_result_deviation_rate": m1_result_deviation.compute(tasks),
             "m2_verification_miss_rate": m2_verification_miss.compute(tasks),
@@ -122,6 +133,7 @@ def aggregate_run(run_dir: str | Path, manifest: Manifest, *, schema_yaml: str |
             "m6_wait_ratio": m6_wait_ratio.compute(tasks),
             **g2,
             **g3,
+            **h0,
         }
         out.append(AggregateRow(
             run_id=run_id,
@@ -160,6 +172,15 @@ def write_final_metrics(rows: Iterable[AggregateRow], out_path: str | Path) -> P
                 _fmt(r.metrics.get("g3_relation_memory_hit_ratio")),
                 _fmt(r.metrics.get("g3_relation_aware_decision_ratio")),
                 _fmt(r.metrics.get("g3_cross_agent_time_consistency_ratio")),
+                _fmt(r.metrics.get("g3_r2r_relation_id_ratio")),
+                _fmt(r.metrics.get("g3_relation_pair_context_ratio")),
+                _fmt(r.metrics.get("g3_relation_pair_failure_ref_ratio")),
+                _fmt(r.metrics.get("h0_expectation_trace_ratio")),
+                _fmt(r.metrics.get("h0_hard_domain_trace_ratio")),
+                _fmt(r.metrics.get("h0_drive_constitution_verdict_ratio")),
+                _fmt(r.metrics.get("h0_iem_update_log_ratio")),
+                _fmt(r.metrics.get("h0_relation_action_bias_ratio")),
+                _fmt(r.metrics.get("h0_normative_guard_ratio")),
                 r.notes,
             ])
     return out

@@ -167,15 +167,51 @@ def _identity_probe_action(agent_caps: list[str]) -> str:
 
 
 def _g3_relation_context_enabled(task_id: str) -> bool:
-    if not task_id.startswith(("G01_", "G02_")):
+    if len(task_id) < 4 or task_id[0] != "G" or not task_id[1:3].isdigit() or task_id[3] != "_":
         return False
     return _env_flag("BENCHMARK_G3_RELATION_CONTEXT_ENABLED", default=True)
 
 
-def _inject_g3_relation_context(briefing: dict[str, Any], task_id: str) -> None:
-    """Attach deterministic G.3 relation/time context for v2 benchmark tasks."""
+def _inject_g3_relation_context(
+    briefing: dict[str, Any],
+    task_id: str,
+    *,
+    runner: Any | None = None,
+    backend_task_id: str = "",
+) -> None:
+    """Attach G.3 relation/time context for v2 benchmark tasks.
+
+    Prefer the real backend task/failure read model when the benchmark is
+    running against backend tasks. Fall back to deterministic synthetic context
+    for offline tests and old smoke paths.
+    """
     if not task_id or not _g3_relation_context_enabled(task_id):
         return
+
+    existing = briefing.get("relation_context")
+    if isinstance(existing, dict):
+        existing_task_id = str(existing.get("benchmark_task_id") or "").strip()
+        existing_backend_task_id = str(existing.get("task_id") or "").strip()
+        existing_source = str(existing.get("source") or "").strip()
+        if (
+            existing_source == "backend_read_model"
+            and existing_task_id == task_id
+            and existing_backend_task_id == backend_task_id
+        ):
+            return
+
+    backend_context = _build_backend_g3_relation_context(
+        briefing,
+        task_id=task_id,
+        backend_task_id=backend_task_id,
+        runner=runner,
+    )
+    if backend_context is not None:
+        relation_context, time_window = backend_context
+        briefing["relation_context"] = relation_context
+        briefing["time_window"] = time_window
+        return
+
     family = task_id.split("_", 1)[0]
     relation_id = f"bench-relation:{family}:alpha-beta-gamma"
     context_id = f"{relation_id}:{task_id}"
@@ -193,6 +229,9 @@ def _inject_g3_relation_context(briefing: dict[str, Any], task_id: str) -> None:
                 f"challenge:{task_id}:latest",
             ],
             "challenge_deadline_bucket": deadline_bucket,
+            "task_id": backend_task_id,
+            "benchmark_task_id": task_id,
+            "source": "synthetic_benchmark",
         },
     )
     briefing.setdefault(
@@ -200,8 +239,275 @@ def _inject_g3_relation_context(briefing: dict[str, Any], task_id: str) -> None:
         {
             "id": time_window_id,
             "challenge_deadline_bucket": deadline_bucket,
+            "task_id": backend_task_id,
+            "benchmark_task_id": task_id,
+            "source": "synthetic_benchmark",
         },
     )
+
+
+def _build_backend_g3_relation_context(
+    briefing: dict[str, Any],
+    *,
+    task_id: str,
+    backend_task_id: str,
+    runner: Any | None,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if not backend_task_id or not _env_flag("BENCHMARK_G3_BACKEND_CONTEXT_ENABLED", default=True):
+        return None
+    task = _lookup_backend_task_snapshot(briefing, backend_task_id=backend_task_id, runner=runner)
+    if not task:
+        return None
+
+    requester = _first_text(task, "requester", "poster_id", "publisher_id")
+    if not requester:
+        return None
+    current_agent_id = _resolve_agent_id(runner) if runner is not None else ""
+    allowed_agents = task.get("allowed_agents") if isinstance(task.get("allowed_agents"), list) else []
+    worker_id = (
+        _first_text(task, "claimed_by", "worker", "worker_agent")
+        or (str(allowed_agents[0]) if allowed_agents else "")
+        or current_agent_id
+        or "unknown-worker"
+    )
+    relation_id = _first_text(task, "r2r_relation_id", "relation_id") or (
+        f"backend-relation:{_ref_token(requester)}:{_ref_token(worker_id)}"
+    )
+    relation_pair = _relation_pair_from_task(task, requester=requester, worker_id=worker_id)
+    r2r_relation = task.get("r2r_relation") if isinstance(task.get("r2r_relation"), dict) else {}
+    relation_id_source = _first_text(r2r_relation, "source") or (
+        "r2r_registry" if _first_text(task, "r2r_relation_id", "relation_id") else "derived_fallback"
+    )
+    challenge_source, challenge_bucket = _first_text_with_key(
+        task,
+        "challenge_deadline_at",
+        "deadline_at",
+        "delivered_at",
+        "claimed_at",
+        "posted_at",
+    )
+    challenge_source = challenge_source or "open"
+    challenge_bucket = challenge_bucket or "open"
+    challenge_token = _ref_token(challenge_bucket)
+    time_window_id = f"backend-window:{_ref_token(task_id)}:{_ref_token(challenge_source)}"
+    failures = _lookup_relation_failure_events(
+        runner,
+        requester_id=requester,
+        worker_id=worker_id,
+        relation_id=relation_id,
+        limit=10,
+    )
+
+    memory_refs = [
+        f"task:{backend_task_id}",
+        f"relation:{relation_id}",
+        f"challenge:{backend_task_id}:{challenge_token}",
+    ]
+    for event in failures[:5]:
+        failed_task_id = _first_text(event, "task_id", "id")
+        failed_at = _first_text(event, "failed_at", "timestamp")
+        if failed_task_id:
+            suffix = f":{_ref_token(failed_at)}" if failed_at else ""
+            event_relation_id = _first_text(event, "r2r_relation_id", "relation_id") or relation_id
+            if event_relation_id:
+                memory_refs.append(f"failure:{event_relation_id}:{failed_task_id}{suffix}")
+            else:
+                memory_refs.append(f"failure:{failed_task_id}{suffix}")
+
+    relation_context = {
+        "id": f"{relation_id}:task:{backend_task_id}",
+        "relation_id": relation_id,
+        "relation_id_source": relation_id_source,
+        "relation_pair": relation_pair,
+        "relation_pair_failure_source": "backend_relation_pair_read_model",
+        "peer_did": requester,
+        "task_id": backend_task_id,
+        "benchmark_task_id": task_id,
+        "memory_refs": _dedupe(memory_refs),
+        "relation_memory_refs": _dedupe(memory_refs),
+        "challenge_deadline_bucket": challenge_bucket,
+        "time_anchor_field": challenge_source,
+        "task_status": str(task.get("status") or ""),
+        "task_posted_at": _first_text(task, "posted_at"),
+        "task_claimed_at": _first_text(task, "claimed_at"),
+        "task_delivered_at": _first_text(task, "delivered_at"),
+        "task_failed_at": _first_text(task, "failed_at"),
+        "recent_failures": failures[:5],
+        "source": "backend_read_model",
+    }
+    time_window = {
+        "id": time_window_id,
+        "time_window_id": time_window_id,
+        "task_id": backend_task_id,
+        "benchmark_task_id": task_id,
+        "backend_task_id": backend_task_id,
+        "relation_id": relation_id,
+        "relation_id_source": relation_id_source,
+        "relation_pair": relation_pair,
+        "challenge_deadline_bucket": challenge_bucket,
+        "time_anchor_field": challenge_source,
+        "posted_at": _first_text(task, "posted_at"),
+        "claimed_at": _first_text(task, "claimed_at"),
+        "delivered_at": _first_text(task, "delivered_at"),
+        "failed_at": _first_text(task, "failed_at"),
+        "source": "backend_read_model",
+    }
+    return relation_context, time_window
+
+
+def _lookup_backend_task_snapshot(
+    briefing: dict[str, Any], *, backend_task_id: str, runner: Any | None,
+) -> dict[str, Any] | None:
+    agent = None
+    if runner is not None:
+        agent = getattr(runner, "_agent", None) or getattr(runner, "agent", None)
+    pool_get_task = getattr(agent, "pool_get_task", None)
+    if callable(pool_get_task):
+        try:
+            task = _normalize_backend_task_record(pool_get_task(backend_task_id), backend_task_id)
+            if task:
+                return task
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("benchmark_mode: pool_get_task(%s) failed: %s", backend_task_id, exc)
+    return _find_task_in_briefing(briefing, backend_task_id)
+
+
+def _normalize_backend_task_record(raw: Any, task_id: str) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    if isinstance(raw.get("task"), dict):
+        task = dict(raw["task"])
+    elif isinstance(raw.get("data"), dict) and isinstance(raw["data"].get("task"), dict):
+        task = dict(raw["data"]["task"])
+    else:
+        task = dict(raw)
+    task.setdefault("id", task_id)
+    return task
+
+
+def _find_task_in_briefing(briefing: dict[str, Any], backend_task_id: str) -> dict[str, Any] | None:
+    for key in ("active_tasks", "pool_tasks", "tasks", "opportunities"):
+        values = briefing.get(key) or []
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            tid = str(value.get("task_id") or value.get("id") or "")
+            if tid == backend_task_id:
+                task = dict(value)
+                task.setdefault("id", backend_task_id)
+                return task
+    return None
+
+
+def _relation_pair_from_task(
+    task: dict[str, Any], *, requester: str, worker_id: str,
+) -> dict[str, Any]:
+    pair = task.get("relation_pair")
+    if isinstance(pair, dict):
+        requester_id = _first_text(pair, "requester") or requester
+        worker = _first_text(pair, "worker", "peer_agent_id") or worker_id
+        agents = pair.get("agents") if isinstance(pair.get("agents"), list) else []
+        return {
+            "requester": requester_id,
+            "worker": worker,
+            "agents": [str(value) for value in agents if str(value).strip()],
+        }
+    agents = sorted([requester, worker_id])
+    return {"requester": requester, "worker": worker_id, "agents": agents}
+
+
+def _lookup_relation_failure_events(
+    runner: Any | None,
+    *,
+    requester_id: str,
+    worker_id: str,
+    relation_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if runner is None or not worker_id:
+        return []
+    agent = getattr(runner, "_agent", None) or getattr(runner, "agent", None)
+    pool_failures = getattr(agent, "pool_failures", None)
+    if not callable(pool_failures):
+        return []
+    attempts = [
+        {
+            "agent_id": worker_id,
+            "requester_id": requester_id,
+            "relation_id": relation_id,
+            "limit": limit,
+        },
+        {"agent_id": worker_id, "requester_id": requester_id, "limit": limit},
+        {"agent_id": worker_id, "limit": limit},
+    ]
+    resp: Any | None = None
+    for kwargs in attempts:
+        try:
+            resp = pool_failures(**kwargs)
+            break
+        except TypeError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "benchmark_mode: pool_failures(%s, %s) failed: %s",
+                requester_id,
+                worker_id,
+                exc,
+            )
+            return []
+    if resp is None:
+        return []
+    if isinstance(resp, list):
+        return [event for event in resp if isinstance(event, dict)]
+    if not isinstance(resp, dict):
+        return []
+    failures = resp.get("failures")
+    if failures is None and isinstance(resp.get("data"), dict):
+        failures = resp["data"].get("failures")
+    if not isinstance(failures, list):
+        return []
+    return [event for event in failures if isinstance(event, dict)]
+
+
+def _first_text(source: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _first_text_with_key(source: dict[str, Any], *keys: str) -> tuple[str, str]:
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return key, text
+    return "", ""
+
+
+def _ref_token(value: str) -> str:
+    token = str(value or "").strip()
+    for char in (" ", "/", "\\", ":", "+"):
+        token = token.replace(char, "_")
+    return token or "unknown"
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
 
 
 def _verification_probe_decision(
@@ -268,6 +574,7 @@ def install(runner: Any) -> None:
     # ── 1. high-priority rule: prefer the orchestrator-created task ──
     if backend_task_id:
         _install_prefer_target_rule(runner, backend_task_id)
+        _install_g3_pre_expect_context(runner, task_id=task_id, backend_task_id=backend_task_id)
     else:
         logger.warning(
             "benchmark_mode: BENCHMARK_BACKEND_TASK_ID unset — agent will use "
@@ -296,6 +603,39 @@ def install(runner: Any) -> None:
         "benchmark_mode installed: task_id=%s backend_task_id=%s",
         task_id, backend_task_id,
     )
+
+
+def _install_g3_pre_expect_context(
+    runner: Any,
+    *,
+    task_id: str,
+    backend_task_id: str,
+) -> None:
+    """Inject G.3 relation context after Perceive so H.0 EXPECT can read it."""
+    register = getattr(runner, "on_perceive", None)
+    if not callable(register):
+        logger.warning(
+            "benchmark_mode: runner.on_perceive unavailable; H0 pre-EXPECT "
+            "relation context injection skipped"
+        )
+        return
+
+    task_id_file = os.environ.get("BENCHMARK_TASK_ID_FILE", "").strip()
+    backend_task_id_file = os.environ.get("BENCHMARK_BACKEND_TASK_ID_FILE", "").strip()
+
+    def _on_perceive(briefing: dict[str, Any]) -> None:
+        current_task_id = _read_text_file(task_id_file) if task_id_file else task_id
+        target_tid = _read_text_file(backend_task_id_file) if backend_task_id_file else backend_task_id
+        if not target_tid:
+            return
+        _inject_g3_relation_context(
+            briefing,
+            current_task_id,
+            runner=runner,
+            backend_task_id=target_tid,
+        )
+
+    register(_on_perceive)
 
 
 def _install_fast_intervals() -> None:
@@ -506,7 +846,6 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
         briefing: dict, _memories: dict,
     ) -> Decision | None:
         current_task_id = _read_text_file(task_id_file) if task_id_file else benchmark_task_id
-        _inject_g3_relation_context(briefing, current_task_id)
         target_tid = _read_text_file(backend_task_id_file) if backend_task_id_file else backend_task_id
         if not target_tid:
             attempts_by_task = state["g2_mode_probe_attempts"]
@@ -541,6 +880,12 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
                 confidence=1.0,
                 source=DecisionSource.RULES,
             )
+        _inject_g3_relation_context(
+            briefing,
+            current_task_id,
+            runner=runner,
+            backend_task_id=target_tid,
+        )
         if target_tid != state["current_target"]:
             state["current_target"] = target_tid
             state["seen_active"] = False

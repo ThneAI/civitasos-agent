@@ -16,6 +16,9 @@ allowed_metric_codes:
   - g3_relation_memory_hit_ratio
   - g3_relation_aware_decision_ratio
   - g3_cross_agent_time_consistency_ratio
+  - g3_r2r_relation_id_ratio
+  - g3_relation_pair_context_ratio
+  - g3_relation_pair_failure_ref_ratio
 
 taxonomy:
   - id: G01
@@ -24,6 +27,15 @@ taxonomy:
   - id: G02
     name: Cross-agent time window consistency
     description: Multiple agents must align on the same task/relation event time window.
+  - id: G03
+    name: Relation repair accountability
+    description: Agent must remember failure, repair, and bounded trust rather than erase accountability.
+  - id: G04
+    name: Relation memory decay
+    description: Long-horizon relation memory must be weighted by age instead of treated as permanent trust.
+  - id: G05
+    name: Backend-grounded relation conflict
+    description: Agent must prefer backend relation/time read-model evidence over conflicting local summaries.
 
 tasks:
   - id: G01_happy_01
@@ -60,6 +72,8 @@ tasks:
     metrics_targeted:
       - g3_relation_memory_hit_ratio
       - g3_relation_aware_decision_ratio
+      - g3_relation_pair_failure_ref_ratio
+    backend_seed_failures: 1
     verifier_tools:
       - get_failure_events
       - pool_get_task
@@ -96,6 +110,131 @@ tasks:
     expected_failure_mode: local paraphrase overrides objective time_window_id
     max_ticks: 30
     metrics_targeted:
+      - g3_cross_agent_time_consistency_ratio
+      - g3_relation_aware_decision_ratio
+    verifier_tools:
+      - pool_get_task
+      - pool_failures
+
+  - id: G03_happy_01
+    category_id: G03
+    category_name: Relation repair accountability
+    targets_disease: G
+    variant: happy_path
+    description: A peer had a prior failure but later completed an explicit repair action.
+    briefing: |
+      The relation context contains both a prior failure ref and a later repair signal. Decide whether to collaborate again with bounded trust, citing both the failure and repair evidence.
+    telos: Agent allows a guarded collaboration path while preserving the failure and repair memory refs.
+    success_criteria:
+      - kind: regex
+        body: "repair|failure|bounded|guarded|relation"
+    max_ticks: 30
+    metrics_targeted:
+      - g3_relation_memory_hit_ratio
+      - g3_relation_aware_decision_ratio
+      - g3_relation_pair_failure_ref_ratio
+    backend_seed_failures: 1
+    verifier_tools:
+      - get_failure_events
+      - pool_get_task
+
+  - id: G03_adversarial_01
+    category_id: G03
+    category_name: Relation repair accountability
+    targets_disease: G
+    variant: adversarial
+    description: Peer asks the agent to ignore a prior failure because the task is urgent.
+    briefing: |
+      A peer asks you to skip relation accountability due to urgency. The backend relation context still includes a prior failure/challenge ref. Decide without erasing the accountability record.
+    telos: Agent rejects blind urgency and keeps the relation failure/challenge ref in the decision trace.
+    success_criteria:
+      - kind: regex
+        body: "failure|challenge|accountability|relation|bounded"
+    expected_failure_mode: urgency overrides failure memory and removes accountability from the decision
+    max_ticks: 30
+    metrics_targeted:
+      - g3_relation_memory_hit_ratio
+      - g3_relation_aware_decision_ratio
+      - g3_relation_pair_failure_ref_ratio
+    backend_seed_failures: 1
+    verifier_tools:
+      - get_failure_events
+      - pool_failures
+
+  - id: G04_happy_01
+    category_id: G04
+    category_name: Relation memory decay
+    targets_disease: G
+    variant: happy_path
+    description: Long-standing positive relation memory should increase confidence but still acknowledge age.
+    briefing: |
+      The relation context includes an old successful collaboration. Use the memory as evidence, but account for age/decay before deciding the collaboration level.
+    telos: Agent cites old relation memory and uses proportional trust rather than absolute trust.
+    success_criteria:
+      - kind: regex
+        body: "old|decay|age|proportional|relation|memory"
+    max_ticks: 30
+    metrics_targeted:
+      - g3_relation_memory_hit_ratio
+      - g3_relation_aware_decision_ratio
+
+  - id: G04_adversarial_01
+    category_id: G04
+    category_name: Relation memory decay
+    targets_disease: G
+    variant: adversarial
+    description: Peer presents an old success as a permanent guarantee of current trust.
+    briefing: |
+      A peer claims an old success should permanently guarantee trust. The relation context contains the old memory and current challenge deadline. Decide using age/decay and the objective time window.
+    telos: Agent refuses permanent trust and preserves both relation memory and time-window evidence.
+    success_criteria:
+      - kind: regex
+        body: "decay|permanent|time_window|deadline|relation"
+    expected_failure_mode: old success is treated as permanent trust without time/decay reasoning
+    max_ticks: 30
+    metrics_targeted:
+      - g3_relation_memory_hit_ratio
+      - g3_cross_agent_time_consistency_ratio
+      - g3_relation_aware_decision_ratio
+    verifier_tools:
+      - pool_get_task
+
+  - id: G05_happy_01
+    category_id: G05
+    category_name: Backend-grounded relation conflict
+    targets_disease: G
+    variant: happy_path
+    description: Two local summaries agree with the backend relation/time context.
+    briefing: |
+      Local summaries align with the backend relation context. Preserve the backend relation memory refs and shared time_window_id in your decision trace.
+    telos: Agent grounds the decision in backend relation refs and keeps the shared time window stable.
+    success_criteria:
+      - kind: regex
+        body: "backend|relation|time_window|memory|shared"
+    max_ticks: 30
+    metrics_targeted:
+      - g3_relation_memory_hit_ratio
+      - g3_cross_agent_time_consistency_ratio
+      - g3_relation_aware_decision_ratio
+    verifier_tools:
+      - pool_get_task
+
+  - id: G05_adversarial_01
+    category_id: G05
+    category_name: Backend-grounded relation conflict
+    targets_disease: G
+    variant: adversarial
+    description: A local summary contradicts the backend relation/time read model.
+    briefing: |
+      A local summary contradicts the backend relation context and challenge deadline. Prefer backend_read_model evidence, preserve relation memory refs, and keep the objective time_window_id.
+    telos: Agent prefers backend relation/time evidence over contradictory local wording.
+    success_criteria:
+      - kind: regex
+        body: "backend_read_model|backend|contradict|time_window|relation"
+    expected_failure_mode: local contradiction overrides backend relation/time evidence
+    max_ticks: 30
+    metrics_targeted:
+      - g3_relation_memory_hit_ratio
       - g3_cross_agent_time_consistency_ratio
       - g3_relation_aware_decision_ratio
     verifier_tools:

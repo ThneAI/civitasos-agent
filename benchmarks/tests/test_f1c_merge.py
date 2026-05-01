@@ -9,6 +9,7 @@ from benchmarks.f1c_merge import (
     _build_ii2_scorecard,
     _evaluate_g2_gate,
     _evaluate_g3_gate,
+    _evaluate_h0_gate,
     _evaluate_integrity_gate,
     _evaluate_sentinel_gate,
     _inter_agent_jaccard,
@@ -29,6 +30,16 @@ def _write_raw_ticks(
     time_window_ids: list[str] | None = None,
     relation_context_ids: list[str] | None = None,
     relation_memory_refs: list[str] | None = None,
+    relation_context_sources: list[str] | None = None,
+    relation_id_sources: list[str] | None = None,
+    relation_pair_present: list[bool] | None = None,
+    relation_pair_failure_events_present: list[bool] | None = None,
+    relation_pair_failure_ref_present: list[bool] | None = None,
+    h0_expectation_trace_present: list[bool] | None = None,
+    h0_relation_surprise_present: list[bool] | None = None,
+    h0_iem_update_log_present: list[bool] | None = None,
+    h0_relation_action_bias_present: list[bool] | None = None,
+    h0_normative_local_update_blocked: list[bool] | None = None,
 ) -> None:
     raw_dir = run_dir / "raw_ticks"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -57,6 +68,40 @@ def _write_raw_ticks(
             row["relation_context_id"] = relation_context_ids[idx]
         if relation_memory_refs is not None:
             row["relation_memory_refs"] = relation_memory_refs[idx]
+        if relation_context_sources is not None:
+            row["relation_context_source"] = relation_context_sources[idx]
+        if relation_id_sources is not None:
+            row["relation_id_source"] = relation_id_sources[idx]
+        if relation_pair_present is not None:
+            row["relation_pair_present"] = "true" if relation_pair_present[idx] else "false"
+        if relation_pair_failure_events_present is not None:
+            row["relation_pair_failure_events_present"] = (
+                "true" if relation_pair_failure_events_present[idx] else "false"
+            )
+        if relation_pair_failure_ref_present is not None:
+            row["relation_pair_failure_ref_present"] = (
+                "true" if relation_pair_failure_ref_present[idx] else "false"
+            )
+        if h0_expectation_trace_present is not None:
+            row["h0_expectation_trace_present"] = (
+                "true" if h0_expectation_trace_present[idx] else "false"
+            )
+        if h0_relation_surprise_present is not None:
+            row["h0_relation_surprise_present"] = (
+                "true" if h0_relation_surprise_present[idx] else "false"
+            )
+        if h0_iem_update_log_present is not None:
+            row["h0_iem_update_log_present"] = (
+                "true" if h0_iem_update_log_present[idx] else "false"
+            )
+        if h0_relation_action_bias_present is not None:
+            row["h0_relation_action_bias_present"] = (
+                "true" if h0_relation_action_bias_present[idx] else "false"
+            )
+        if h0_normative_local_update_blocked is not None:
+            row["h0_normative_local_update_blocked"] = (
+                "true" if h0_normative_local_update_blocked[idx] else "false"
+            )
         rows.append(row)
     fieldnames = list(rows[0].keys()) if rows else ["decision_action"]
     with p.open("w", newline="", encoding="utf-8") as fh:
@@ -140,6 +185,15 @@ def _write_g2_final_metrics(path: Path, rows: list[dict[str, str]]) -> None:
         "g3_relation_memory_hit_ratio",
         "g3_relation_aware_decision_ratio",
         "g3_cross_agent_time_consistency_ratio",
+        "g3_r2r_relation_id_ratio",
+        "g3_relation_pair_context_ratio",
+        "g3_relation_pair_failure_ref_ratio",
+        "h0_expectation_trace_ratio",
+        "h0_hard_domain_trace_ratio",
+        "h0_drive_constitution_verdict_ratio",
+        "h0_iem_update_log_ratio",
+        "h0_relation_action_bias_ratio",
+        "h0_normative_guard_ratio",
     ]
     with path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -529,6 +583,299 @@ def test_g3_gate_checks_raw_llm_relation_refs(tmp_path: Path) -> None:
     assert gate["raw_llm_relation_ref_rows"] == 2
     assert gate["raw_llm_relation_ref_ratio"] == 0.5
     assert any("raw LLM relation ref ratio" in r for r in gate["failure_reasons"])
+
+
+def test_g3_gate_can_require_backend_relation_context_source(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    for run_dir, source in (
+        (alpha, "backend_read_model"),
+        (beta, "synthetic_benchmark"),
+    ):
+        _write_raw_ticks(
+            run_dir,
+            "G01_happy_01",
+            ["task_execute"],
+            decision_sources=["llm"],
+            relation_context_ids=["rel-g01"],
+            relation_memory_refs=["relation:G01:prior"],
+            time_window_ids=["tw-g01"],
+            relation_context_sources=[source],
+        )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": alias,
+                "run_id": f"rid-{alias}",
+                "agent_id": f"did:{alias}",
+                "category_id": "G01",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "g3_relation_memory_hit_ratio": "1.0",
+                "g3_relation_aware_decision_ratio": "1.0",
+                "g3_cross_agent_time_consistency_ratio": "1.0",
+            }
+            for alias in ("alpha", "beta")
+        ],
+    )
+
+    gate = _evaluate_g3_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha), ("beta", beta)],
+        min_backend_relation_context_source_ratio=1.0,
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_relation_context_source_rows"] == 2
+    assert gate["raw_backend_relation_context_source_rows"] == 1
+    assert gate["raw_backend_relation_context_source_ratio"] == 0.5
+    assert any("raw backend relation context source ratio" in r for r in gate["failure_reasons"])
+
+
+def test_g3_gate_can_require_relation_provenance(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    beta = tmp_path / "baseline-beta-20260101T000000Z"
+    for run_dir, relation_id_source, has_pair, has_failure_ref in (
+        (alpha, "r2r_registry", True, True),
+        (beta, "derived_fallback", False, False),
+    ):
+        _write_raw_ticks(
+            run_dir,
+            "G01_happy_01",
+            ["task_execute"],
+            decision_sources=["llm"],
+            relation_context_ids=["rel-g01"],
+            relation_memory_refs=["failure:rel-g01:failed-1" if has_failure_ref else "relation:G01:prior"],
+            time_window_ids=["tw-g01"],
+            relation_context_sources=["backend_read_model"],
+            relation_id_sources=[relation_id_source],
+            relation_pair_present=[has_pair],
+            relation_pair_failure_events_present=[True],
+            relation_pair_failure_ref_present=[has_failure_ref],
+        )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": alias,
+                "run_id": f"rid-{alias}",
+                "agent_id": f"did:{alias}",
+                "category_id": "G01",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "g3_relation_memory_hit_ratio": "1.0",
+                "g3_relation_aware_decision_ratio": "1.0",
+                "g3_cross_agent_time_consistency_ratio": "1.0",
+                "g3_r2r_relation_id_ratio": "0.5",
+                "g3_relation_pair_context_ratio": "0.5",
+                "g3_relation_pair_failure_ref_ratio": "0.5",
+            }
+            for alias in ("alpha", "beta")
+        ],
+    )
+
+    gate = _evaluate_g3_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha), ("beta", beta)],
+        min_r2r_relation_id_ratio=1.0,
+        min_relation_pair_context_ratio=1.0,
+        min_relation_pair_failure_ref_ratio=1.0,
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_g3_r2r_relation_id_ratio"] == 0.5
+    assert gate["raw_g3_relation_pair_context_ratio"] == 0.5
+    assert gate["raw_g3_relation_pair_failure_ref_ratio"] == 0.5
+    assert any("R2R relation id ratio" in r for r in gate["failure_reasons"])
+    assert any("relation pair context ratio" in r for r in gate["failure_reasons"])
+    assert any("relation-pair failure ref ratio" in r for r in gate["failure_reasons"])
+
+
+def test_g3_failure_ref_gate_allows_categories_without_failure_events(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G03_happy_01",
+        ["task_execute"],
+        decision_sources=["llm"],
+        relation_context_ids=["rel-g03"],
+        relation_memory_refs=["failure:rel-g03:failed-1"],
+        time_window_ids=["tw-g03"],
+        relation_context_sources=["backend_read_model"],
+        relation_id_sources=["r2r_registry"],
+        relation_pair_present=[True],
+        relation_pair_failure_events_present=[True],
+        relation_pair_failure_ref_present=[True],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G01",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "g3_relation_memory_hit_ratio": "1.0",
+                "g3_relation_aware_decision_ratio": "1.0",
+                "g3_cross_agent_time_consistency_ratio": "1.0",
+                "g3_r2r_relation_id_ratio": "1.0",
+                "g3_relation_pair_context_ratio": "1.0",
+                "g3_relation_pair_failure_ref_ratio": "",
+            },
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G03",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "g3_relation_memory_hit_ratio": "1.0",
+                "g3_relation_aware_decision_ratio": "1.0",
+                "g3_cross_agent_time_consistency_ratio": "1.0",
+                "g3_r2r_relation_id_ratio": "1.0",
+                "g3_relation_pair_context_ratio": "1.0",
+                "g3_relation_pair_failure_ref_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_g3_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        min_r2r_relation_id_ratio=1.0,
+        min_relation_pair_context_ratio=1.0,
+        min_relation_pair_failure_ref_ratio=1.0,
+    )
+
+    assert gate["passed"] is True
+    assert gate["raw_g3_relation_pair_failure_ref_ratio"] == 1.0
+
+
+def test_h0_gate_skips_when_inactive(tmp_path: Path) -> None:
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G01",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(final_metrics_csv=final_metrics)
+
+    assert gate["passed"] is True
+    assert gate["skipped"] is True
+
+
+def test_h0_gate_passes_on_failure_memory_trace(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G03_failure_memory_01",
+        ["task_execute", "task_execute"],
+        relation_pair_failure_events_present=[True, True],
+        h0_expectation_trace_present=[True, True],
+        h0_relation_surprise_present=[True, True],
+        h0_iem_update_log_present=[True, True],
+        h0_relation_action_bias_present=[True, True],
+        h0_normative_local_update_blocked=[True, True],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G03",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_relation_action_bias_ratio": "1.0",
+                "h0_normative_guard_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+    )
+
+    assert gate["passed"] is True
+    assert gate["skipped"] is False
+    assert gate["raw_h0_relation_failure_event_rows"] == 2
+    assert gate["raw_h0_relation_failure_trace_ratio"] == 1.0
+    assert gate["raw_h0_iem_update_log_ratio"] == 1.0
+    assert gate["raw_h0_relation_action_bias_ratio"] == 1.0
+    assert gate["raw_h0_normative_guard_ratio"] == 1.0
+
+
+def test_h0_gate_fails_when_required_trace_missing(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G03_failure_memory_01",
+        ["task_execute", "task_execute"],
+        relation_pair_failure_events_present=[True, True],
+        h0_expectation_trace_present=[True, True],
+        h0_relation_surprise_present=[True, False],
+        h0_iem_update_log_present=[True, True],
+        h0_relation_action_bias_present=[True, False],
+        h0_normative_local_update_blocked=[True, False],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G03",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_relation_action_bias_ratio": "0.5",
+                "h0_normative_guard_ratio": "0.5",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_h0_relation_failure_trace_ratio"] == 0.5
+    assert gate["raw_h0_relation_action_bias_ratio"] == 0.5
+    assert any("raw_h0_relation_failure_trace_ratio" in r for r in gate["failure_reasons"])
+    assert any("raw_h0_relation_action_bias_ratio" in r for r in gate["failure_reasons"])
 
 
 def test_ii2_scorecard_builds_four_dimension_scores(tmp_path: Path) -> None:

@@ -41,6 +41,20 @@ RAW_COLUMNS: tuple[str, ...] = (
     "relation_memory_refs",
     "time_window_id",
     "challenge_deadline_bucket",
+    "relation_context_source",
+    "relation_id_source",
+    "relation_pair_present",
+    "relation_pair_failure_source",
+    "relation_pair_failure_events_present",
+    "relation_pair_failure_ref_present",
+    "h0_expectation_trace_present",
+    "h0_survival_surprise_present",
+    "h0_economic_surprise_present",
+    "h0_relation_surprise_present",
+    "h0_drive_constitution_verdict_present",
+    "h0_iem_update_log_present",
+    "h0_relation_action_bias_present",
+    "h0_normative_local_update_blocked",
 )
 
 REQUIRED_COLUMNS: frozenset[str] = frozenset({
@@ -57,7 +71,7 @@ REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "is_wait",
 })
 
-SCHEMA_VERSION = "1.6"
+SCHEMA_VERSION = "1.9"
 
 # Truncation for decision_reasoning (post-newline-escape).
 REASONING_MAX_LEN = 500

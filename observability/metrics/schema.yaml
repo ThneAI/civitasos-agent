@@ -1,4 +1,4 @@
-# Raw Tick CSV Schema — F.0.a v1.6
+# Raw Tick CSV Schema — F.0.a v1.9
 # 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
 # v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
@@ -7,8 +7,11 @@
 # v1.4 变更：新增 G.2 subjective-time 与 LLM 自主 waiting/deep_think 选择观测列。
 # v1.5 变更：final_metrics 新增 G.2 mode-choice 聚合指标。
 # v1.6 变更：新增 G.3 relation memory / cross-agent time consistency 空载观测列与聚合列。
+# v1.7 变更：新增 G.3 relation_context_source，用于区分 backend read model 与 synthetic context。
+# v1.8 变更：新增 H.0 IEM / expectation trace skeleton 空载观测列与聚合列。
+# v1.9 变更：新增 G.3.5 R2R relation id、relation_pair、relation-pair failure ref provenance 观测列与聚合列。
 
-schema_version: "1.6"
+schema_version: "1.9"
 artifact: "raw_tick"
 
 columns:
@@ -47,7 +50,7 @@ columns:
   - name: phase_reached
     type: enum
     required: true
-    values: [perceive, recall, decide, conscience, act, evaluate, reflect, remember]
+    values: [perceive, recall, expect, decide, conscience, act, evaluate, reflect, remember]
     source: TickContext.phase
 
   - name: decision_action
@@ -192,11 +195,84 @@ columns:
     required: false
     source: "G.3 challenge_deadline_at 的稳定 bucket，用于跨 Agent 时间一致性检查"
 
+  - name: relation_context_source
+    type: enum
+    required: false
+    values: [backend_read_model, synthetic_benchmark]
+    source: "G.3 relation_context 的来源；v2 nightly 要求 backend_read_model 覆盖 relation-aware raw rows"
+
+  - name: relation_id_source
+    type: enum
+    required: false
+    values: [r2r_registry, derived_fallback]
+    source: "G.3.5 relation_id 来源；v2 nightly 要求 r2r_registry 覆盖 relation-aware raw rows"
+
+  - name: relation_pair_present
+    type: bool
+    required: false
+    source: "G.3.5 relation_context 是否携带 requester/worker relation_pair"
+
+  - name: relation_pair_failure_source
+    type: enum
+    required: false
+    values: [backend_relation_pair_read_model]
+    source: "G.3.5 failure refs 查询来源；用于确认 failure memory 来自 relation-pair read model"
+
+  - name: relation_pair_failure_events_present
+    type: bool
+    required: false
+    source: "G.3.5 backend relation-pair failure read model 是否返回 failure events"
+
+  - name: relation_pair_failure_ref_present
+    type: bool
+    required: false
+    source: "G.3.5 存在 relation-pair failure events 时，relation_memory_refs 是否写入对应 failure ref"
+
+  - name: h0_expectation_trace_present
+    type: bool
+    required: false
+    source: "H.0：本 tick 是否产生 expectations/surprise/drive 任一 trace；H.0 未启用时为空/false"
+
+  - name: h0_survival_surprise_present
+    type: bool
+    required: false
+    source: "H.0：survival surprise trace 是否存在"
+
+  - name: h0_economic_surprise_present
+    type: bool
+    required: false
+    source: "H.0：economic surprise trace 是否存在"
+
+  - name: h0_relation_surprise_present
+    type: bool
+    required: false
+    source: "H.0：relation surprise trace 是否存在"
+
+  - name: h0_drive_constitution_verdict_present
+    type: bool
+    required: false
+    source: "H.0：drive trace 是否记录 constitution verdict"
+
+  - name: h0_iem_update_log_present
+    type: bool
+    required: false
+    source: "H.0：本 tick 是否生成 expectation_update_log / update candidate"
+
+  - name: h0_relation_action_bias_present
+    type: bool
+    required: false
+    source: "H.0：relation expectation 是否产生 action bias"
+
+  - name: h0_normative_local_update_blocked
+    type: bool
+    required: false
+    source: "H.0：Normative State 本地改写是否被 guard 阻止"
+
 # ---------------------------------------------------------------------------
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.6"
+  schema_version: "1.9"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
@@ -244,4 +320,31 @@ final_metrics:
     - {name: g3_cross_agent_time_consistency_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'G.3：本 agent 对 relation-aware 任务输出 time_window_id 的覆盖率；merge 阶段再做跨 Agent 一致性检查'}
+    - {name: g3_r2r_relation_id_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'G.3.5：relation-aware 任务中 relation_id_source=r2r_registry 的比例；无 relation-aware 任务时为 null'}
+    - {name: g3_relation_pair_context_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'G.3.5：relation-aware 任务中携带 requester/worker relation_pair 的比例；无 relation-aware 任务时为 null'}
+    - {name: g3_relation_pair_failure_ref_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'G.3.5：存在 relation-pair failure events 的任务中写入对应 failure ref 的比例；无 failure events 时为 null'}
+    - {name: h0_expectation_trace_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H.0：产生 expectation/surprise/drive trace 的 tick / total ticks；H.0 未启用时为 null'}
+    - {name: h0_hard_domain_trace_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H.0：traced ticks 中 survival/economic/relation 三个硬性领域均有 surprise 的比例'}
+    - {name: h0_drive_constitution_verdict_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H.0：traced ticks 中 drive trace 带 constitution verdict 的比例'}
+    - {name: h0_iem_update_log_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H.0：traced ticks 中生成 IEM update log / candidate 的比例'}
+    - {name: h0_relation_action_bias_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H.0：traced ticks 中 relation expectation 影响 action bias 的比例'}
+    - {name: h0_normative_guard_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H.0：traced ticks 中 Normative local update 被 guard 阻止的比例'}
     - {name: notes, type: string, required: false}

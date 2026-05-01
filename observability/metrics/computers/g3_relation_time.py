@@ -31,16 +31,30 @@ def compute(tasks: Iterable[TaskRun]) -> dict[str, float | None]:
             "g3_relation_memory_hit_ratio": None,
             "g3_relation_aware_decision_ratio": None,
             "g3_cross_agent_time_consistency_ratio": None,
+            "g3_r2r_relation_id_ratio": None,
+            "g3_relation_pair_context_ratio": None,
+            "g3_relation_pair_failure_ref_ratio": None,
         }
 
     total = len(relation_tasks)
     memory_hits = sum(1 for task in relation_tasks if _task_has_memory_refs(task))
     relation_aware = sum(1 for task in relation_tasks if _task_has_relation_evidence(task))
     time_windows = sum(1 for task in relation_tasks if _task_has_time_window(task))
+    r2r_relation_ids = sum(1 for task in relation_tasks if _task_has_r2r_relation_id(task))
+    relation_pairs = sum(1 for task in relation_tasks if _task_has_relation_pair(task))
+    failure_event_tasks = [
+        task for task in relation_tasks if _task_has_relation_pair_failure_events(task)
+    ]
     return {
         "g3_relation_memory_hit_ratio": memory_hits / total,
         "g3_relation_aware_decision_ratio": relation_aware / total,
         "g3_cross_agent_time_consistency_ratio": time_windows / total,
+        "g3_r2r_relation_id_ratio": r2r_relation_ids / total,
+        "g3_relation_pair_context_ratio": relation_pairs / total,
+        "g3_relation_pair_failure_ref_ratio": (
+            _ratio(_task_has_relation_pair_failure_ref(task) for task in failure_event_tasks)
+            if failure_event_tasks else None
+        ),
     }
 
 
@@ -64,6 +78,22 @@ def _task_has_time_window(task: TaskRun) -> bool:
     return any(str(tick.time_window_id or "").strip() for tick in task.ticks)
 
 
+def _task_has_r2r_relation_id(task: TaskRun) -> bool:
+    return any(tick.relation_id_source == "r2r_registry" for tick in task.ticks)
+
+
+def _task_has_relation_pair(task: TaskRun) -> bool:
+    return any(tick.relation_pair_present for tick in task.ticks)
+
+
+def _task_has_relation_pair_failure_events(task: TaskRun) -> bool:
+    return any(tick.relation_pair_failure_events_present for tick in task.ticks)
+
+
+def _task_has_relation_pair_failure_ref(task: TaskRun) -> bool:
+    return any(tick.relation_pair_failure_ref_present for tick in task.ticks)
+
+
 def _task_has_relation_evidence(task: TaskRun) -> bool:
     for tick in task.ticks:
         if str(tick.relation_memory_refs or "").strip():
@@ -72,3 +102,10 @@ def _task_has_relation_evidence(task: TaskRun) -> bool:
         if any(marker in reasoning for marker in _RELATION_REASONING_MARKERS):
             return True
     return False
+
+
+def _ratio(values) -> float:
+    items = list(values)
+    if not items:
+        return 0.0
+    return sum(1 for value in items if value) / len(items)

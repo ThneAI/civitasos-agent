@@ -46,6 +46,30 @@ if [ -z "${REQUIRE_G3_ACTIVE:-}" ]; then
     *) REQUIRE_G3_ACTIVE=0 ;;
   esac
 fi
+if [ -z "${G3_MIN_BACKEND_SOURCE_RATIO:-}" ]; then
+  case "$MANIFEST" in
+    benchmarks/v2/*|*/benchmarks/v2/*) G3_MIN_BACKEND_SOURCE_RATIO=1.0 ;;
+    *) G3_MIN_BACKEND_SOURCE_RATIO="" ;;
+  esac
+fi
+if [ -z "${G3_MIN_R2R_RELATION_ID_RATIO:-}" ]; then
+  case "$MANIFEST" in
+    benchmarks/v2/*|*/benchmarks/v2/*) G3_MIN_R2R_RELATION_ID_RATIO=1.0 ;;
+    *) G3_MIN_R2R_RELATION_ID_RATIO="" ;;
+  esac
+fi
+if [ -z "${G3_MIN_RELATION_PAIR_CONTEXT_RATIO:-}" ]; then
+  case "$MANIFEST" in
+    benchmarks/v2/*|*/benchmarks/v2/*) G3_MIN_RELATION_PAIR_CONTEXT_RATIO=1.0 ;;
+    *) G3_MIN_RELATION_PAIR_CONTEXT_RATIO="" ;;
+  esac
+fi
+G3_MIN_RELATION_PAIR_FAILURE_REF_RATIO="${G3_MIN_RELATION_PAIR_FAILURE_REF_RATIO:-}"
+REQUIRE_H0_ACTIVE="${REQUIRE_H0_ACTIVE:-0}"
+H0_MIN_RELATION_FAILURE_TRACE_RATIO="${H0_MIN_RELATION_FAILURE_TRACE_RATIO:-1.0}"
+H0_MIN_IEM_UPDATE_LOG_RATIO="${H0_MIN_IEM_UPDATE_LOG_RATIO:-1.0}"
+H0_MIN_RELATION_ACTION_BIAS_RATIO="${H0_MIN_RELATION_ACTION_BIAS_RATIO:-1.0}"
+H0_MIN_NORMATIVE_GUARD_RATIO="${H0_MIN_NORMATIVE_GUARD_RATIO:-1.0}"
 
 export CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED="${CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED:-1}"
 export CIVITASOS_IDENTITY_EMERGENCE_ENABLED="${CIVITASOS_IDENTITY_EMERGENCE_ENABLED:-1}"
@@ -54,6 +78,7 @@ export BENCHMARK_BIRTH_SPONSOR="${BENCHMARK_BIRTH_SPONSOR:-$CIVITASOS_BIRTH_SPON
 # For newly created benchmark identities, keep provisional window long enough
 # to avoid mid-run liquidation.
 export BENCHMARK_BIRTH_INCUBATION_EPOCHS="${BENCHMARK_BIRTH_INCUBATION_EPOCHS:-240}"
+export CIVITASOS_BIRTH_INCUBATION_EPOCHS="${CIVITASOS_BIRTH_INCUBATION_EPOCHS:-$BENCHMARK_BIRTH_INCUBATION_EPOCHS}"
 
 mkdir -p "$RUNS_ROOT"
 
@@ -67,6 +92,17 @@ echo "  tasks            : ${TASKS:-<all>}"
 echo "  manifest         : $MANIFEST"
 echo "  min_common_tasks : $GATE_MIN_COMMON_TASKS"
 echo "  require_g3_active: $REQUIRE_G3_ACTIVE"
+echo "  g3_backend_source: ${G3_MIN_BACKEND_SOURCE_RATIO:-<not required>}"
+echo "  g3_r2r_relation : ${G3_MIN_R2R_RELATION_ID_RATIO:-<not required>}"
+echo "  g3_relation_pair: ${G3_MIN_RELATION_PAIR_CONTEXT_RATIO:-<not required>}"
+echo "  g3_pair_fail_ref: ${G3_MIN_RELATION_PAIR_FAILURE_REF_RATIO:-<not required>}"
+echo "  require_h0_active: $REQUIRE_H0_ACTIVE"
+if [ "$REQUIRE_H0_ACTIVE" = "1" ]; then
+  echo "  h0_failure_trace: $H0_MIN_RELATION_FAILURE_TRACE_RATIO"
+  echo "  h0_update_log   : $H0_MIN_IEM_UPDATE_LOG_RATIO"
+  echo "  h0_action_bias  : $H0_MIN_RELATION_ACTION_BIAS_RATIO"
+  echo "  h0_norm_guard   : $H0_MIN_NORMATIVE_GUARD_RATIO"
+fi
 echo "  institutional_on : $CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED"
 echo "  identity_on      : $CIVITASOS_IDENTITY_EMERGENCE_ENABLED"
 echo "  birth_sponsor    : $CIVITASOS_BIRTH_SPONSOR"
@@ -94,18 +130,40 @@ TASKS="$TASKS" \
 WALL_CLOCK_PER_TICK_S="$WALL_CLOCK_PER_TICK_S" \
 ./benchmarks/run_f1c.sh
 
-"$PYTHON" -m benchmarks.f1c_merge \
-  --runs-root "$RUNS_ROOT" \
-  --manifest "$MANIFEST" \
+MERGE_ARGS=(
+  --runs-root "$RUNS_ROOT"
+  --manifest "$MANIFEST"
   --gate-min-common-tasks "$GATE_MIN_COMMON_TASKS"
+)
+if [ -n "$G3_MIN_BACKEND_SOURCE_RATIO" ]; then
+  MERGE_ARGS+=(--g3-min-backend-source-ratio "$G3_MIN_BACKEND_SOURCE_RATIO")
+fi
+if [ -n "$G3_MIN_R2R_RELATION_ID_RATIO" ]; then
+  MERGE_ARGS+=(--g3-min-r2r-relation-id-ratio "$G3_MIN_R2R_RELATION_ID_RATIO")
+fi
+if [ -n "$G3_MIN_RELATION_PAIR_CONTEXT_RATIO" ]; then
+  MERGE_ARGS+=(--g3-min-relation-pair-context-ratio "$G3_MIN_RELATION_PAIR_CONTEXT_RATIO")
+fi
+if [ -n "$G3_MIN_RELATION_PAIR_FAILURE_REF_RATIO" ]; then
+  MERGE_ARGS+=(--g3-min-relation-pair-failure-ref-ratio "$G3_MIN_RELATION_PAIR_FAILURE_REF_RATIO")
+fi
+if [ "$REQUIRE_H0_ACTIVE" = "1" ]; then
+  MERGE_ARGS+=(--require-h0-active)
+  MERGE_ARGS+=(--h0-min-relation-failure-trace-ratio "$H0_MIN_RELATION_FAILURE_TRACE_RATIO")
+  MERGE_ARGS+=(--h0-min-iem-update-log-ratio "$H0_MIN_IEM_UPDATE_LOG_RATIO")
+  MERGE_ARGS+=(--h0-min-relation-action-bias-ratio "$H0_MIN_RELATION_ACTION_BIAS_RATIO")
+  MERGE_ARGS+=(--h0-min-normative-guard-ratio "$H0_MIN_NORMATIVE_GUARD_RATIO")
+fi
+"$PYTHON" -m benchmarks.f1c_merge "${MERGE_ARGS[@]}"
 
-"$PYTHON" - <<'PY' "$RUNS_ROOT" "$REQUIRE_G3_ACTIVE"
+"$PYTHON" - <<'PY' "$RUNS_ROOT" "$REQUIRE_G3_ACTIVE" "$REQUIRE_H0_ACTIVE"
 import json
 import sys
 from pathlib import Path
 
 runs_root = Path(sys.argv[1])
 require_g3_active = sys.argv[2] == "1"
+require_h0_active = sys.argv[3] == "1"
 summary_path = runs_root / "merge_summary.json"
 if not summary_path.exists():
     raise SystemExit(f"merge summary missing: {summary_path}")
@@ -118,7 +176,19 @@ g2_ok = bool(summary.get("g2_gate", {}).get("passed", False))
 g3_gate = summary.get("g3_gate", {})
 g3_ok = bool(g3_gate.get("passed", False))
 g3_active_ok = (not require_g3_active) or (not bool(g3_gate.get("skipped", False)))
-if not (integrity_ok and sentinel_ok and ii2_ok and g2_ok and g3_ok and g3_active_ok):
+h0_gate = summary.get("h0_gate", {})
+h0_ok = bool(h0_gate.get("passed", False))
+h0_active_ok = (not require_h0_active) or (not bool(h0_gate.get("skipped", False)))
+if not (
+  integrity_ok
+  and sentinel_ok
+  and ii2_ok
+  and g2_ok
+  and g3_ok
+  and g3_active_ok
+  and h0_ok
+  and h0_active_ok
+):
     print(json.dumps(
         {
             "passed": False,
@@ -127,8 +197,11 @@ if not (integrity_ok and sentinel_ok and ii2_ok and g2_ok and g3_ok and g3_activ
             "ii2_gate": summary.get("ii2_gate"),
             "g2_gate": summary.get("g2_gate"),
             "g3_gate": summary.get("g3_gate"),
+            "h0_gate": summary.get("h0_gate"),
             "require_g3_active": require_g3_active,
             "g3_active_ok": g3_active_ok,
+            "require_h0_active": require_h0_active,
+            "h0_active_ok": h0_active_ok,
         },
         indent=2,
     ))
@@ -141,7 +214,9 @@ print(json.dumps(
         "ii2_gate": summary.get("ii2_gate"),
         "g2_gate": summary.get("g2_gate"),
         "g3_gate": summary.get("g3_gate"),
+        "h0_gate": summary.get("h0_gate"),
         "require_g3_active": require_g3_active,
+        "require_h0_active": require_h0_active,
     },
     indent=2,
 ))

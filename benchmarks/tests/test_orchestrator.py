@@ -13,7 +13,7 @@ from benchmarks.orchestrator import (
     EXIT_ABNORMAL, EXIT_AGENT_DONE, EXIT_AGENT_FAILED, EXIT_AGENT_GAVE_UP,
     EXIT_TICK_LIMIT, EXIT_WALL_CLOCK,
     Orchestrator, OrchestratorConfig, _build_backend_client, _load_cached_result,
-    _tail_actions_all_pool_claim, _tail_last_action,
+    _count_llm_mode_selected_after, _tail_actions_all_pool_claim, _tail_last_action,
 )
 from benchmarks.task_loader import load_manifest
 
@@ -152,6 +152,23 @@ def test_tail_last_action_returns_identity_probe(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert _tail_last_action(p) == "identity_probe_scholar"
+
+
+def test_count_llm_mode_selected_after_ignores_rules_ticks(tmp_path: Path) -> None:
+    p = tmp_path / "ticks.csv"
+    p.write_text(
+        (
+            "run_id,agent_id,task_id,tick_seq,tick_id,timestamp,phase_reached,"
+            "decision_action,decision_source,llm_mode_selected\n"
+            "r,a,t,1,x,ts,reflect,wait,rules,false\n"
+            "r,a,t,2,x,ts,reflect,mode_request,llm,true\n"
+            "r,a,t,3,x,ts,reflect,task_execute,llm,false\n"
+        ),
+        encoding="utf-8",
+    )
+    assert _count_llm_mode_selected_after(p, start_seq=0) == 1
+    assert _count_llm_mode_selected_after(p, start_seq=1) == 1
+    assert _count_llm_mode_selected_after(p, start_seq=2) == 0
 
 
 def test_identity_probe_grace_requires_claimed_backend_state(tmp_path: Path) -> None:
@@ -345,6 +362,39 @@ def test_rotate_orchestrator_identity_uses_birth_proposal_when_institutional_ena
     assert sdk.quickstart_called is False
     archived = list(tmp_path.glob("orchestrator.key.drained-*"))
     assert archived
+
+
+def test_seed_backend_relation_failures_uses_task_metadata(tmp_path: Path) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def seed_failure(self, **kwargs):
+            self.calls.append(kwargs)
+            return f"seed-{len(self.calls)}"
+
+    client = FakeClient()
+    orch = object.__new__(Orchestrator)
+    orch._cfg = SimpleNamespace(
+        backend_mode="backend-tasks",
+        backend_client=client,
+        target_agent_id="did:civ:worker",
+        backend_capability="general",
+    )
+    task = SimpleNamespace(
+        id="G03_happy_01",
+        briefing="relation repair accountability",
+        backend_seed_failures=2,
+    )
+
+    seeded = orch._seed_backend_relation_failures(task, task_dir=tmp_path)
+
+    assert seeded == ["seed-1", "seed-2"]
+    assert len(client.calls) == 2
+    assert client.calls[0]["target_agent_id"] == "did:civ:worker"
+    assert client.calls[0]["capability"] == "general"
+    payload = json.loads((tmp_path / "backend_seed_failure_ids.json").read_text())
+    assert payload == seeded
 
 
 def test_build_backend_client_rotates_alias_on_birth_proposal_conflict(

@@ -10,6 +10,7 @@ from observability.metrics.computers import (
     m6_wait_ratio,
     g2_subjective_mode,
     g3_relation_time,
+    h0_expectation_trace,
 )
 from observability.metrics.computers._loader import TaskRun, TickRow
 
@@ -18,7 +19,13 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
           gap: float = 0.0, ts: str = "", lessons_count: int = 0,
           llm_mode_request: str = "", llm_mode_selected: bool = False,
           relation_context_id: str = "", relation_memory_refs: str = "",
-          time_window_id: str = "", decision_reasoning: str = "") -> TickRow:
+          time_window_id: str = "", decision_reasoning: str = "",
+          relation_id_source: str = "", relation_pair_present: bool = False,
+          relation_pair_failure_events: bool = False,
+          relation_pair_failure_ref: bool = False,
+          h0_trace: bool = False, h0_hard_domains: bool = False,
+          h0_verdict: bool = False, h0_update: bool = False,
+          h0_relation_bias: bool = False, h0_normative_blocked: bool = False) -> TickRow:
     return TickRow(
         run_id="R", agent_id="A", task_id="T",
         tick_seq=seq,
@@ -36,6 +43,18 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
         relation_memory_refs=relation_memory_refs,
         time_window_id=time_window_id,
         decision_reasoning=decision_reasoning,
+        relation_id_source=relation_id_source,
+        relation_pair_present=relation_pair_present,
+        relation_pair_failure_events_present=relation_pair_failure_events,
+        relation_pair_failure_ref_present=relation_pair_failure_ref,
+        h0_expectation_trace_present=h0_trace,
+        h0_survival_surprise_present=h0_hard_domains,
+        h0_economic_surprise_present=h0_hard_domains,
+        h0_relation_surprise_present=h0_hard_domains,
+        h0_drive_constitution_verdict_present=h0_verdict,
+        h0_iem_update_log_present=h0_update,
+        h0_relation_action_bias_present=h0_relation_bias,
+        h0_normative_local_update_blocked=h0_normative_blocked,
     )
 
 
@@ -258,6 +277,41 @@ def test_g3_relation_time_empty_when_no_relation_context() -> None:
     assert out["g3_relation_memory_hit_ratio"] is None
     assert out["g3_relation_aware_decision_ratio"] is None
     assert out["g3_cross_agent_time_consistency_ratio"] is None
+    assert out["g3_r2r_relation_id_ratio"] is None
+    assert out["g3_relation_pair_context_ratio"] is None
+    assert out["g3_relation_pair_failure_ref_ratio"] is None
+
+
+# --- H.0 ---------------------------------------------------------------
+
+def test_h0_expectation_trace_empty_when_disabled() -> None:
+    t = TaskRun(task_id="T", ticks=[_tick(1, action="task_execute")])
+    out = h0_expectation_trace.compute([t])
+    assert out["h0_expectation_trace_ratio"] is None
+    assert out["h0_hard_domain_trace_ratio"] is None
+
+
+def test_h0_expectation_trace_ratios() -> None:
+    t = TaskRun(task_id="T", ticks=[
+        _tick(
+            1,
+            h0_trace=True,
+            h0_hard_domains=True,
+            h0_verdict=True,
+            h0_update=True,
+            h0_relation_bias=True,
+            h0_normative_blocked=True,
+        ),
+        _tick(2, h0_trace=True),
+        _tick(3),
+    ])
+    out = h0_expectation_trace.compute([t])
+    assert out["h0_expectation_trace_ratio"] == 2 / 3
+    assert out["h0_hard_domain_trace_ratio"] == 0.5
+    assert out["h0_drive_constitution_verdict_ratio"] == 0.5
+    assert out["h0_iem_update_log_ratio"] == 0.5
+    assert out["h0_relation_action_bias_ratio"] == 0.5
+    assert out["h0_normative_guard_ratio"] == 0.5
 
 
 def test_g3_relation_time_ratios_for_relation_aware_tasks() -> None:
@@ -267,6 +321,10 @@ def test_g3_relation_time_ratios_for_relation_aware_tasks() -> None:
             relation_context_id="rel-1",
             relation_memory_refs="failure:1;challenge:2",
             time_window_id="tw-1",
+            relation_id_source="r2r_registry",
+            relation_pair_present=True,
+            relation_pair_failure_events=True,
+            relation_pair_failure_ref=True,
         ),
     ])
     without_memory = TaskRun(task_id="T2", ticks=[
@@ -280,3 +338,6 @@ def test_g3_relation_time_ratios_for_relation_aware_tasks() -> None:
     assert out["g3_relation_memory_hit_ratio"] == 0.5
     assert out["g3_relation_aware_decision_ratio"] == 1.0
     assert out["g3_cross_agent_time_consistency_ratio"] == 0.5
+    assert out["g3_r2r_relation_id_ratio"] == 0.5
+    assert out["g3_relation_pair_context_ratio"] == 0.5
+    assert out["g3_relation_pair_failure_ref_ratio"] == 1.0

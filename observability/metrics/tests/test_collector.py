@@ -5,6 +5,8 @@ import csv
 from pathlib import Path
 from types import SimpleNamespace
 
+from civitasos_runtime.models import ExpectationUpdate
+
 from observability.metrics.collector import CollectorAdapter
 from observability.metrics.schema import RAW_COLUMNS
 from observability.metrics.writer import RawWriter
@@ -185,7 +187,13 @@ def test_relation_time_snapshot_used(tmp_path: Path) -> None:
     briefing = {
         "relation_context": {
             "id": "relctx-1",
-            "memory_refs": ["failure:1", "challenge:2"],
+            "relation_id": "rel:r:w",
+            "relation_id_source": "r2r_registry",
+            "relation_pair": {"requester": "r", "worker": "w"},
+            "relation_pair_failure_source": "backend_relation_pair_read_model",
+            "recent_failures": [{"task_id": "failed-1"}],
+            "memory_refs": ["failure:rel:r:w:failed-1", "challenge:2"],
+            "source": "backend_read_model",
         },
         "time_window": {
             "id": "tw-1",
@@ -203,6 +211,50 @@ def test_relation_time_snapshot_used(tmp_path: Path) -> None:
         adapter(_make_ctx(briefing=briefing))
     row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
     assert row["relation_context_id"] == "relctx-1"
-    assert row["relation_memory_refs"] == "failure:1;challenge:2"
+    assert row["relation_memory_refs"] == "failure:rel:r:w:failed-1;challenge:2"
     assert row["time_window_id"] == "tw-1"
     assert row["challenge_deadline_bucket"] == "2026-05-01T00:00:00Z/5s"
+    assert row["relation_context_source"] == "backend_read_model"
+    assert row["relation_id_source"] == "r2r_registry"
+    assert row["relation_pair_present"] == "true"
+    assert row["relation_pair_failure_source"] == "backend_relation_pair_read_model"
+    assert row["relation_pair_failure_events_present"] == "true"
+    assert row["relation_pair_failure_ref_present"] == "true"
+
+
+def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
+    csv_path = tmp_path / "T.csv"
+    ctx = _make_ctx()
+    ctx.expectations = {"survival": {"expected_value": 0.9}}
+    ctx.surprise = {
+        "survival": {"surprise_score": -0.2},
+        "economic": {"surprise_score": -0.1},
+        "relation": {"surprise_score": -0.3},
+    }
+    ctx.drive = {"relation": {"constitution_verdict": "allowed"}}
+    ctx.action_bias = {"relation": {"verification_level": "high"}}
+    ctx.expectation_updates = [
+        ExpectationUpdate(
+            target="relation_expectation:k:normative_guard",
+            parameter_name="normative_relation",
+            local_update_blocked=True,
+        ),
+    ]
+    with RawWriter(csv_path) as writer:
+        adapter = CollectorAdapter(
+            run_id="R",
+            agent_id="A",
+            loop=_make_loop(),
+            writer=writer,
+        )
+        adapter.bind_task("T")
+        adapter(ctx)
+    row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
+    assert row["h0_expectation_trace_present"] == "true"
+    assert row["h0_survival_surprise_present"] == "true"
+    assert row["h0_economic_surprise_present"] == "true"
+    assert row["h0_relation_surprise_present"] == "true"
+    assert row["h0_drive_constitution_verdict_present"] == "true"
+    assert row["h0_iem_update_log_present"] == "true"
+    assert row["h0_relation_action_bias_present"] == "true"
+    assert row["h0_normative_local_update_blocked"] == "true"

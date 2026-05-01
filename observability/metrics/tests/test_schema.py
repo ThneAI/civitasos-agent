@@ -39,7 +39,15 @@ def test_required_columns_match_yaml() -> None:
 def test_final_metrics_has_six_metric_families() -> None:
     data = _load_yaml()
     cols = [c["name"] for c in data["final_metrics"]["columns"]]
-    # M1, M2, M3, M4, M5(tick + task), M6 — at least one column per family.
-    families = {"m1_", "m2_", "m3_", "m4_", "m5_", "m6_"}
+    # M1..M6 plus G/H stage families — at least one column per family.
+    families = {"m1_", "m2_", "m3_", "m4_", "m5_", "m6_", "g2_", "g3_", "h0_"}
     for f in families:
         assert any(c.startswith(f) for c in cols), f"missing metric family {f}"
+
+
+def test_h0_raw_columns_are_optional() -> None:
+    data = _load_yaml()
+    columns = {c["name"]: c for c in data["columns"]}
+    for name in RAW_COLUMNS:
+        if name.startswith("h0_"):
+            assert columns[name]["required"] is False

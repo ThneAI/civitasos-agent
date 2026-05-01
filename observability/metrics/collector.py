@@ -91,6 +91,7 @@ class CollectorAdapter:
         identity = self._snapshot_identity(ctx)
         subjective_time = self._snapshot_subjective_time(ctx)
         relation_time = self._snapshot_relation_time(ctx)
+        h0 = self._snapshot_h0(ctx)
 
         return {
             "run_id": self.run_id,
@@ -135,6 +136,32 @@ class CollectorAdapter:
             "relation_memory_refs": _text(relation_time.get("relation_memory_refs")),
             "time_window_id": _text(relation_time.get("time_window_id")),
             "challenge_deadline_bucket": _text(relation_time.get("challenge_deadline_bucket")),
+            "relation_context_source": _text(relation_time.get("relation_context_source")),
+            "relation_id_source": _text(relation_time.get("relation_id_source")),
+            "relation_pair_present": bool_to_csv(relation_time.get("relation_pair_present")),
+            "relation_pair_failure_source": _text(
+                relation_time.get("relation_pair_failure_source")
+            ),
+            "relation_pair_failure_events_present": bool_to_csv(
+                relation_time.get("relation_pair_failure_events_present")
+            ),
+            "relation_pair_failure_ref_present": bool_to_csv(
+                relation_time.get("relation_pair_failure_ref_present")
+            ),
+            "h0_expectation_trace_present": bool_to_csv(h0["expectation_trace_present"]),
+            "h0_survival_surprise_present": bool_to_csv(h0["survival_surprise_present"]),
+            "h0_economic_surprise_present": bool_to_csv(h0["economic_surprise_present"]),
+            "h0_relation_surprise_present": bool_to_csv(h0["relation_surprise_present"]),
+            "h0_drive_constitution_verdict_present": bool_to_csv(
+                h0["drive_constitution_verdict_present"]
+            ),
+            "h0_iem_update_log_present": bool_to_csv(h0["iem_update_log_present"]),
+            "h0_relation_action_bias_present": bool_to_csv(
+                h0["relation_action_bias_present"]
+            ),
+            "h0_normative_local_update_blocked": bool_to_csv(
+                h0["normative_local_update_blocked"]
+            ),
         }
 
     def _snapshot_energy(self) -> dict[str, float]:
@@ -224,6 +251,14 @@ class CollectorAdapter:
         if isinstance(refs, list):
             refs = ";".join(str(ref) for ref in refs if ref is not None)
 
+        relation_id = (
+            relation.get("relation_id")
+            or relation.get("id")
+            or relation.get("relation_context_id")
+        )
+        relation_pair = relation.get("relation_pair") or window.get("relation_pair")
+        recent_failures = relation.get("recent_failures")
+
         return {
             "relation_context_id": (
                 relation.get("id")
@@ -236,6 +271,42 @@ class CollectorAdapter:
                 window.get("challenge_deadline_bucket")
                 or relation.get("challenge_deadline_bucket")
             ),
+            "relation_context_source": relation.get("source") or window.get("source"),
+            "relation_id_source": (
+                relation.get("relation_id_source") or window.get("relation_id_source")
+            ),
+            "relation_pair_present": _relation_pair_present(relation_pair),
+            "relation_pair_failure_source": relation.get("relation_pair_failure_source"),
+            "relation_pair_failure_events_present": (
+                isinstance(recent_failures, list) and bool(recent_failures)
+            ),
+            "relation_pair_failure_ref_present": _relation_pair_failure_ref_present(
+                refs,
+                str(relation_id or ""),
+            ),
+        }
+
+    @staticmethod
+    def _snapshot_h0(ctx: Any) -> dict[str, bool]:
+        expectations = _mapping(getattr(ctx, "expectations", None))
+        surprise = _mapping(getattr(ctx, "surprise", None))
+        drive = _mapping(getattr(ctx, "drive", None))
+        action_bias = _mapping(getattr(ctx, "action_bias", None))
+        updates = getattr(ctx, "expectation_updates", None)
+        if updates is None:
+            updates = []
+
+        return {
+            "expectation_trace_present": bool(expectations or surprise or drive),
+            "survival_surprise_present": _domain_present(surprise, "survival"),
+            "economic_surprise_present": _domain_present(surprise, "economic"),
+            "relation_surprise_present": _domain_present(surprise, "relation"),
+            "drive_constitution_verdict_present": _has_nested_text(
+                drive, "constitution_verdict"
+            ),
+            "iem_update_log_present": bool(updates),
+            "relation_action_bias_present": _domain_present(action_bias, "relation"),
+            "normative_local_update_blocked": _normative_update_blocked(updates),
         }
 
 
@@ -255,6 +326,66 @@ def _num(value: Any, default: float | None = None) -> str:
     if value is None:
         return "" if default is None else str(default)
     return str(value)
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _domain_present(payload: dict[str, Any], domain: str) -> bool:
+    if not payload:
+        return False
+    direct = payload.get(domain)
+    if direct not in (None, "", {}, []):
+        return True
+    prefixed = payload.get(f"{domain}_surprise") or payload.get(f"{domain}_bias")
+    return prefixed not in (None, "", {}, [])
+
+
+def _relation_pair_present(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    requester = str(value.get("requester") or "").strip()
+    worker = str(value.get("worker") or value.get("peer_agent_id") or "").strip()
+    agents = value.get("agents")
+    return bool((requester and worker) or (isinstance(agents, list) and len(agents) >= 2))
+
+
+def _relation_pair_failure_ref_present(refs: Any, relation_id: str) -> bool:
+    text = str(refs or "").strip()
+    if "failure:" not in text:
+        return False
+    if not relation_id:
+        return True
+    prefix = f"failure:{relation_id}:"
+    return any(ref.strip().startswith(prefix) for ref in text.split(";"))
+
+
+def _has_nested_text(payload: dict[str, Any], key: str) -> bool:
+    if not payload:
+        return False
+    direct = payload.get(key)
+    if direct not in (None, ""):
+        return True
+    for value in payload.values():
+        if isinstance(value, dict) and value.get(key) not in (None, ""):
+            return True
+    return False
+
+
+def _normative_update_blocked(updates: Any) -> bool:
+    if not isinstance(updates, list):
+        return False
+    for update in updates:
+        target = str(getattr(update, "target", "") or "").lower()
+        if not target and isinstance(update, dict):
+            target = str(update.get("target", "") or "").lower()
+        blocked = bool(getattr(update, "local_update_blocked", False))
+        if isinstance(update, dict):
+            blocked = bool(update.get("local_update_blocked", blocked))
+        if "normative" in target and blocked:
+            return True
+    return False
 
 
 def _text(value: Any) -> str:

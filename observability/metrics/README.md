@@ -1,7 +1,7 @@
 # Observability Metrics — F.0.a 指标采集器
 
 > **关联文档**: [WISDOM_EVOLUTION_ROADMAP.md](../../../civitasos/doc/plan/WISDOM_EVOLUTION_ROADMAP.md) Gate F.0.a
-> **状态**: DRAFT v1.6 (自审后修订；schema + 接口已定，M4 已切到 H.2-lite 可计算，II-1 identity prompt、G.2 subjective-time mode request、G.3 relation-time 空载字段已可观测)
+> **状态**: DRAFT v1.9 (schema + 接口已定；M4 已切到 H.2-lite 可计算，II-1 identity prompt、G.2 subjective-time mode request、G.3 relation-time / relation provenance、H.0 IEM/expectation trace skeleton 均已可观测)
 >
 > **v1.1 变更摘要**（自审 RCA 触发）:
 > - M3 操作化：阈值与「行为模式改变」给出可计算定义
@@ -16,6 +16,9 @@
 > - v1.4 新增 `subjective_lifecycle_stage / subjective_recommended_mode / llm_mode_request / llm_mode_selected`，用于观测 G.2 中 LLM 是否自主选择 `waiting/deep_think`
 > - v1.5 在 final_metrics 新增 `g2_mode_choice_observable_ratio / g2_llm_waiting_ratio / g2_llm_deep_think_ratio`
 > - v1.6 新增 G.3 relation memory / cross-agent time consistency 空载字段与聚合列
+> - v1.7 新增 `relation_context_source`，用于验证 backend read model 覆盖率
+> - v1.8 新增 H.0 IEM / expectation trace skeleton raw 字段与 nullable 聚合列
+> - v1.9 新增 G.3.5 `relation_id_source / relation_pair_present / relation_pair_failure_*` provenance 字段与聚合/gate
 
 ---
 
@@ -61,7 +64,7 @@ observability/metrics/
 │   ├── m5_reaction_latency.py  # 输出 per-tick + per-task 双层
 │   ├── m6_wait_ratio.py        # F.0 弱化版；H.1 后拆为 idle_thinking + purposeful_wait
 │   ├── g2_subjective_mode.py   # G.2 mode-choice 聚合指标
-│   └── g3_relation_time.py     # G.3 relation memory / time-window 空载聚合指标
+│   └── g3_relation_time.py     # G.3 relation memory / time-window / provenance 聚合指标
 └── tests/
     ├── test_schema.py          # schema 字段完备性
     ├── test_collector.py       # adapter 注入与 tick 解析
@@ -111,8 +114,22 @@ observability/metrics/
 | `relation_memory_refs` | string | G.3 决策引用的 relation memory / failure / challenge refs，`;` 分隔 | optional |
 | `time_window_id` | string | G.3 同一 task/relation event 的跨 Agent 可比对时间窗口 id | optional |
 | `challenge_deadline_bucket` | string | G.3 challenge deadline 的稳定 bucket | optional |
+| `relation_context_source` | enum | G.3 relation_context 来源：`backend_read_model` / `synthetic_benchmark` | optional |
+| `relation_id_source` | enum | G.3.5 relation id 来源：`r2r_registry` / `derived_fallback` | optional |
+| `relation_pair_present` | bool | G.3.5 relation_context 是否携带 requester/worker relation_pair | optional |
+| `relation_pair_failure_source` | enum | G.3.5 failure refs 查询来源：`backend_relation_pair_read_model` | optional |
+| `relation_pair_failure_events_present` | bool | G.3.5 relation-pair failure read model 是否返回 failure events | optional |
+| `relation_pair_failure_ref_present` | bool | G.3.5 存在 failure events 时是否写入对应 failure ref | optional |
+| `h0_expectation_trace_present` | bool | H.0 是否产生 expectation/surprise/drive trace | optional |
+| `h0_survival_surprise_present` | bool | H.0 survival surprise trace 是否存在 | optional |
+| `h0_economic_surprise_present` | bool | H.0 economic surprise trace 是否存在 | optional |
+| `h0_relation_surprise_present` | bool | H.0 relation surprise trace 是否存在 | optional |
+| `h0_drive_constitution_verdict_present` | bool | H.0 drive trace 是否记录 constitution verdict | optional |
+| `h0_iem_update_log_present` | bool | H.0 是否生成 IEM update log / candidate | optional |
+| `h0_relation_action_bias_present` | bool | H.0 relation expectation 是否产生 action bias | optional |
+| `h0_normative_local_update_blocked` | bool | H.0 Normative State 本地改写是否被 guard 阻止 | optional |
 
-**Schema 版本**：v1.6。冻结后只允许追加新列，不允许修改/删除。
+**Schema 版本**：v1.9。冻结后只允许追加新列，不允许修改/删除。
 
 ### CSV 转义策略（v1.1 新增）
 
@@ -151,6 +168,15 @@ observability/metrics/
 | `g3_relation_memory_hit_ratio` | float \| null | relation-aware 任务中引用 relation memory / failure / challenge ref 的比例 |
 | `g3_relation_aware_decision_ratio` | float \| null | relation-aware 任务中决策 trace 带 peer/relation-specific evidence 的比例 |
 | `g3_cross_agent_time_consistency_ratio` | float \| null | 本 agent 对 relation-aware 任务输出 `time_window_id` 的覆盖率；merge 阶段再做跨 Agent 一致性检查 |
+| `g3_r2r_relation_id_ratio` | float \| null | relation-aware 任务中 `relation_id_source=r2r_registry` 的比例 |
+| `g3_relation_pair_context_ratio` | float \| null | relation-aware 任务中携带 requester/worker relation_pair 的比例 |
+| `g3_relation_pair_failure_ref_ratio` | float \| null | 存在 relation-pair failure events 的任务中写入对应 failure ref 的比例；无 failure events 时为 null |
+| `h0_expectation_trace_ratio` | float \| null | H.0 traced tick / total tick；H.0 未启用时为 null |
+| `h0_hard_domain_trace_ratio` | float \| null | traced tick 中 survival/economic/relation 三个硬性领域均有 surprise 的比例 |
+| `h0_drive_constitution_verdict_ratio` | float \| null | traced tick 中 drive trace 带 constitution verdict 的比例 |
+| `h0_iem_update_log_ratio` | float \| null | traced tick 中生成 IEM update log / candidate 的比例 |
+| `h0_relation_action_bias_ratio` | float \| null | traced tick 中 relation expectation 影响 action bias 的比例 |
+| `h0_normative_guard_ratio` | float \| null | traced tick 中 Normative local update 被 guard 阻止的比例 |
 | `notes` | string | 特殊情况说明（数据不足、指标空载等） |
 
 ### G.2 Gate Thresholds
@@ -169,6 +195,10 @@ observability/metrics/
 - `g3_relation_memory_hit_ratio >= 0.80`
 - `g3_relation_aware_decision_ratio >= 0.80`
 - `g3_cross_agent_time_consistency_ratio >= 0.95`
+- v2 nightly 额外要求 relation-aware raw rows 的 `relation_context_source=backend_read_model` 覆盖率为 100%，防止真实 read model 路径静默回退到 synthetic context。
+- v2 nightly 额外要求 `relation_id_source=r2r_registry` 覆盖率为 100%，防止回退到派生 relation id。
+- v2 nightly 额外要求 `relation_pair_present=true` 覆盖率为 100%，保证 H.0 relation expectation matrix 有稳定 pair key。
+- 当启用 `G3_MIN_RELATION_PAIR_FAILURE_REF_RATIO` 时，存在 relation-pair failure events 的 raw rows 必须写入对应 failure refs。
 
 ---
 

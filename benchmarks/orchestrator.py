@@ -412,6 +412,15 @@ class Orchestrator:
                     task.id,
                 )
 
+            self._seed_backend_relation_failures(task, task_dir=task_dir)
+            pre_target_ticks = _tail_tick_seq(raw_csv)
+            if pre_target_ticks > pre_task_probe_ticks:
+                logger.info(
+                    "[orch-g3-seed] task=%s counted %d pre-target tick(s) after failure seeding",
+                    task.id,
+                    pre_target_ticks,
+                )
+
         backend_task_id: str
         try:
             backend_task_id = self._cfg.backend_client.create(
@@ -463,7 +472,7 @@ class Orchestrator:
             _IDENTITY_PROBE_GRACE_TICKS_DEFAULT,
             min_value=0,
         )
-        tick_limit_budget = task.max_ticks + pre_task_probe_ticks
+        tick_limit_budget = task.max_ticks + pre_target_ticks
         claim_spin_grace_used = False
         identity_probe_grace_used = False
         t0 = time.monotonic()
@@ -601,6 +610,7 @@ class Orchestrator:
         if self._cfg.backend_mode == BACKEND_MODE_BACKEND_TASKS:
             assert self._cfg.backend_client is not None  # guaranteed by __post_init__
             assert self._cfg.target_agent_id is not None
+            self._seed_backend_relation_failures(task, task_dir=task_dir)
             try:
                 backend_task_id = self._cfg.backend_client.create(
                     briefing=task.briefing,
@@ -800,6 +810,56 @@ class Orchestrator:
             json.dumps(asdict(result), default=str), encoding="utf-8",
         )
         return result
+
+    def _seed_backend_relation_failures(self, task: TaskSpec, *, task_dir: Path) -> list[str]:
+        """Materialise task-declared G.3 failure-memory preconditions."""
+        count = max(0, int(getattr(task, "backend_seed_failures", 0) or 0))
+        if count <= 0:
+            return []
+        if not _env_bool("BENCHMARK_G3_SEED_FAILURES_ENABLED", default=True):
+            return []
+        if self._cfg.backend_mode != BACKEND_MODE_BACKEND_TASKS:
+            return []
+        client = self._cfg.backend_client
+        target_agent_id = self._cfg.target_agent_id
+        if client is None or not target_agent_id:
+            raise RuntimeError("backend failure seeding requires backend_client and target_agent_id")
+
+        reward = _env_int("BENCHMARK_G3_SEED_FAILURE_REWARD", 1, min_value=1)
+        deadline_secs = _env_int("BENCHMARK_G3_SEED_FAILURE_DEADLINE_SECS", 60, min_value=1)
+        claim_timeout_s = _env_float(
+            "BENCHMARK_G3_SEED_FAILURE_CLAIM_TIMEOUT_S",
+            40.0,
+            min_value=0.0,
+        )
+        claim_retry_interval_s = _env_float(
+            "BENCHMARK_G3_SEED_FAILURE_CLAIM_RETRY_INTERVAL_S",
+            1.0,
+            min_value=0.05,
+        )
+        seeded_ids: list[str] = []
+        for idx in range(count):
+            seed_id = client.seed_failure(
+                briefing=(
+                    f"G.3 relation failure seed {idx + 1}/{count} for {task.id}. "
+                    "This hidden precondition exists only to ground relation-pair "
+                    "failure-memory observability."
+                ),
+                target_agent_id=target_agent_id,
+                capability=self._cfg.backend_capability,
+                reward=reward,
+                deadline_secs=deadline_secs,
+                claim_timeout_s=claim_timeout_s,
+                claim_retry_interval_s=claim_retry_interval_s,
+            )
+            seeded_ids.append(seed_id)
+        if seeded_ids:
+            (task_dir / "backend_seed_failure_ids.json").write_text(
+                json.dumps(seeded_ids),
+                encoding="utf-8",
+            )
+            logger.info("seeded %d backend failure(s) for %s", len(seeded_ids), task.id)
+        return seeded_ids
 
     # ---- F.1.b: backend-task state polling ---------------------------
 
@@ -1021,6 +1081,28 @@ def _tail_last_action(csv_path: Path) -> str:
     return last_action
 
 
+def _count_llm_mode_selected_after(csv_path: Path, *, start_seq: int) -> int:
+    if not csv_path.exists():
+        return 0
+    selected = 0
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                try:
+                    tick_seq = int(str(row.get("tick_seq") or "0").strip())
+                except ValueError:
+                    continue
+                if tick_seq <= start_seq:
+                    continue
+                value = str(row.get("llm_mode_selected") or "").strip().lower()
+                if value in {"true", "1", "yes"}:
+                    selected += 1
+    except OSError:
+        return 0
+    return selected
+
+
 def _tail_actions_all_pool_claim(csv_path: Path, *, window: int) -> bool:
     """True iff the last `window` rows are all pool_claim with non-success eval."""
     if window <= 0:
@@ -1097,15 +1179,14 @@ def _wait_for_g2_mode_probe_ticks(
         return 0
     start_seq = _tail_tick_seq(raw_csv)
     deadline = time.monotonic() + timeout_s
-    last_seq = start_seq
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            return max(0, last_seq - start_seq)
-        last_seq = _tail_tick_seq(raw_csv)
-        if last_seq - start_seq >= min_ticks:
-            return max(0, last_seq - start_seq)
+            return _count_llm_mode_selected_after(raw_csv, start_seq=start_seq)
+        selected = _count_llm_mode_selected_after(raw_csv, start_seq=start_seq)
+        if selected >= min_ticks:
+            return selected
         time.sleep(max(poll_interval_s, 0.05))
-    return max(0, _tail_tick_seq(raw_csv) - start_seq)
+    return _count_llm_mode_selected_after(raw_csv, start_seq=start_seq)
 
 
 def _terminate(proc: subprocess.Popen[Any], grace_s: float, *, then_kill: bool = False) -> None:

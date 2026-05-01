@@ -32,6 +32,20 @@ class TickRow:
     relation_memory_refs: str = ""
     time_window_id: str = ""
     challenge_deadline_bucket: str = ""
+    relation_context_source: str = ""
+    relation_id_source: str = ""
+    relation_pair_present: bool = False
+    relation_pair_failure_source: str = ""
+    relation_pair_failure_events_present: bool = False
+    relation_pair_failure_ref_present: bool = False
+    h0_expectation_trace_present: bool = False
+    h0_survival_surprise_present: bool = False
+    h0_economic_surprise_present: bool = False
+    h0_relation_surprise_present: bool = False
+    h0_drive_constitution_verdict_present: bool = False
+    h0_iem_update_log_present: bool = False
+    h0_relation_action_bias_present: bool = False
+    h0_normative_local_update_blocked: bool = False
 
 
 @dataclass
@@ -87,6 +101,20 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 relation_memory_refs=raw.get("relation_memory_refs", ""),
                 time_window_id=raw.get("time_window_id", ""),
                 challenge_deadline_bucket=raw.get("challenge_deadline_bucket", ""),
+                relation_context_source=raw.get("relation_context_source", ""),
+                relation_id_source=raw.get("relation_id_source", ""),
+                relation_pair_present=_optbool(raw.get("relation_pair_present")) or False,
+                relation_pair_failure_source=raw.get("relation_pair_failure_source", ""),
+                relation_pair_failure_events_present=_optbool(raw.get("relation_pair_failure_events_present")) or False,
+                relation_pair_failure_ref_present=_optbool(raw.get("relation_pair_failure_ref_present")) or False,
+                h0_expectation_trace_present=_optbool(raw.get("h0_expectation_trace_present")) or False,
+                h0_survival_surprise_present=_optbool(raw.get("h0_survival_surprise_present")) or False,
+                h0_economic_surprise_present=_optbool(raw.get("h0_economic_surprise_present")) or False,
+                h0_relation_surprise_present=_optbool(raw.get("h0_relation_surprise_present")) or False,
+                h0_drive_constitution_verdict_present=_optbool(raw.get("h0_drive_constitution_verdict_present")) or False,
+                h0_iem_update_log_present=_optbool(raw.get("h0_iem_update_log_present")) or False,
+                h0_relation_action_bias_present=_optbool(raw.get("h0_relation_action_bias_present")) or False,
+                h0_normative_local_update_blocked=_optbool(raw.get("h0_normative_local_update_blocked")) or False,
             )
 
 

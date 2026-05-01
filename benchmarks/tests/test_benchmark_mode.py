@@ -24,6 +24,7 @@ class FakeRunner:
     def __init__(self) -> None:
         self._rules = FakeRuleEngine()
         self._on_reflect_fn = None
+        self._on_perceive_fn = None
         self._loop = None  # set later to simulate post-start
         self._agent = None
         self._name = "test-agent"
@@ -34,6 +35,10 @@ class FakeRunner:
 
     def on_reflect(self, fn):
         self._on_reflect_fn = fn
+        return fn
+
+    def on_perceive(self, fn):
+        self._on_perceive_fn = fn
         return fn
 
     def tool(
@@ -50,6 +55,65 @@ class FakeRunner:
         return decorator
 
 
+class FakeBackendAgent:
+    def __init__(self) -> None:
+        self.pool_get_task_calls: list[str] = []
+        self.pool_failures_calls: list[dict[str, Any]] = []
+
+    def pool_get_task(self, task_id: str) -> dict[str, Any]:
+        self.pool_get_task_calls.append(task_id)
+        return {
+            "task": {
+                "id": task_id,
+                "requester": "did:civ:devnet:requester",
+                "allowed_agents": ["did:civ:devnet:worker"],
+                "r2r_relation_id": "rel:did:civ:devnet:requester:did:civ:devnet:worker",
+                "relation_pair": {
+                    "requester": "did:civ:devnet:requester",
+                    "worker": "did:civ:devnet:worker",
+                    "agents": ["did:civ:devnet:requester", "did:civ:devnet:worker"],
+                },
+                "r2r_relation": {
+                    "id": "rel:did:civ:devnet:requester:did:civ:devnet:worker",
+                    "state": "Active",
+                    "source": "r2r_registry",
+                },
+                "status": "Open",
+                "posted_at": "2026-05-01T09:55:00Z",
+                "challenge_deadline_at": "2026-05-01T10:00:00Z",
+            }
+        }
+
+    def pool_failures(
+        self,
+        agent_id: str | None = None,
+        requester_id: str | None = None,
+        relation_id: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        self.pool_failures_calls.append({
+            "agent_id": agent_id,
+            "requester_id": requester_id,
+            "relation_id": relation_id,
+            "since": since,
+            "limit": limit,
+        })
+        return {
+            "failures": [
+                {
+                    "task_id": "failed_1",
+                    "agent_id": agent_id,
+                    "requester": requester_id,
+                    "relation_id": relation_id,
+                    "r2r_relation_id": relation_id,
+                    "failed_at": "2026-04-30T23:59:00Z",
+                    "failure_reason": "challenge_disputed",
+                }
+            ]
+        }
+
+
 # ── install_if_present ──────────────────────────────────────────────
 
 def test_install_no_op_when_env_unset(monkeypatch):
@@ -58,6 +122,7 @@ def test_install_no_op_when_env_unset(monkeypatch):
     benchmark_mode.install(runner)
     assert runner._rules.registered == []
     assert runner._on_reflect_fn is None
+    assert runner._on_perceive_fn is None
     assert not getattr(runner, "_benchmark_mode_installed", False)
 
 
@@ -71,6 +136,7 @@ def test_install_registers_rule_at_priority_one(monkeypatch):
     priority, name, _fn = runner._rules.registered[0]
     assert priority == 1, "must beat default rules (priority=10/20/30)"
     assert name == "benchmark_prefer_target_task"
+    assert runner._on_perceive_fn is not None
     assert "report_blocked" in runner._tools_registered
     assert "abandon" in runner._tools_registered
 
@@ -120,6 +186,7 @@ def test_prefer_target_rule_picks_matching_task(monkeypatch):
 def test_prefer_target_rule_injects_g3_relation_context_for_v2_tasks(monkeypatch):
     monkeypatch.setenv("BENCHMARK_TASK_ID", "G01_happy_01")
     monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_G3_BACKEND_CONTEXT_ENABLED", "0")
     runner = FakeRunner()
     benchmark_mode.install(runner)
     rule_fn = _get_rule_fn(runner)
@@ -136,7 +203,122 @@ def test_prefer_target_rule_injects_g3_relation_context_for_v2_tasks(monkeypatch
         "relation:G01:prior_success",
         "challenge:G01_happy_01:latest",
     ]
+    assert briefing["relation_context"]["source"] == "synthetic_benchmark"
     assert briefing["time_window"]["id"] == "bench-window:G01_happy_01"
+    assert briefing["time_window"]["source"] == "synthetic_benchmark"
+
+
+def test_prefer_target_rule_prefers_backend_g3_relation_context(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G01_happy_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    backend_agent = FakeBackendAgent()
+    runner._agent = backend_agent
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+
+    briefing = {"pool_tasks": [{"task_id": "backend_42"}]}
+    decision = rule_fn(briefing, {})
+
+    assert decision is not None
+    assert decision.action == "pool_claim"
+    assert backend_agent.pool_get_task_calls == ["backend_42"]
+    assert briefing["relation_context"]["source"] == "backend_read_model"
+    assert briefing["relation_context"]["relation_id"] == (
+        "rel:did:civ:devnet:requester:did:civ:devnet:worker"
+    )
+    assert briefing["relation_context"]["relation_id_source"] == "r2r_registry"
+    assert briefing["relation_context"]["relation_pair"] == {
+        "requester": "did:civ:devnet:requester",
+        "worker": "did:civ:devnet:worker",
+        "agents": ["did:civ:devnet:requester", "did:civ:devnet:worker"],
+    }
+    assert briefing["relation_context"]["peer_did"] == "did:civ:devnet:requester"
+    assert briefing["relation_context"]["task_id"] == "backend_42"
+    assert "task:backend_42" in briefing["relation_context"]["memory_refs"]
+    assert (
+        "failure:rel:did:civ:devnet:requester:did:civ:devnet:worker:"
+        "failed_1:2026-04-30T23_59_00Z"
+    ) in briefing["relation_context"]["memory_refs"]
+    assert briefing["time_window"]["id"] == "backend-window:G01_happy_01:challenge_deadline_at"
+    assert briefing["time_window"]["backend_task_id"] == "backend_42"
+    assert backend_agent.pool_failures_calls == [
+        {
+            "agent_id": "did:civ:devnet:worker",
+            "requester_id": "did:civ:devnet:requester",
+            "relation_id": "rel:did:civ:devnet:requester:did:civ:devnet:worker",
+            "since": None,
+            "limit": 10,
+        }
+    ]
+
+
+def test_pre_expect_hook_injects_g3_relation_context_before_decide(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G01_happy_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    backend_agent = FakeBackendAgent()
+    runner._agent = backend_agent
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+
+    briefing: dict[str, Any] = {"pool_tasks": [{"task_id": "backend_42"}]}
+    assert runner._on_perceive_fn is not None
+    runner._on_perceive_fn(briefing)
+
+    assert briefing["relation_context"]["source"] == "backend_read_model"
+    assert briefing["relation_context"]["benchmark_task_id"] == "G01_happy_01"
+    assert backend_agent.pool_get_task_calls == ["backend_42"]
+
+    decision = rule_fn(briefing, {})
+
+    assert decision is not None
+    assert decision.action == "pool_claim"
+    assert backend_agent.pool_get_task_calls == ["backend_42"]
+
+
+def test_backend_g3_time_window_is_comparable_across_backend_tasks(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G02_happy_01")
+    runner = FakeRunner()
+    runner._agent = FakeBackendAgent()
+
+    first = benchmark_mode._build_backend_g3_relation_context(
+        {},
+        task_id="G02_happy_01",
+        runner=runner,
+        backend_task_id="backend_alpha",
+    )
+    second = benchmark_mode._build_backend_g3_relation_context(
+        {},
+        task_id="G02_happy_01",
+        runner=runner,
+        backend_task_id="backend_beta",
+    )
+
+    assert first is not None
+    assert second is not None
+    _, first_window = first
+    _, second_window = second
+    assert first_window["id"] == "backend-window:G02_happy_01:challenge_deadline_at"
+    assert second_window["id"] == first_window["id"]
+    assert first_window["backend_task_id"] == "backend_alpha"
+    assert second_window["backend_task_id"] == "backend_beta"
+
+
+def test_backend_g3_relation_context_enabled_for_expanded_v2_tasks(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G05_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    runner._agent = FakeBackendAgent()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+
+    briefing = {"pool_tasks": [{"task_id": "backend_42"}]}
+    decision = rule_fn(briefing, {})
+
+    assert decision is not None
+    assert briefing["relation_context"]["source"] == "backend_read_model"
+    assert briefing["time_window"]["id"] == "backend-window:G05_adversarial_01:challenge_deadline_at"
 
 
 def test_prefer_target_rule_claims_even_when_pool_snapshot_has_no_match(monkeypatch):

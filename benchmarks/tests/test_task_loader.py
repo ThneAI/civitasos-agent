@@ -10,6 +10,7 @@ from benchmarks.task_loader import (
 )
 
 REAL_MANIFEST = Path(__file__).resolve().parents[1] / "v1" / "manifest.yaml"
+V2_RELATION_MANIFEST = Path(__file__).resolve().parents[1] / "v2" / "relation_memory_manifest.yaml"
 
 
 def test_real_manifest_loads() -> None:
@@ -18,6 +19,27 @@ def test_real_manifest_loads() -> None:
     assert m.schema_version == "1.1"
     assert len(m.tasks) >= 3
     assert "m1_result_deviation_rate" in m.allowed_metric_codes
+
+
+def test_v2_relation_manifest_loads_and_has_expanded_g3_coverage() -> None:
+    m = load_manifest(V2_RELATION_MANIFEST)
+    assert m.schema_version == "2.0"
+    assert len(m.tasks) >= 10
+
+    variants_by_category: dict[str, set[str]] = {}
+    for task in m.tasks:
+        assert task.targets_disease == "G"
+        assert any(code.startswith("g3_") for code in task.metrics_targeted)
+        variants_by_category.setdefault(task.category_id, set()).add(task.variant)
+
+    taxonomy_ids = {entry["id"] for entry in m.taxonomy}
+    assert taxonomy_ids <= set(variants_by_category)
+    for category_id, variants in variants_by_category.items():
+        assert variants == {"happy_path", "adversarial"}, category_id
+
+    seeded = {task.id: task.backend_seed_failures for task in m.tasks}
+    assert seeded["G03_happy_01"] == 1
+    assert seeded["G03_adversarial_01"] == 1
 
 
 def test_lookup_by_id() -> None:
