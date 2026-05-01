@@ -128,6 +128,11 @@ observability/metrics/
 | `h0_iem_update_log_present` | bool | H.0 是否生成 IEM update log / candidate | optional |
 | `h0_relation_action_bias_present` | bool | H.0 relation expectation 是否产生 action bias | optional |
 | `h0_normative_local_update_blocked` | bool | H.0 Normative State 本地改写是否被 guard 阻止 | optional |
+| `h0_identity_action_bias_present` | bool | H0-C identity expectation 是否产生 survival/economic/normative action bias | optional |
+| `h0_constitutional_surprise_present` | bool | H0-C constitutional / normative surprise trace 是否存在 | optional |
+| `h0_normative_governance_trigger_present` | bool | H0-C Normative breach 是否生成 governance trigger | optional |
+| `h0_predicted_update_present` | bool | H0-C Predicted State 是否生成 precision-weighted update | optional |
+| `h0_desired_slow_drift_present` | bool | H0-C Desired State 是否生成 slow drift update | optional |
 
 **Schema 版本**：v1.9。冻结后只允许追加新列，不允许修改/删除。
 
@@ -177,6 +182,12 @@ observability/metrics/
 | `h0_iem_update_log_ratio` | float \| null | traced tick 中生成 IEM update log / candidate 的比例 |
 | `h0_relation_action_bias_ratio` | float \| null | traced tick 中 relation expectation 影响 action bias 的比例 |
 | `h0_normative_guard_ratio` | float \| null | traced tick 中 Normative local update 被 guard 阻止的比例 |
+| `h0_identity_domain_trace_ratio` | float \| null | traced tick 中 survival/economic identity surprise 均存在的比例 |
+| `h0_identity_action_bias_ratio` | float \| null | traced tick 中 identity expectation 产生 action bias 的比例 |
+| `h0_constitutional_surprise_ratio` | float \| null | traced tick 中 constitutional / normative surprise trace 的比例 |
+| `h0_normative_governance_trigger_ratio` | float \| null | traced tick 中 Normative breach 生成 governance trigger 的比例 |
+| `h0_predicted_update_ratio` | float \| null | traced tick 中 Predicted State 生成 precision-weighted update 的比例 |
+| `h0_desired_slow_drift_ratio` | float \| null | traced tick 中 Desired State 生成 slow drift update 的比例 |
 | `notes` | string | 特殊情况说明（数据不足、指标空载等） |
 
 ### G.2 Gate Thresholds

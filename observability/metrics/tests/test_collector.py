@@ -5,7 +5,7 @@ import csv
 from pathlib import Path
 from types import SimpleNamespace
 
-from civitasos_runtime.models import ExpectationUpdate
+from civitasos_runtime.models import ExpectationUpdate, ExpectationUpdateRule
 
 from observability.metrics.collector import CollectorAdapter
 from observability.metrics.schema import RAW_COLUMNS
@@ -231,12 +231,32 @@ def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
         "economic": {"surprise_score": -0.1},
         "relation": {"surprise_score": -0.3},
     }
-    ctx.drive = {"relation": {"constitution_verdict": "allowed"}}
-    ctx.action_bias = {"relation": {"verification_level": "high"}}
+    ctx.drive = {
+        "relation": {"constitution_verdict": "allowed"},
+        "survival": {"survival_probability": {"constitution_verdict": "allowed"}},
+        "constitutional": {"challenge_window": {"action_bias": "governance_trigger"}},
+    }
+    ctx.action_bias = {
+        "relation": {"verification_level": "high"},
+        "survival": {"survival_probability": "reduce_action_intensity"},
+        "economic": {"economic_balance_ratio": "conserve_energy"},
+        "normative": {"challenge_window": "governance_trigger"},
+    }
     ctx.expectation_updates = [
         ExpectationUpdate(
-            target="relation_expectation:k:normative_guard",
-            parameter_name="normative_relation",
+            target="identity_expectation_vector",
+            parameter_name="survival_probability",
+            rule=ExpectationUpdateRule.PRECISION_WEIGHTED_DELTA,
+        ),
+        ExpectationUpdate(
+            target="identity_desire_vector",
+            parameter_name="risk_aversion",
+            rule=ExpectationUpdateRule.SLOW_TRAIT_DRIFT,
+        ),
+        ExpectationUpdate(
+            target="normative_state",
+            parameter_name="challenge_window",
+            rule=ExpectationUpdateRule.GOVERNANCE_TRIGGER,
             local_update_blocked=True,
         ),
     ]
@@ -258,3 +278,8 @@ def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
     assert row["h0_iem_update_log_present"] == "true"
     assert row["h0_relation_action_bias_present"] == "true"
     assert row["h0_normative_local_update_blocked"] == "true"
+    assert row["h0_identity_action_bias_present"] == "true"
+    assert row["h0_constitutional_surprise_present"] == "false"
+    assert row["h0_normative_governance_trigger_present"] == "true"
+    assert row["h0_predicted_update_present"] == "true"
+    assert row["h0_desired_slow_drift_present"] == "true"

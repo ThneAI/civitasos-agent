@@ -46,6 +46,11 @@ class TickRow:
     h0_iem_update_log_present: bool = False
     h0_relation_action_bias_present: bool = False
     h0_normative_local_update_blocked: bool = False
+    h0_identity_action_bias_present: bool = False
+    h0_constitutional_surprise_present: bool = False
+    h0_normative_governance_trigger_present: bool = False
+    h0_predicted_update_present: bool = False
+    h0_desired_slow_drift_present: bool = False
 
 
 @dataclass
@@ -115,6 +120,11 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 h0_iem_update_log_present=_optbool(raw.get("h0_iem_update_log_present")) or False,
                 h0_relation_action_bias_present=_optbool(raw.get("h0_relation_action_bias_present")) or False,
                 h0_normative_local_update_blocked=_optbool(raw.get("h0_normative_local_update_blocked")) or False,
+                h0_identity_action_bias_present=_optbool(raw.get("h0_identity_action_bias_present")) or False,
+                h0_constitutional_surprise_present=_optbool(raw.get("h0_constitutional_surprise_present")) or False,
+                h0_normative_governance_trigger_present=_optbool(raw.get("h0_normative_governance_trigger_present")) or False,
+                h0_predicted_update_present=_optbool(raw.get("h0_predicted_update_present")) or False,
+                h0_desired_slow_drift_present=_optbool(raw.get("h0_desired_slow_drift_present")) or False,
             )
 
 

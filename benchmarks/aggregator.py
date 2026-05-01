@@ -62,6 +62,12 @@ FINAL_METRIC_COLUMNS: tuple[str, ...] = (
     "h0_iem_update_log_ratio",
     "h0_relation_action_bias_ratio",
     "h0_normative_guard_ratio",
+    "h0_identity_domain_trace_ratio",
+    "h0_identity_action_bias_ratio",
+    "h0_constitutional_surprise_ratio",
+    "h0_normative_governance_trigger_ratio",
+    "h0_predicted_update_ratio",
+    "h0_desired_slow_drift_ratio",
     "notes",
 )
 
@@ -181,6 +187,12 @@ def write_final_metrics(rows: Iterable[AggregateRow], out_path: str | Path) -> P
                 _fmt(r.metrics.get("h0_iem_update_log_ratio")),
                 _fmt(r.metrics.get("h0_relation_action_bias_ratio")),
                 _fmt(r.metrics.get("h0_normative_guard_ratio")),
+                _fmt(r.metrics.get("h0_identity_domain_trace_ratio")),
+                _fmt(r.metrics.get("h0_identity_action_bias_ratio")),
+                _fmt(r.metrics.get("h0_constitutional_surprise_ratio")),
+                _fmt(r.metrics.get("h0_normative_governance_trigger_ratio")),
+                _fmt(r.metrics.get("h0_predicted_update_ratio")),
+                _fmt(r.metrics.get("h0_desired_slow_drift_ratio")),
                 r.notes,
             ])
     return out

@@ -40,6 +40,13 @@ def _write_raw_ticks(
     h0_iem_update_log_present: list[bool] | None = None,
     h0_relation_action_bias_present: list[bool] | None = None,
     h0_normative_local_update_blocked: list[bool] | None = None,
+    h0_survival_surprise_present: list[bool] | None = None,
+    h0_economic_surprise_present: list[bool] | None = None,
+    h0_identity_action_bias_present: list[bool] | None = None,
+    h0_constitutional_surprise_present: list[bool] | None = None,
+    h0_normative_governance_trigger_present: list[bool] | None = None,
+    h0_predicted_update_present: list[bool] | None = None,
+    h0_desired_slow_drift_present: list[bool] | None = None,
 ) -> None:
     raw_dir = run_dir / "raw_ticks"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -101,6 +108,34 @@ def _write_raw_ticks(
         if h0_normative_local_update_blocked is not None:
             row["h0_normative_local_update_blocked"] = (
                 "true" if h0_normative_local_update_blocked[idx] else "false"
+            )
+        if h0_survival_surprise_present is not None:
+            row["h0_survival_surprise_present"] = (
+                "true" if h0_survival_surprise_present[idx] else "false"
+            )
+        if h0_economic_surprise_present is not None:
+            row["h0_economic_surprise_present"] = (
+                "true" if h0_economic_surprise_present[idx] else "false"
+            )
+        if h0_identity_action_bias_present is not None:
+            row["h0_identity_action_bias_present"] = (
+                "true" if h0_identity_action_bias_present[idx] else "false"
+            )
+        if h0_constitutional_surprise_present is not None:
+            row["h0_constitutional_surprise_present"] = (
+                "true" if h0_constitutional_surprise_present[idx] else "false"
+            )
+        if h0_normative_governance_trigger_present is not None:
+            row["h0_normative_governance_trigger_present"] = (
+                "true" if h0_normative_governance_trigger_present[idx] else "false"
+            )
+        if h0_predicted_update_present is not None:
+            row["h0_predicted_update_present"] = (
+                "true" if h0_predicted_update_present[idx] else "false"
+            )
+        if h0_desired_slow_drift_present is not None:
+            row["h0_desired_slow_drift_present"] = (
+                "true" if h0_desired_slow_drift_present[idx] else "false"
             )
         rows.append(row)
     fieldnames = list(rows[0].keys()) if rows else ["decision_action"]
@@ -194,6 +229,12 @@ def _write_g2_final_metrics(path: Path, rows: list[dict[str, str]]) -> None:
         "h0_iem_update_log_ratio",
         "h0_relation_action_bias_ratio",
         "h0_normative_guard_ratio",
+        "h0_identity_domain_trace_ratio",
+        "h0_identity_action_bias_ratio",
+        "h0_constitutional_surprise_ratio",
+        "h0_normative_governance_trigger_ratio",
+        "h0_predicted_update_ratio",
+        "h0_desired_slow_drift_ratio",
     ]
     with path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -830,6 +871,61 @@ def test_h0_gate_passes_on_failure_memory_trace(tmp_path: Path) -> None:
     assert gate["raw_h0_iem_update_log_ratio"] == 1.0
     assert gate["raw_h0_relation_action_bias_ratio"] == 1.0
     assert gate["raw_h0_normative_guard_ratio"] == 1.0
+
+
+def test_h0_gate_passes_on_identity_evolution_trace_without_relation_failure(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G01_h0c_identity_01",
+        ["task_execute", "task_execute"],
+        h0_expectation_trace_present=[True, True],
+        h0_survival_surprise_present=[True, True],
+        h0_economic_surprise_present=[True, True],
+        h0_iem_update_log_present=[True, True],
+        h0_identity_action_bias_present=[True, True],
+        h0_predicted_update_present=[True, True],
+        h0_constitutional_surprise_present=[False, True],
+        h0_normative_governance_trigger_present=[False, True],
+        h0_normative_local_update_blocked=[False, True],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G01",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_constitutional_surprise_ratio": "0.5",
+                "h0_normative_governance_trigger_ratio": "0.5",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_desired_slow_drift_ratio": "0.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+    )
+
+    assert gate["passed"] is True
+    assert gate["raw_h0_relation_failure_event_rows"] == 0
+    assert gate["raw_h0_identity_event_rows"] == 2
+    assert gate["raw_h0_identity_domain_trace_ratio"] == 1.0
+    assert gate["raw_h0_identity_action_bias_ratio"] == 1.0
+    assert gate["raw_h0_predicted_update_ratio"] == 1.0
+    assert gate["raw_h0_normative_governance_trigger_ratio"] == 1.0
 
 
 def test_h0_gate_fails_when_required_trace_missing(tmp_path: Path) -> None:

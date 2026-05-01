@@ -1,4 +1,4 @@
-# Raw Tick CSV Schema — F.0.a v1.9
+# Raw Tick CSV Schema — F.0.a v1.10
 # 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
 # v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
@@ -10,8 +10,9 @@
 # v1.7 变更：新增 G.3 relation_context_source，用于区分 backend read model 与 synthetic context。
 # v1.8 变更：新增 H.0 IEM / expectation trace skeleton 空载观测列与聚合列。
 # v1.9 变更：新增 G.3.5 R2R relation id、relation_pair、relation-pair failure ref provenance 观测列与聚合列。
+# v1.10 变更：新增 H0-C identity/evolution observability：identity action bias、constitutional surprise、governance trigger、predicted update、desired slow drift。
 
-schema_version: "1.9"
+schema_version: "1.10"
 artifact: "raw_tick"
 
 columns:
@@ -268,11 +269,36 @@ columns:
     required: false
     source: "H.0：Normative State 本地改写是否被 guard 阻止"
 
+  - name: h0_identity_action_bias_present
+    type: bool
+    required: false
+    source: "H0-C：survival/economic/normative identity expectation 是否产生 action bias"
+
+  - name: h0_constitutional_surprise_present
+    type: bool
+    required: false
+    source: "H0-C：constitutional / normative surprise trace 是否存在"
+
+  - name: h0_normative_governance_trigger_present
+    type: bool
+    required: false
+    source: "H0-C：Normative breach 是否只生成 governance trigger"
+
+  - name: h0_predicted_update_present
+    type: bool
+    required: false
+    source: "H0-C：Predicted State 是否生成 precision-weighted update"
+
+  - name: h0_desired_slow_drift_present
+    type: bool
+    required: false
+    source: "H0-C：Desired State 是否生成 slow trait drift update"
+
 # ---------------------------------------------------------------------------
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.9"
+  schema_version: "1.10"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
@@ -347,4 +373,22 @@ final_metrics:
     - {name: h0_normative_guard_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'H.0：traced ticks 中 Normative local update 被 guard 阻止的比例'}
+    - {name: h0_identity_domain_trace_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-C：traced ticks 中 survival/economic identity surprise 均存在的比例'}
+    - {name: h0_identity_action_bias_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-C：traced ticks 中 identity expectation 产生 action bias 的比例'}
+    - {name: h0_constitutional_surprise_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-C：traced ticks 中 constitutional / normative surprise trace 的比例'}
+    - {name: h0_normative_governance_trigger_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-C：traced ticks 中 Normative breach 生成 governance trigger 的比例'}
+    - {name: h0_predicted_update_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-C：traced ticks 中 Predicted State 生成 precision-weighted update 的比例'}
+    - {name: h0_desired_slow_drift_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-C：traced ticks 中 Desired State 生成 slow drift update 的比例'}
     - {name: notes, type: string, required: false}

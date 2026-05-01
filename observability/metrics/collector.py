@@ -162,6 +162,19 @@ class CollectorAdapter:
             "h0_normative_local_update_blocked": bool_to_csv(
                 h0["normative_local_update_blocked"]
             ),
+            "h0_identity_action_bias_present": bool_to_csv(
+                h0["identity_action_bias_present"]
+            ),
+            "h0_constitutional_surprise_present": bool_to_csv(
+                h0["constitutional_surprise_present"]
+            ),
+            "h0_normative_governance_trigger_present": bool_to_csv(
+                h0["normative_governance_trigger_present"]
+            ),
+            "h0_predicted_update_present": bool_to_csv(h0["predicted_update_present"]),
+            "h0_desired_slow_drift_present": bool_to_csv(
+                h0["desired_slow_drift_present"]
+            ),
         }
 
     def _snapshot_energy(self) -> dict[str, float]:
@@ -307,6 +320,23 @@ class CollectorAdapter:
             "iem_update_log_present": bool(updates),
             "relation_action_bias_present": _domain_present(action_bias, "relation"),
             "normative_local_update_blocked": _normative_update_blocked(updates),
+            "identity_action_bias_present": _identity_action_bias_present(action_bias),
+            "constitutional_surprise_present": _domain_present(surprise, "constitutional"),
+            "normative_governance_trigger_present": _governance_trigger_present(
+                updates,
+                action_bias,
+                drive,
+            ),
+            "predicted_update_present": _update_rule_or_target_present(
+                updates,
+                rules={"precision_weighted_delta"},
+                targets={"identity_expectation_vector", "identity_precision_vector"},
+            ),
+            "desired_slow_drift_present": _update_rule_or_target_present(
+                updates,
+                rules={"slow_trait_drift"},
+                targets={"identity_desire_vector"},
+            ),
         }
 
 
@@ -368,7 +398,56 @@ def _has_nested_text(payload: dict[str, Any], key: str) -> bool:
     if direct not in (None, ""):
         return True
     for value in payload.values():
-        if isinstance(value, dict) and value.get(key) not in (None, ""):
+        if isinstance(value, dict) and _has_nested_text(value, key):
+            return True
+    return False
+
+
+def _identity_action_bias_present(action_bias: dict[str, Any]) -> bool:
+    return any(
+        _domain_present(action_bias, domain)
+        for domain in ("survival", "economic", "normative", "constitutional")
+    )
+
+
+def _governance_trigger_present(
+    updates: Any,
+    action_bias: dict[str, Any],
+    drive: dict[str, Any],
+) -> bool:
+    if _contains_nested_value(action_bias.get("normative"), "governance_trigger"):
+        return True
+    if _contains_nested_value(drive.get("constitutional"), "governance_trigger"):
+        return True
+    return _update_rule_or_target_present(
+        updates,
+        rules={"governance_trigger"},
+        targets={"normative_state"},
+    )
+
+
+def _contains_nested_value(value: Any, expected: str) -> bool:
+    if str(value or "") == expected:
+        return True
+    if isinstance(value, dict):
+        return any(_contains_nested_value(child, expected) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_nested_value(child, expected) for child in value)
+    return False
+
+
+def _update_rule_or_target_present(
+    updates: Any,
+    *,
+    rules: set[str],
+    targets: set[str],
+) -> bool:
+    if not isinstance(updates, list):
+        return False
+    for update in updates:
+        rule = _update_rule(update)
+        target = _update_target(update)
+        if rule in rules or target in targets:
             return True
     return False
 
@@ -377,15 +456,28 @@ def _normative_update_blocked(updates: Any) -> bool:
     if not isinstance(updates, list):
         return False
     for update in updates:
-        target = str(getattr(update, "target", "") or "").lower()
-        if not target and isinstance(update, dict):
-            target = str(update.get("target", "") or "").lower()
+        target = _update_target(update)
         blocked = bool(getattr(update, "local_update_blocked", False))
         if isinstance(update, dict):
             blocked = bool(update.get("local_update_blocked", blocked))
         if "normative" in target and blocked:
             return True
     return False
+
+
+def _update_target(update: Any) -> str:
+    target = getattr(update, "target", "")
+    if not target and isinstance(update, dict):
+        target = update.get("target", "")
+    return str(target or "").lower()
+
+
+def _update_rule(update: Any) -> str:
+    rule = getattr(update, "rule", None)
+    if rule is None and isinstance(update, dict):
+        rule = update.get("rule")
+    value = getattr(rule, "value", rule)
+    return str(value or "").lower()
 
 
 def _text(value: Any) -> str:

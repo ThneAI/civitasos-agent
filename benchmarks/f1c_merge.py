@@ -65,6 +65,11 @@ _DEFAULT_H0_RELATION_FAILURE_TRACE_FLOOR = 1.0
 _DEFAULT_H0_IEM_UPDATE_LOG_FLOOR = 1.0
 _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR = 1.0
 _DEFAULT_H0_NORMATIVE_GUARD_FLOOR = 1.0
+_DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR = 1.0
+_DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR = 1.0
+_DEFAULT_H0_PREDICTED_UPDATE_FLOOR = 1.0
+_DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR = 0.0
+_DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR = 1.0
 _DIM_WEIGHTS = {
     "completion_rate": 0.30,
     "latency_score": 0.20,
@@ -923,7 +928,16 @@ def _evaluate_h0_raw_relation_expectation(
     action_bias_rows = 0
     normative_guard_rows = 0
     h0_trace_rows = 0
+    identity_rows = 0
+    identity_domain_rows = 0
+    identity_action_bias_rows = 0
+    predicted_update_rows = 0
+    desired_slow_drift_rows = 0
+    constitutional_rows = 0
+    governance_trigger_rows = 0
     missing_sample: list[dict[str, str]] = []
+    identity_missing_sample: list[dict[str, str]] = []
+    governance_missing_sample: list[dict[str, str]] = []
 
     for alias, run_dir in runs:
         raw_dir = run_dir / "raw_ticks"
@@ -934,17 +948,79 @@ def _evaluate_h0_raw_relation_expectation(
                 reader = csv.DictReader(fh)
                 for row in reader:
                     relation_surprise = _raw_bool(row.get("h0_relation_surprise_present"))
+                    survival_surprise = _raw_bool(row.get("h0_survival_surprise_present"))
+                    economic_surprise = _raw_bool(row.get("h0_economic_surprise_present"))
                     update_log = _raw_bool(row.get("h0_iem_update_log_present"))
                     action_bias = _raw_bool(row.get("h0_relation_action_bias_present"))
                     normative_guard = _raw_bool(row.get("h0_normative_local_update_blocked"))
+                    identity_action_bias = _raw_bool(row.get("h0_identity_action_bias_present"))
+                    constitutional_surprise = _raw_bool(row.get("h0_constitutional_surprise_present"))
+                    governance_trigger = _raw_bool(row.get("h0_normative_governance_trigger_present"))
+                    predicted_update = _raw_bool(row.get("h0_predicted_update_present"))
+                    desired_slow_drift = _raw_bool(row.get("h0_desired_slow_drift_present"))
                     if any((
                         _raw_bool(row.get("h0_expectation_trace_present")),
+                        survival_surprise,
+                        economic_surprise,
                         relation_surprise,
                         update_log,
                         action_bias,
                         normative_guard,
+                        identity_action_bias,
+                        constitutional_surprise,
+                        governance_trigger,
+                        predicted_update,
+                        desired_slow_drift,
                     )):
                         h0_trace_rows += 1
+
+                    if any((
+                        survival_surprise,
+                        economic_surprise,
+                        identity_action_bias,
+                        predicted_update,
+                        desired_slow_drift,
+                    )):
+                        identity_rows += 1
+                        if survival_surprise and economic_surprise:
+                            identity_domain_rows += 1
+                        if identity_action_bias:
+                            identity_action_bias_rows += 1
+                        if predicted_update:
+                            predicted_update_rows += 1
+                        if desired_slow_drift:
+                            desired_slow_drift_rows += 1
+                        if (
+                            survival_surprise
+                            and economic_surprise
+                            and identity_action_bias
+                            and predicted_update
+                        ):
+                            pass
+                        elif len(identity_missing_sample) < max_examples:
+                            identity_missing_sample.append({
+                                "agent_alias": alias,
+                                "task_id": csv_path.stem,
+                                "tick_seq": str(row.get("tick_seq") or ""),
+                                "h0_survival_surprise_present": str(row.get("h0_survival_surprise_present") or ""),
+                                "h0_economic_surprise_present": str(row.get("h0_economic_surprise_present") or ""),
+                                "h0_identity_action_bias_present": str(row.get("h0_identity_action_bias_present") or ""),
+                                "h0_predicted_update_present": str(row.get("h0_predicted_update_present") or ""),
+                            })
+
+                    if constitutional_surprise:
+                        constitutional_rows += 1
+                        if governance_trigger:
+                            governance_trigger_rows += 1
+                        elif len(governance_missing_sample) < max_examples:
+                            governance_missing_sample.append({
+                                "agent_alias": alias,
+                                "task_id": csv_path.stem,
+                                "tick_seq": str(row.get("tick_seq") or ""),
+                                "h0_constitutional_surprise_present": str(row.get("h0_constitutional_surprise_present") or ""),
+                                "h0_normative_governance_trigger_present": str(row.get("h0_normative_governance_trigger_present") or ""),
+                                "h0_normative_local_update_blocked": str(row.get("h0_normative_local_update_blocked") or ""),
+                            })
 
                     if not _raw_bool(row.get("relation_pair_failure_events_present")):
                         continue
@@ -976,21 +1052,41 @@ def _evaluate_h0_raw_relation_expectation(
                             "h0_normative_local_update_blocked": str(row.get("h0_normative_local_update_blocked") or ""),
                         })
 
-    def _ratio(num: int) -> float | None:
+    def _relation_ratio(num: int) -> float | None:
         return (num / failure_rows) if failure_rows else None
+
+    def _identity_ratio(num: int) -> float | None:
+        return (num / identity_rows) if identity_rows else None
+
+    def _constitutional_ratio(num: int) -> float | None:
+        return (num / constitutional_rows) if constitutional_rows else None
 
     return {
         "raw_h0_trace_rows": h0_trace_rows,
         "raw_h0_relation_failure_event_rows": failure_rows,
         "raw_h0_relation_failure_trace_rows": trace_rows,
-        "raw_h0_relation_failure_trace_ratio": _ratio(trace_rows),
+        "raw_h0_relation_failure_trace_ratio": _relation_ratio(trace_rows),
         "raw_h0_iem_update_log_rows": update_rows,
-        "raw_h0_iem_update_log_ratio": _ratio(update_rows),
+        "raw_h0_iem_update_log_ratio": _relation_ratio(update_rows),
         "raw_h0_relation_action_bias_rows": action_bias_rows,
-        "raw_h0_relation_action_bias_ratio": _ratio(action_bias_rows),
+        "raw_h0_relation_action_bias_ratio": _relation_ratio(action_bias_rows),
         "raw_h0_normative_guard_rows": normative_guard_rows,
-        "raw_h0_normative_guard_ratio": _ratio(normative_guard_rows),
+        "raw_h0_normative_guard_ratio": _relation_ratio(normative_guard_rows),
+        "raw_h0_identity_event_rows": identity_rows,
+        "raw_h0_identity_domain_trace_rows": identity_domain_rows,
+        "raw_h0_identity_domain_trace_ratio": _identity_ratio(identity_domain_rows),
+        "raw_h0_identity_action_bias_rows": identity_action_bias_rows,
+        "raw_h0_identity_action_bias_ratio": _identity_ratio(identity_action_bias_rows),
+        "raw_h0_predicted_update_rows": predicted_update_rows,
+        "raw_h0_predicted_update_ratio": _identity_ratio(predicted_update_rows),
+        "raw_h0_desired_slow_drift_rows": desired_slow_drift_rows,
+        "raw_h0_desired_slow_drift_ratio": _identity_ratio(desired_slow_drift_rows),
+        "raw_h0_constitutional_surprise_rows": constitutional_rows,
+        "raw_h0_normative_governance_trigger_rows": governance_trigger_rows,
+        "raw_h0_normative_governance_trigger_ratio": _constitutional_ratio(governance_trigger_rows),
         "raw_h0_missing_trace_sample": missing_sample,
+        "raw_h0_identity_missing_trace_sample": identity_missing_sample,
+        "raw_h0_governance_missing_trigger_sample": governance_missing_sample,
     }
 
 
@@ -1002,6 +1098,12 @@ def _h0_final_metric_counts(rows: list[dict[str, str]]) -> dict[str, object]:
         "h0_iem_update_log_ratio",
         "h0_relation_action_bias_ratio",
         "h0_normative_guard_ratio",
+        "h0_identity_domain_trace_ratio",
+        "h0_identity_action_bias_ratio",
+        "h0_constitutional_surprise_ratio",
+        "h0_normative_governance_trigger_ratio",
+        "h0_predicted_update_ratio",
+        "h0_desired_slow_drift_ratio",
     )
     counts = {field: 0 for field in fields}
     h0_rows = 0
@@ -1027,6 +1129,11 @@ def _evaluate_h0_gate(
     min_iem_update_log_ratio: float = _DEFAULT_H0_IEM_UPDATE_LOG_FLOOR,
     min_relation_action_bias_ratio: float = _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR,
     min_normative_guard_ratio: float = _DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
+    min_identity_domain_trace_ratio: float = _DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR,
+    min_identity_action_bias_ratio: float = _DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR,
+    min_predicted_update_ratio: float = _DEFAULT_H0_PREDICTED_UPDATE_FLOOR,
+    min_desired_slow_drift_ratio: float = _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR,
+    min_normative_governance_trigger_ratio: float = _DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR,
 ) -> dict[str, object]:
     rows = _load_g2_final_metric_rows(final_metrics_csv)
     final_counts = _h0_final_metric_counts(rows)
@@ -1044,13 +1151,29 @@ def _evaluate_h0_gate(
             "raw_h0_relation_action_bias_ratio": None,
             "raw_h0_normative_guard_rows": 0,
             "raw_h0_normative_guard_ratio": None,
+            "raw_h0_identity_event_rows": 0,
+            "raw_h0_identity_domain_trace_rows": 0,
+            "raw_h0_identity_domain_trace_ratio": None,
+            "raw_h0_identity_action_bias_rows": 0,
+            "raw_h0_identity_action_bias_ratio": None,
+            "raw_h0_predicted_update_rows": 0,
+            "raw_h0_predicted_update_ratio": None,
+            "raw_h0_desired_slow_drift_rows": 0,
+            "raw_h0_desired_slow_drift_ratio": None,
+            "raw_h0_constitutional_surprise_rows": 0,
+            "raw_h0_normative_governance_trigger_rows": 0,
+            "raw_h0_normative_governance_trigger_ratio": None,
             "raw_h0_missing_trace_sample": [],
+            "raw_h0_identity_missing_trace_sample": [],
+            "raw_h0_governance_missing_trigger_sample": [],
         }
     )
 
     final_h0_rows = int(final_counts["final_h0_rows"])
     raw_h0_rows = int(raw["raw_h0_trace_rows"])
     raw_failure_rows = int(raw["raw_h0_relation_failure_event_rows"])
+    raw_identity_rows = int(raw["raw_h0_identity_event_rows"])
+    raw_constitutional_rows = int(raw["raw_h0_constitutional_surprise_rows"])
     if not require_active and final_h0_rows == 0 and raw_h0_rows == 0 and raw_failure_rows == 0:
         return {
             "passed": True,
@@ -1066,20 +1189,35 @@ def _evaluate_h0_gate(
     if require_active:
         if final_h0_rows == 0:
             failure_reasons.append("H.0 active required but final_metrics has no h0 rows")
+        if raw_h0_rows == 0:
+            failure_reasons.append("H.0 active required but raw ticks have no h0 trace rows")
         for field in (
             "h0_expectation_trace_ratio",
             "h0_iem_update_log_ratio",
-            "h0_relation_action_bias_ratio",
-            "h0_normative_guard_ratio",
         ):
             if int(final_counts[field]) == 0:
                 failure_reasons.append(f"H.0 active required but {field} is absent")
-        if raw_failure_rows == 0:
+        if raw_failure_rows > 0:
+            for field in (
+                "h0_relation_action_bias_ratio",
+                "h0_normative_guard_ratio",
+            ):
+                if int(final_counts[field]) == 0:
+                    failure_reasons.append(f"H.0 active required but {field} is absent")
+        if raw_identity_rows > 0:
+            for field in (
+                "h0_identity_domain_trace_ratio",
+                "h0_identity_action_bias_ratio",
+                "h0_predicted_update_ratio",
+            ):
+                if int(final_counts[field]) == 0:
+                    failure_reasons.append(f"H.0 active required but {field} is absent")
+        if raw_failure_rows == 0 and raw_identity_rows == 0:
             failure_reasons.append(
-                "H.0 active required but raw relation-pair failure rows are missing",
+                "H.0 active required but raw relation-pair failure and identity rows are missing",
             )
 
-    checks = [
+    relation_checks = [
         (
             "raw_h0_relation_failure_trace_ratio",
             raw["raw_h0_relation_failure_trace_ratio"],
@@ -1102,11 +1240,49 @@ def _evaluate_h0_gate(
         ),
     ]
     if raw_failure_rows > 0:
-        for field, value, floor in checks:
+        for field, value, floor in relation_checks:
             if value is not None and value >= floor:
                 continue
             failure_reasons.append(
                 f"{field} {0.0 if value is None else value:.4f} < {floor:.4f}",
+            )
+    identity_checks = [
+        (
+            "raw_h0_identity_domain_trace_ratio",
+            raw["raw_h0_identity_domain_trace_ratio"],
+            min_identity_domain_trace_ratio,
+        ),
+        (
+            "raw_h0_identity_action_bias_ratio",
+            raw["raw_h0_identity_action_bias_ratio"],
+            min_identity_action_bias_ratio,
+        ),
+        (
+            "raw_h0_predicted_update_ratio",
+            raw["raw_h0_predicted_update_ratio"],
+            min_predicted_update_ratio,
+        ),
+    ]
+    if min_desired_slow_drift_ratio > 0:
+        identity_checks.append((
+            "raw_h0_desired_slow_drift_ratio",
+            raw["raw_h0_desired_slow_drift_ratio"],
+            min_desired_slow_drift_ratio,
+        ))
+    if raw_identity_rows > 0:
+        for field, value, floor in identity_checks:
+            if value is not None and value >= floor:
+                continue
+            failure_reasons.append(
+                f"{field} {0.0 if value is None else value:.4f} < {floor:.4f}",
+            )
+    if raw_constitutional_rows > 0:
+        value = raw["raw_h0_normative_governance_trigger_ratio"]
+        if value is None or value < min_normative_governance_trigger_ratio:
+            failure_reasons.append(
+                "raw_h0_normative_governance_trigger_ratio "
+                f"{0.0 if value is None else value:.4f} < "
+                f"{min_normative_governance_trigger_ratio:.4f}",
             )
 
     return {
@@ -1117,6 +1293,11 @@ def _evaluate_h0_gate(
         "min_iem_update_log_ratio": min_iem_update_log_ratio,
         "min_relation_action_bias_ratio": min_relation_action_bias_ratio,
         "min_normative_guard_ratio": min_normative_guard_ratio,
+        "min_identity_domain_trace_ratio": min_identity_domain_trace_ratio,
+        "min_identity_action_bias_ratio": min_identity_action_bias_ratio,
+        "min_predicted_update_ratio": min_predicted_update_ratio,
+        "min_desired_slow_drift_ratio": min_desired_slow_drift_ratio,
+        "min_normative_governance_trigger_ratio": min_normative_governance_trigger_ratio,
         **final_counts,
         **raw,
         "failure_reasons": failure_reasons,
@@ -1601,6 +1782,11 @@ def merge(
     h0_min_iem_update_log_ratio: float = _DEFAULT_H0_IEM_UPDATE_LOG_FLOOR,
     h0_min_relation_action_bias_ratio: float = _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR,
     h0_min_normative_guard_ratio: float = _DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
+    h0_min_identity_domain_trace_ratio: float = _DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR,
+    h0_min_identity_action_bias_ratio: float = _DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR,
+    h0_min_predicted_update_ratio: float = _DEFAULT_H0_PREDICTED_UPDATE_FLOOR,
+    h0_min_desired_slow_drift_ratio: float = _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR,
+    h0_min_normative_governance_trigger_ratio: float = _DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR,
 ) -> dict:
     runs = _discover_runs(runs_root)
     if not runs:
@@ -1675,6 +1861,11 @@ def merge(
         min_iem_update_log_ratio=h0_min_iem_update_log_ratio,
         min_relation_action_bias_ratio=h0_min_relation_action_bias_ratio,
         min_normative_guard_ratio=h0_min_normative_guard_ratio,
+        min_identity_domain_trace_ratio=h0_min_identity_domain_trace_ratio,
+        min_identity_action_bias_ratio=h0_min_identity_action_bias_ratio,
+        min_predicted_update_ratio=h0_min_predicted_update_ratio,
+        min_desired_slow_drift_ratio=h0_min_desired_slow_drift_ratio,
+        min_normative_governance_trigger_ratio=h0_min_normative_governance_trigger_ratio,
     )
 
     summary = {
@@ -1790,6 +1981,36 @@ def main() -> int:
         default=_DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
         help="Require relation-pair failure rows to prove normative local update guard.",
     )
+    p.add_argument(
+        "--h0-min-identity-domain-trace-ratio",
+        type=float,
+        default=_DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR,
+        help="Require H0-C identity rows to emit survival and economic surprise traces.",
+    )
+    p.add_argument(
+        "--h0-min-identity-action-bias-ratio",
+        type=float,
+        default=_DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR,
+        help="Require H0-C identity rows to emit identity action bias.",
+    )
+    p.add_argument(
+        "--h0-min-predicted-update-ratio",
+        type=float,
+        default=_DEFAULT_H0_PREDICTED_UPDATE_FLOOR,
+        help="Require H0-C identity rows to emit predicted-state update candidates.",
+    )
+    p.add_argument(
+        "--h0-min-desired-slow-drift-ratio",
+        type=float,
+        default=_DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR,
+        help="Require H0-C identity rows to emit desired-state slow drift updates.",
+    )
+    p.add_argument(
+        "--h0-min-normative-governance-trigger-ratio",
+        type=float,
+        default=_DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR,
+        help="Require constitutional surprise rows to emit normative governance triggers.",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
     logging.basicConfig(
@@ -1814,6 +2035,11 @@ def main() -> int:
         h0_min_iem_update_log_ratio=args.h0_min_iem_update_log_ratio,
         h0_min_relation_action_bias_ratio=args.h0_min_relation_action_bias_ratio,
         h0_min_normative_guard_ratio=args.h0_min_normative_guard_ratio,
+        h0_min_identity_domain_trace_ratio=args.h0_min_identity_domain_trace_ratio,
+        h0_min_identity_action_bias_ratio=args.h0_min_identity_action_bias_ratio,
+        h0_min_predicted_update_ratio=args.h0_min_predicted_update_ratio,
+        h0_min_desired_slow_drift_ratio=args.h0_min_desired_slow_drift_ratio,
+        h0_min_normative_governance_trigger_ratio=args.h0_min_normative_governance_trigger_ratio,
     )
     print(json.dumps(summary, indent=2))
     if not summary["integrity_gate"]["passed"]:
