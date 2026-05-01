@@ -1,4 +1,4 @@
-# Raw Tick CSV Schema — F.0.a v1.10
+# Raw Tick CSV Schema — F.0.a v1.11
 # 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
 # v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
@@ -11,8 +11,9 @@
 # v1.8 变更：新增 H.0 IEM / expectation trace skeleton 空载观测列与聚合列。
 # v1.9 变更：新增 G.3.5 R2R relation id、relation_pair、relation-pair failure ref provenance 观测列与聚合列。
 # v1.10 变更：新增 H0-C identity/evolution observability：identity action bias、constitutional surprise、governance trigger、predicted update、desired slow drift。
+# v1.11 变更：新增 H0-D reputation/task/governance expectation trace observability 与 expanded domain 聚合指标。
 
-schema_version: "1.10"
+schema_version: "1.11"
 artifact: "raw_tick"
 
 columns:
@@ -244,6 +245,21 @@ columns:
     required: false
     source: "H.0：economic surprise trace 是否存在"
 
+  - name: h0_reputation_surprise_present
+    type: bool
+    required: false
+    source: "H0-D：reputation surprise trace 是否存在"
+
+  - name: h0_task_surprise_present
+    type: bool
+    required: false
+    source: "H0-D：task success surprise trace 是否存在"
+
+  - name: h0_governance_surprise_present
+    type: bool
+    required: false
+    source: "H0-D：governance participation surprise trace 是否存在"
+
   - name: h0_relation_surprise_present
     type: bool
     required: false
@@ -298,13 +314,13 @@ columns:
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.10"
+  schema_version: "1.11"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
     - {name: agent_id, type: string, required: true}
     - {name: category_id, type: string, required: true,
-       constraint: 'matches /^[RVSAG]0[1-6]$/'}
+      constraint: 'matches /^[RVSAG]0[1-7]$/'}
     - {name: targets_disease, type: enum, required: true,
        values: [R, V, S, A, G]}
     - {name: task_count, type: int, required: true}
@@ -376,6 +392,18 @@ final_metrics:
     - {name: h0_identity_domain_trace_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'H0-C：traced ticks 中 survival/economic identity surprise 均存在的比例'}
+    - {name: h0_reputation_surprise_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-D：traced ticks 中 reputation surprise trace 的比例'}
+    - {name: h0_task_surprise_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-D：traced ticks 中 task success surprise trace 的比例'}
+    - {name: h0_governance_surprise_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-D：traced ticks 中 governance participation surprise trace 的比例'}
+    - {name: h0_expanded_domain_trace_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-D：traced ticks 中 reputation/task/governance 三领域均有 surprise 的比例'}
     - {name: h0_identity_action_bias_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'H0-C：traced ticks 中 identity expectation 产生 action bias 的比例'}

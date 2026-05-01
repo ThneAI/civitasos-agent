@@ -317,6 +317,31 @@ def test_h0c_economic_context_updates_loop_energy(monkeypatch):
     assert energy_state.balance_cap == 1000.0
 
 
+def test_pre_expect_hook_injects_h0d_expanded_context(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G07_h0d_governance_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    runner._agent = FakeBackendAgent()
+    energy_state = SimpleNamespace(
+        balance=500.0,
+        balance_cap=10000.0,
+        risk_score=0.0,
+        reputation=0.5,
+    )
+    runner._loop = SimpleNamespace(_energy=SimpleNamespace(state=energy_state))
+    benchmark_mode.install(runner)
+
+    briefing: dict[str, Any] = {"pool_tasks": [{"task_id": "backend_42"}]}
+    assert runner._on_perceive_fn is not None
+    runner._on_perceive_fn(briefing)
+
+    assert briefing["h0d_expectation_context"]["source"] == "benchmark_h0d_smoke"
+    assert briefing["reputation_context"]["recent_failures"] == 1
+    assert briefing["task_context"]["missing_inputs"] == 1
+    assert briefing["governance_context"]["actual_participation"] == 0.10
+    assert energy_state.reputation == 0.25
+
+
 def test_backend_g3_time_window_is_comparable_across_backend_tasks(monkeypatch):
     monkeypatch.setenv("BENCHMARK_TASK_ID", "G02_happy_01")
     runner = FakeRunner()

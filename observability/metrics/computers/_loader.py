@@ -41,6 +41,9 @@ class TickRow:
     h0_expectation_trace_present: bool = False
     h0_survival_surprise_present: bool = False
     h0_economic_surprise_present: bool = False
+    h0_reputation_surprise_present: bool = False
+    h0_task_surprise_present: bool = False
+    h0_governance_surprise_present: bool = False
     h0_relation_surprise_present: bool = False
     h0_drive_constitution_verdict_present: bool = False
     h0_iem_update_log_present: bool = False
@@ -115,6 +118,9 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 h0_expectation_trace_present=_optbool(raw.get("h0_expectation_trace_present")) or False,
                 h0_survival_surprise_present=_optbool(raw.get("h0_survival_surprise_present")) or False,
                 h0_economic_surprise_present=_optbool(raw.get("h0_economic_surprise_present")) or False,
+                h0_reputation_surprise_present=_optbool(raw.get("h0_reputation_surprise_present")) or False,
+                h0_task_surprise_present=_optbool(raw.get("h0_task_surprise_present")) or False,
+                h0_governance_surprise_present=_optbool(raw.get("h0_governance_surprise_present")) or False,
                 h0_relation_surprise_present=_optbool(raw.get("h0_relation_surprise_present")) or False,
                 h0_drive_constitution_verdict_present=_optbool(raw.get("h0_drive_constitution_verdict_present")) or False,
                 h0_iem_update_log_present=_optbool(raw.get("h0_iem_update_log_present")) or False,

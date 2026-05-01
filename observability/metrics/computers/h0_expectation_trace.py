@@ -22,6 +22,10 @@ def compute(tasks: Iterable[TaskRun]) -> dict[str, float | None]:
             "h0_relation_action_bias_ratio": None,
             "h0_normative_guard_ratio": None,
             "h0_identity_domain_trace_ratio": None,
+            "h0_reputation_surprise_ratio": None,
+            "h0_task_surprise_ratio": None,
+            "h0_governance_surprise_ratio": None,
+            "h0_expanded_domain_trace_ratio": None,
             "h0_identity_action_bias_ratio": None,
             "h0_constitutional_surprise_ratio": None,
             "h0_normative_governance_trigger_ratio": None,
@@ -52,6 +56,21 @@ def compute(tasks: Iterable[TaskRun]) -> dict[str, float | None]:
         ),
         "h0_identity_domain_trace_ratio": _ratio(
             tick.h0_survival_surprise_present and tick.h0_economic_surprise_present
+            for tick in traced
+        ),
+        "h0_reputation_surprise_ratio": _ratio(
+            tick.h0_reputation_surprise_present for tick in traced
+        ),
+        "h0_task_surprise_ratio": _ratio(
+            tick.h0_task_surprise_present for tick in traced
+        ),
+        "h0_governance_surprise_ratio": _ratio(
+            tick.h0_governance_surprise_present for tick in traced
+        ),
+        "h0_expanded_domain_trace_ratio": _ratio(
+            tick.h0_reputation_surprise_present
+            and tick.h0_task_surprise_present
+            and tick.h0_governance_surprise_present
             for tick in traced
         ),
         "h0_identity_action_bias_ratio": _ratio(

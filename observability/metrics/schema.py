@@ -50,6 +50,9 @@ RAW_COLUMNS: tuple[str, ...] = (
     "h0_expectation_trace_present",
     "h0_survival_surprise_present",
     "h0_economic_surprise_present",
+    "h0_reputation_surprise_present",
+    "h0_task_surprise_present",
+    "h0_governance_surprise_present",
     "h0_relation_surprise_present",
     "h0_drive_constitution_verdict_present",
     "h0_iem_update_log_present",
@@ -76,7 +79,7 @@ REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "is_wait",
 })
 
-SCHEMA_VERSION = "1.10"
+SCHEMA_VERSION = "1.11"
 
 # Truncation for decision_reasoning (post-newline-escape).
 REASONING_MAX_LEN = 500

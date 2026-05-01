@@ -229,6 +229,9 @@ def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
     ctx.surprise = {
         "survival": {"surprise_score": -0.2},
         "economic": {"surprise_score": -0.1},
+        "reputation": {"surprise_score": -0.4},
+        "task": {"surprise_score": -0.5},
+        "governance": {"surprise_score": -0.3},
         "relation": {"surprise_score": -0.3},
     }
     ctx.drive = {
@@ -240,6 +243,9 @@ def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
         "relation": {"verification_level": "high"},
         "survival": {"survival_probability": "reduce_action_intensity"},
         "economic": {"economic_balance_ratio": "conserve_energy"},
+        "reputation": {"reputation_score": "repair_reputation"},
+        "task": {"task_success_probability": "reduce_task_risk"},
+        "governance": {"governance_participation": "increase_governance_attention"},
         "normative": {"challenge_window": "governance_trigger"},
     }
     ctx.expectation_updates = [
@@ -273,6 +279,9 @@ def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
     assert row["h0_expectation_trace_present"] == "true"
     assert row["h0_survival_surprise_present"] == "true"
     assert row["h0_economic_surprise_present"] == "true"
+    assert row["h0_reputation_surprise_present"] == "true"
+    assert row["h0_task_surprise_present"] == "true"
+    assert row["h0_governance_surprise_present"] == "true"
     assert row["h0_relation_surprise_present"] == "true"
     assert row["h0_drive_constitution_verdict_present"] == "true"
     assert row["h0_iem_update_log_present"] == "true"

@@ -179,6 +179,13 @@ def _h0c_expectation_context_enabled(task_id: str) -> bool:
     )
 
 
+def _h0d_expectation_context_enabled(task_id: str) -> bool:
+    return "h0d" in str(task_id or "").lower() and _env_flag(
+        "BENCHMARK_H0D_EXPECTATION_CONTEXT_ENABLED",
+        default=True,
+    )
+
+
 def _inject_h0c_expectation_context(
     briefing: dict[str, Any],
     task_id: str,
@@ -221,12 +228,56 @@ def _inject_h0c_expectation_context(
         }
 
 
+def _inject_h0d_expectation_context(
+    briefing: dict[str, Any],
+    task_id: str,
+    *,
+    runner: Any | None = None,
+) -> None:
+    """Attach benchmark-only H0-D reputation/task/governance pressure."""
+    if not _h0d_expectation_context_enabled(task_id):
+        return
+
+    task_key = str(task_id or "").lower()
+    briefing["h0d_expectation_context"] = {
+        "benchmark_task_id": task_id,
+        "source": "benchmark_h0d_smoke",
+    }
+    briefing["reputation_context"] = {
+        "actual_score": 0.25 if "reputation" in task_key else 0.35,
+        "recent_failures": 1,
+        "unresolved_challenges": 1,
+        "stake": 0.9,
+        "source": "benchmark_h0d_smoke",
+    }
+    briefing["task_context"] = {
+        "actual_success_probability": 0.20 if "task" in task_key else 0.35,
+        "missing_inputs": 1,
+        "stake": 0.85,
+        "source": "benchmark_h0d_smoke",
+    }
+    briefing["governance_context"] = {
+        "actual_participation": 0.10 if "governance" in task_key else 0.30,
+        "pending_votes": 1,
+        "stake": 1.0,
+        "source": "benchmark_h0d_smoke",
+    }
+    _set_loop_energy(
+        runner,
+        balance=50.0,
+        balance_cap=1000.0,
+        risk_score=12.0,
+        reputation=0.25,
+    )
+
+
 def _set_loop_energy(
     runner: Any | None,
     *,
     balance: float,
     balance_cap: float,
     risk_score: float,
+    reputation: float | None = None,
 ) -> None:
     loop = getattr(runner, "_loop", None) if runner is not None else None
     energy = getattr(loop, "_energy", None) if loop is not None else None
@@ -236,6 +287,8 @@ def _set_loop_energy(
     state.balance = balance
     state.balance_cap = balance_cap
     state.risk_score = risk_score
+    if reputation is not None:
+        state.reputation = reputation
 
 
 def _inject_g3_relation_context(
@@ -701,6 +754,7 @@ def _install_g3_pre_expect_context(
             backend_task_id=target_tid,
         )
         _inject_h0c_expectation_context(briefing, current_task_id, runner=runner)
+        _inject_h0d_expectation_context(briefing, current_task_id, runner=runner)
 
     register(_on_perceive)
 

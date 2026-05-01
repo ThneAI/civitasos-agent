@@ -151,6 +151,9 @@ class CollectorAdapter:
             "h0_expectation_trace_present": bool_to_csv(h0["expectation_trace_present"]),
             "h0_survival_surprise_present": bool_to_csv(h0["survival_surprise_present"]),
             "h0_economic_surprise_present": bool_to_csv(h0["economic_surprise_present"]),
+            "h0_reputation_surprise_present": bool_to_csv(h0["reputation_surprise_present"]),
+            "h0_task_surprise_present": bool_to_csv(h0["task_surprise_present"]),
+            "h0_governance_surprise_present": bool_to_csv(h0["governance_surprise_present"]),
             "h0_relation_surprise_present": bool_to_csv(h0["relation_surprise_present"]),
             "h0_drive_constitution_verdict_present": bool_to_csv(
                 h0["drive_constitution_verdict_present"]
@@ -313,6 +316,9 @@ class CollectorAdapter:
             "expectation_trace_present": bool(expectations or surprise or drive),
             "survival_surprise_present": _domain_present(surprise, "survival"),
             "economic_surprise_present": _domain_present(surprise, "economic"),
+            "reputation_surprise_present": _domain_present(surprise, "reputation"),
+            "task_surprise_present": _domain_present(surprise, "task"),
+            "governance_surprise_present": _domain_present(surprise, "governance"),
             "relation_surprise_present": _domain_present(surprise, "relation"),
             "drive_constitution_verdict_present": _has_nested_text(
                 drive, "constitution_verdict"
@@ -406,7 +412,15 @@ def _has_nested_text(payload: dict[str, Any], key: str) -> bool:
 def _identity_action_bias_present(action_bias: dict[str, Any]) -> bool:
     return any(
         _domain_present(action_bias, domain)
-        for domain in ("survival", "economic", "normative", "constitutional")
+        for domain in (
+            "survival",
+            "economic",
+            "reputation",
+            "task",
+            "governance",
+            "normative",
+            "constitutional",
+        )
     )
 
 

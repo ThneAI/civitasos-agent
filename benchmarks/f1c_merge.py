@@ -66,6 +66,7 @@ _DEFAULT_H0_IEM_UPDATE_LOG_FLOOR = 1.0
 _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR = 1.0
 _DEFAULT_H0_NORMATIVE_GUARD_FLOOR = 1.0
 _DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR = 1.0
+_DEFAULT_H0_EXPANDED_DOMAIN_TRACE_FLOOR = 1.0
 _DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR = 1.0
 _DEFAULT_H0_PREDICTED_UPDATE_FLOOR = 1.0
 _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR = 0.0
@@ -930,6 +931,11 @@ def _evaluate_h0_raw_relation_expectation(
     h0_trace_rows = 0
     identity_rows = 0
     identity_domain_rows = 0
+    reputation_rows = 0
+    task_rows = 0
+    governance_rows = 0
+    expanded_domain_rows = 0
+    expanded_domain_trace_rows = 0
     identity_action_bias_rows = 0
     predicted_update_rows = 0
     desired_slow_drift_rows = 0
@@ -950,6 +956,9 @@ def _evaluate_h0_raw_relation_expectation(
                     relation_surprise = _raw_bool(row.get("h0_relation_surprise_present"))
                     survival_surprise = _raw_bool(row.get("h0_survival_surprise_present"))
                     economic_surprise = _raw_bool(row.get("h0_economic_surprise_present"))
+                    reputation_surprise = _raw_bool(row.get("h0_reputation_surprise_present"))
+                    task_surprise = _raw_bool(row.get("h0_task_surprise_present"))
+                    governance_surprise = _raw_bool(row.get("h0_governance_surprise_present"))
                     update_log = _raw_bool(row.get("h0_iem_update_log_present"))
                     action_bias = _raw_bool(row.get("h0_relation_action_bias_present"))
                     normative_guard = _raw_bool(row.get("h0_normative_local_update_blocked"))
@@ -962,6 +971,9 @@ def _evaluate_h0_raw_relation_expectation(
                         _raw_bool(row.get("h0_expectation_trace_present")),
                         survival_surprise,
                         economic_surprise,
+                        reputation_surprise,
+                        task_surprise,
+                        governance_surprise,
                         relation_surprise,
                         update_log,
                         action_bias,
@@ -977,6 +989,9 @@ def _evaluate_h0_raw_relation_expectation(
                     if any((
                         survival_surprise,
                         economic_surprise,
+                        reputation_surprise,
+                        task_surprise,
+                        governance_surprise,
                         identity_action_bias,
                         predicted_update,
                         desired_slow_drift,
@@ -984,6 +999,16 @@ def _evaluate_h0_raw_relation_expectation(
                         identity_rows += 1
                         if survival_surprise and economic_surprise:
                             identity_domain_rows += 1
+                        if reputation_surprise:
+                            reputation_rows += 1
+                        if task_surprise:
+                            task_rows += 1
+                        if governance_surprise:
+                            governance_rows += 1
+                        if reputation_surprise or task_surprise or governance_surprise:
+                            expanded_domain_rows += 1
+                        if reputation_surprise and task_surprise and governance_surprise:
+                            expanded_domain_trace_rows += 1
                         if identity_action_bias:
                             identity_action_bias_rows += 1
                         if predicted_update:
@@ -1004,6 +1029,9 @@ def _evaluate_h0_raw_relation_expectation(
                                 "tick_seq": str(row.get("tick_seq") or ""),
                                 "h0_survival_surprise_present": str(row.get("h0_survival_surprise_present") or ""),
                                 "h0_economic_surprise_present": str(row.get("h0_economic_surprise_present") or ""),
+                                "h0_reputation_surprise_present": str(row.get("h0_reputation_surprise_present") or ""),
+                                "h0_task_surprise_present": str(row.get("h0_task_surprise_present") or ""),
+                                "h0_governance_surprise_present": str(row.get("h0_governance_surprise_present") or ""),
                                 "h0_identity_action_bias_present": str(row.get("h0_identity_action_bias_present") or ""),
                                 "h0_predicted_update_present": str(row.get("h0_predicted_update_present") or ""),
                             })
@@ -1058,6 +1086,9 @@ def _evaluate_h0_raw_relation_expectation(
     def _identity_ratio(num: int) -> float | None:
         return (num / identity_rows) if identity_rows else None
 
+    def _expanded_ratio(num: int) -> float | None:
+        return (num / expanded_domain_rows) if expanded_domain_rows else None
+
     def _constitutional_ratio(num: int) -> float | None:
         return (num / constitutional_rows) if constitutional_rows else None
 
@@ -1075,6 +1106,12 @@ def _evaluate_h0_raw_relation_expectation(
         "raw_h0_identity_event_rows": identity_rows,
         "raw_h0_identity_domain_trace_rows": identity_domain_rows,
         "raw_h0_identity_domain_trace_ratio": _identity_ratio(identity_domain_rows),
+        "raw_h0_reputation_surprise_rows": reputation_rows,
+        "raw_h0_task_surprise_rows": task_rows,
+        "raw_h0_governance_surprise_rows": governance_rows,
+        "raw_h0_expanded_domain_event_rows": expanded_domain_rows,
+        "raw_h0_expanded_domain_trace_rows": expanded_domain_trace_rows,
+        "raw_h0_expanded_domain_trace_ratio": _expanded_ratio(expanded_domain_trace_rows),
         "raw_h0_identity_action_bias_rows": identity_action_bias_rows,
         "raw_h0_identity_action_bias_ratio": _identity_ratio(identity_action_bias_rows),
         "raw_h0_predicted_update_rows": predicted_update_rows,
@@ -1099,6 +1136,10 @@ def _h0_final_metric_counts(rows: list[dict[str, str]]) -> dict[str, object]:
         "h0_relation_action_bias_ratio",
         "h0_normative_guard_ratio",
         "h0_identity_domain_trace_ratio",
+        "h0_reputation_surprise_ratio",
+        "h0_task_surprise_ratio",
+        "h0_governance_surprise_ratio",
+        "h0_expanded_domain_trace_ratio",
         "h0_identity_action_bias_ratio",
         "h0_constitutional_surprise_ratio",
         "h0_normative_governance_trigger_ratio",
@@ -1130,6 +1171,7 @@ def _evaluate_h0_gate(
     min_relation_action_bias_ratio: float = _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR,
     min_normative_guard_ratio: float = _DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
     min_identity_domain_trace_ratio: float = _DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR,
+    min_expanded_domain_trace_ratio: float = _DEFAULT_H0_EXPANDED_DOMAIN_TRACE_FLOOR,
     min_identity_action_bias_ratio: float = _DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR,
     min_predicted_update_ratio: float = _DEFAULT_H0_PREDICTED_UPDATE_FLOOR,
     min_desired_slow_drift_ratio: float = _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR,
@@ -1154,6 +1196,12 @@ def _evaluate_h0_gate(
             "raw_h0_identity_event_rows": 0,
             "raw_h0_identity_domain_trace_rows": 0,
             "raw_h0_identity_domain_trace_ratio": None,
+            "raw_h0_reputation_surprise_rows": 0,
+            "raw_h0_task_surprise_rows": 0,
+            "raw_h0_governance_surprise_rows": 0,
+            "raw_h0_expanded_domain_event_rows": 0,
+            "raw_h0_expanded_domain_trace_rows": 0,
+            "raw_h0_expanded_domain_trace_ratio": None,
             "raw_h0_identity_action_bias_rows": 0,
             "raw_h0_identity_action_bias_ratio": None,
             "raw_h0_predicted_update_rows": 0,
@@ -1173,6 +1221,7 @@ def _evaluate_h0_gate(
     raw_h0_rows = int(raw["raw_h0_trace_rows"])
     raw_failure_rows = int(raw["raw_h0_relation_failure_event_rows"])
     raw_identity_rows = int(raw["raw_h0_identity_event_rows"])
+    raw_expanded_rows = int(raw["raw_h0_expanded_domain_event_rows"])
     raw_constitutional_rows = int(raw["raw_h0_constitutional_surprise_rows"])
     if not require_active and final_h0_rows == 0 and raw_h0_rows == 0 and raw_failure_rows == 0:
         return {
@@ -1209,6 +1258,15 @@ def _evaluate_h0_gate(
                 "h0_identity_domain_trace_ratio",
                 "h0_identity_action_bias_ratio",
                 "h0_predicted_update_ratio",
+            ):
+                if int(final_counts[field]) == 0:
+                    failure_reasons.append(f"H.0 active required but {field} is absent")
+        if raw_expanded_rows > 0:
+            for field in (
+                "h0_reputation_surprise_ratio",
+                "h0_task_surprise_ratio",
+                "h0_governance_surprise_ratio",
+                "h0_expanded_domain_trace_ratio",
             ):
                 if int(final_counts[field]) == 0:
                     failure_reasons.append(f"H.0 active required but {field} is absent")
@@ -1276,6 +1334,14 @@ def _evaluate_h0_gate(
             failure_reasons.append(
                 f"{field} {0.0 if value is None else value:.4f} < {floor:.4f}",
             )
+    if raw_expanded_rows > 0:
+        value = raw["raw_h0_expanded_domain_trace_ratio"]
+        if value is None or value < min_expanded_domain_trace_ratio:
+            failure_reasons.append(
+                "raw_h0_expanded_domain_trace_ratio "
+                f"{0.0 if value is None else value:.4f} < "
+                f"{min_expanded_domain_trace_ratio:.4f}",
+            )
     if raw_constitutional_rows > 0:
         value = raw["raw_h0_normative_governance_trigger_ratio"]
         if value is None or value < min_normative_governance_trigger_ratio:
@@ -1294,6 +1360,7 @@ def _evaluate_h0_gate(
         "min_relation_action_bias_ratio": min_relation_action_bias_ratio,
         "min_normative_guard_ratio": min_normative_guard_ratio,
         "min_identity_domain_trace_ratio": min_identity_domain_trace_ratio,
+        "min_expanded_domain_trace_ratio": min_expanded_domain_trace_ratio,
         "min_identity_action_bias_ratio": min_identity_action_bias_ratio,
         "min_predicted_update_ratio": min_predicted_update_ratio,
         "min_desired_slow_drift_ratio": min_desired_slow_drift_ratio,
@@ -1783,6 +1850,7 @@ def merge(
     h0_min_relation_action_bias_ratio: float = _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR,
     h0_min_normative_guard_ratio: float = _DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
     h0_min_identity_domain_trace_ratio: float = _DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR,
+    h0_min_expanded_domain_trace_ratio: float = _DEFAULT_H0_EXPANDED_DOMAIN_TRACE_FLOOR,
     h0_min_identity_action_bias_ratio: float = _DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR,
     h0_min_predicted_update_ratio: float = _DEFAULT_H0_PREDICTED_UPDATE_FLOOR,
     h0_min_desired_slow_drift_ratio: float = _DEFAULT_H0_DESIRED_SLOW_DRIFT_FLOOR,
@@ -1862,6 +1930,7 @@ def merge(
         min_relation_action_bias_ratio=h0_min_relation_action_bias_ratio,
         min_normative_guard_ratio=h0_min_normative_guard_ratio,
         min_identity_domain_trace_ratio=h0_min_identity_domain_trace_ratio,
+        min_expanded_domain_trace_ratio=h0_min_expanded_domain_trace_ratio,
         min_identity_action_bias_ratio=h0_min_identity_action_bias_ratio,
         min_predicted_update_ratio=h0_min_predicted_update_ratio,
         min_desired_slow_drift_ratio=h0_min_desired_slow_drift_ratio,
@@ -1988,6 +2057,12 @@ def main() -> int:
         help="Require H0-C identity rows to emit survival and economic surprise traces.",
     )
     p.add_argument(
+        "--h0-min-expanded-domain-trace-ratio",
+        type=float,
+        default=_DEFAULT_H0_EXPANDED_DOMAIN_TRACE_FLOOR,
+        help="Require H0-D expanded rows to emit reputation, task, and governance surprise traces.",
+    )
+    p.add_argument(
         "--h0-min-identity-action-bias-ratio",
         type=float,
         default=_DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR,
@@ -2036,6 +2111,7 @@ def main() -> int:
         h0_min_relation_action_bias_ratio=args.h0_min_relation_action_bias_ratio,
         h0_min_normative_guard_ratio=args.h0_min_normative_guard_ratio,
         h0_min_identity_domain_trace_ratio=args.h0_min_identity_domain_trace_ratio,
+        h0_min_expanded_domain_trace_ratio=args.h0_min_expanded_domain_trace_ratio,
         h0_min_identity_action_bias_ratio=args.h0_min_identity_action_bias_ratio,
         h0_min_predicted_update_ratio=args.h0_min_predicted_update_ratio,
         h0_min_desired_slow_drift_ratio=args.h0_min_desired_slow_drift_ratio,

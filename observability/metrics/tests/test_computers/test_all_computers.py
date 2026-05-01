@@ -24,6 +24,7 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
           relation_pair_failure_events: bool = False,
           relation_pair_failure_ref: bool = False,
           h0_trace: bool = False, h0_hard_domains: bool = False,
+          h0_expanded_domains: bool = False,
           h0_verdict: bool = False, h0_update: bool = False,
           h0_relation_bias: bool = False, h0_normative_blocked: bool = False,
           h0_identity_bias: bool = False, h0_constitutional: bool = False,
@@ -53,6 +54,9 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
         h0_expectation_trace_present=h0_trace,
         h0_survival_surprise_present=h0_hard_domains,
         h0_economic_surprise_present=h0_hard_domains,
+        h0_reputation_surprise_present=h0_expanded_domains,
+        h0_task_surprise_present=h0_expanded_domains,
+        h0_governance_surprise_present=h0_expanded_domains,
         h0_relation_surprise_present=h0_hard_domains,
         h0_drive_constitution_verdict_present=h0_verdict,
         h0_iem_update_log_present=h0_update,
@@ -297,6 +301,7 @@ def test_h0_expectation_trace_empty_when_disabled() -> None:
     out = h0_expectation_trace.compute([t])
     assert out["h0_expectation_trace_ratio"] is None
     assert out["h0_hard_domain_trace_ratio"] is None
+    assert out["h0_expanded_domain_trace_ratio"] is None
 
 
 def test_h0_expectation_trace_ratios() -> None:
@@ -305,6 +310,7 @@ def test_h0_expectation_trace_ratios() -> None:
             1,
             h0_trace=True,
             h0_hard_domains=True,
+            h0_expanded_domains=True,
             h0_verdict=True,
             h0_update=True,
             h0_relation_bias=True,
@@ -321,6 +327,10 @@ def test_h0_expectation_trace_ratios() -> None:
     out = h0_expectation_trace.compute([t])
     assert out["h0_expectation_trace_ratio"] == 2 / 3
     assert out["h0_hard_domain_trace_ratio"] == 0.5
+    assert out["h0_reputation_surprise_ratio"] == 0.5
+    assert out["h0_task_surprise_ratio"] == 0.5
+    assert out["h0_governance_surprise_ratio"] == 0.5
+    assert out["h0_expanded_domain_trace_ratio"] == 0.5
     assert out["h0_drive_constitution_verdict_ratio"] == 0.5
     assert out["h0_iem_update_log_ratio"] == 0.5
     assert out["h0_relation_action_bias_ratio"] == 0.5
