@@ -40,6 +40,33 @@ def _load_ii2_scorecard(runs_root: Path, summary: dict[str, Any]) -> dict[str, A
     return _read_json(fallback)
 
 
+def _load_final_metrics(runs_root: Path, summary: dict[str, Any]) -> dict[str, float | None]:
+    import csv
+
+    candidate_paths: list[Path] = []
+    from_summary = summary.get("final_metrics_csv")
+    if isinstance(from_summary, str) and from_summary.strip():
+        path = Path(from_summary)
+        candidate_paths.append(path if path.exists() else runs_root / from_summary)
+    candidate_paths.append(runs_root / "final_metrics.csv")
+
+    for path in candidate_paths:
+        if not path.exists():
+            continue
+        slots: dict[str, list[float]] = {
+            "m1_result_deviation_rate": [],
+            "m2_verification_miss_rate": [],
+        }
+        with path.open(newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                for key in slots:
+                    value = _safe_float(row.get(key))
+                    if value is not None:
+                        slots[key].append(value)
+        return {key: _mean(values) for key, values in slots.items()}
+    return {}
+
+
 def _agent_identity(scorecard: dict[str, Any]) -> dict[str, float]:
     agents = scorecard.get("agents")
     if not isinstance(agents, list):
@@ -64,12 +91,16 @@ def compare_runs(
     candidate_runs_root: Path,
     max_jaccard_regression: float,
     min_identity_delta: float,
+    min_result_deviation_reduction: float,
+    min_verification_miss_reduction: float,
     require_sentinel_zero: bool,
 ) -> dict[str, Any]:
     baseline_summary = _load_merge_summary(baseline_runs_root)
     candidate_summary = _load_merge_summary(candidate_runs_root)
     baseline_ii2 = _load_ii2_scorecard(baseline_runs_root, baseline_summary)
     candidate_ii2 = _load_ii2_scorecard(candidate_runs_root, candidate_summary)
+    baseline_quality = _load_final_metrics(baseline_runs_root, baseline_summary)
+    candidate_quality = _load_final_metrics(candidate_runs_root, candidate_summary)
 
     baseline_jaccard = float(baseline_summary.get("jaccard_flagged_ratio", 0.0) or 0.0)
     candidate_jaccard = float(candidate_summary.get("jaccard_flagged_ratio", 0.0) or 0.0)
@@ -107,33 +138,97 @@ def compare_runs(
     if require_sentinel_zero:
         checks["candidate_sentinel_zero"] = candidate_sentinel == 0
 
+    metric_delta = {
+        "m1_result_deviation_rate": _delta(
+            candidate_quality.get("m1_result_deviation_rate"),
+            baseline_quality.get("m1_result_deviation_rate"),
+        ),
+        "m2_verification_miss_rate": _delta(
+            candidate_quality.get("m2_verification_miss_rate"),
+            baseline_quality.get("m2_verification_miss_rate"),
+        ),
+    }
+    metric_reduction = {
+        "m1_result_deviation_rate": _relative_reduction(
+            baseline_quality.get("m1_result_deviation_rate"),
+            candidate_quality.get("m1_result_deviation_rate"),
+        ),
+        "m2_verification_miss_rate": _relative_reduction(
+            baseline_quality.get("m2_verification_miss_rate"),
+            candidate_quality.get("m2_verification_miss_rate"),
+        ),
+    }
+    if metric_reduction["m1_result_deviation_rate"] is not None:
+        checks["result_deviation_reduction_ok"] = (
+            metric_reduction["m1_result_deviation_rate"]
+            >= min_result_deviation_reduction
+        )
+    if metric_reduction["m2_verification_miss_rate"] is not None:
+        checks["verification_miss_reduction_ok"] = (
+            metric_reduction["m2_verification_miss_rate"]
+            >= min_verification_miss_reduction
+        )
+
     return {
         "baseline_runs_root": str(baseline_runs_root),
         "candidate_runs_root": str(candidate_runs_root),
         "thresholds": {
             "max_jaccard_regression": max_jaccard_regression,
             "min_identity_delta": min_identity_delta,
+            "min_result_deviation_reduction": min_result_deviation_reduction,
+            "min_verification_miss_reduction": min_verification_miss_reduction,
             "require_sentinel_zero": require_sentinel_zero,
         },
         "baseline": {
             "jaccard_flagged_ratio": baseline_jaccard,
             "overall_identity_score": baseline_identity,
             "sentinel_violation_count": baseline_sentinel,
+            "quality_metrics": baseline_quality,
         },
         "candidate": {
             "jaccard_flagged_ratio": candidate_jaccard,
             "overall_identity_score": candidate_identity,
             "sentinel_violation_count": candidate_sentinel,
+            "quality_metrics": candidate_quality,
         },
         "delta": {
             "jaccard_flagged_ratio": candidate_jaccard - baseline_jaccard,
             "overall_identity_score": candidate_identity - baseline_identity,
             "sentinel_violation_count": candidate_sentinel - baseline_sentinel,
+            **metric_delta,
         },
+        "relative_reduction": metric_reduction,
         "per_agent": per_agent,
         "checks": checks,
         "passed": all(checks.values()),
     }
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mean(values: list[float]) -> float | None:
+    return (sum(values) / len(values)) if values else None
+
+
+def _delta(candidate: float | None, baseline: float | None) -> float | None:
+    if candidate is None or baseline is None:
+        return None
+    return candidate - baseline
+
+
+def _relative_reduction(baseline: float | None, candidate: float | None) -> float | None:
+    if baseline is None or candidate is None:
+        return None
+    if baseline <= 0:
+        return 1.0 if candidate <= baseline else -1.0
+    return (baseline - candidate) / baseline
 
 
 def main() -> int:
@@ -142,6 +237,8 @@ def main() -> int:
     parser.add_argument("--candidate-runs-root", required=True)
     parser.add_argument("--max-jaccard-regression", type=float, default=0.02)
     parser.add_argument("--min-identity-delta", type=float, default=-0.01)
+    parser.add_argument("--min-result-deviation-reduction", type=float, default=-1.0)
+    parser.add_argument("--min-verification-miss-reduction", type=float, default=-1.0)
     parser.add_argument("--allow-sentinel-violations", action="store_true")
     args = parser.parse_args()
 
@@ -150,6 +247,8 @@ def main() -> int:
         candidate_runs_root=Path(args.candidate_runs_root),
         max_jaccard_regression=args.max_jaccard_regression,
         min_identity_delta=args.min_identity_delta,
+        min_result_deviation_reduction=args.min_result_deviation_reduction,
+        min_verification_miss_reduction=args.min_verification_miss_reduction,
         require_sentinel_zero=not args.allow_sentinel_violations,
     )
     print(json.dumps(report, indent=2))

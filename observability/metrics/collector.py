@@ -92,6 +92,13 @@ class CollectorAdapter:
         subjective_time = self._snapshot_subjective_time(ctx)
         relation_time = self._snapshot_relation_time(ctx)
         h0 = self._snapshot_h0(ctx)
+        served_intent_layer = _text(
+            getattr(decision, "served_intent_layer", "") if decision else ""
+        )
+        wait_references_telos = (
+            is_wait
+            and served_intent_layer in {"short", "mid", "long", "telos"}
+        )
 
         return {
             "run_id": self.run_id,
@@ -106,7 +113,7 @@ class CollectorAdapter:
             "decision_reasoning": escape_reasoning(
                 getattr(decision, "reasoning", None) if decision else None
             ),
-            "served_intent_layer": "",  # H.1+
+            "served_intent_layer": served_intent_layer,
             "conscience_allowed": bool_to_csv(
                 getattr(verdict, "allowed", None) if verdict else None
             ),
@@ -127,7 +134,9 @@ class CollectorAdapter:
             "mode": self._snapshot_mode(),
             "is_wait": bool_to_csv(is_wait),
             "lessons_count": lessons_count,
-            "wait_references_telos": bool_to_csv(F0_DEFAULT_WAIT_REFERENCES_TELOS),
+            "wait_references_telos": bool_to_csv(
+                wait_references_telos or F0_DEFAULT_WAIT_REFERENCES_TELOS
+            ),
             "subjective_lifecycle_stage": _text(subjective_time.get("lifecycle_stage")),
             "subjective_recommended_mode": _text(subjective_time.get("recommended_mode")),
             "llm_mode_request": _text(subjective_time.get("llm_mode_request")),
@@ -164,6 +173,21 @@ class CollectorAdapter:
             ),
             "h0_normative_local_update_blocked": bool_to_csv(
                 h0["normative_local_update_blocked"]
+            ),
+            "h0_relation_training_sample_present": bool_to_csv(
+                h0["relation_training_sample_present"]
+            ),
+            "h0_relation_negative_fast_learning_present": bool_to_csv(
+                h0["relation_negative_fast_learning_present"]
+            ),
+            "h0_relation_repair_sample_present": bool_to_csv(
+                h0["relation_repair_sample_present"]
+            ),
+            "h0_relation_repair_slow_recovery_present": bool_to_csv(
+                h0["relation_repair_slow_recovery_present"]
+            ),
+            "h0_relation_history_preserved_present": bool_to_csv(
+                h0["relation_history_preserved_present"]
             ),
             "h0_identity_action_bias_present": bool_to_csv(
                 h0["identity_action_bias_present"]
@@ -311,6 +335,8 @@ class CollectorAdapter:
         surprise = _mapping(getattr(ctx, "surprise", None))
         drive = _mapping(getattr(ctx, "drive", None))
         action_bias = _mapping(getattr(ctx, "action_bias", None))
+        briefing = _mapping(getattr(ctx, "briefing", None))
+        relation_training = _mapping(briefing.get("h0_relation_training_invariants"))
         updates = getattr(ctx, "expectation_updates", None)
         if updates is None:
             updates = []
@@ -329,6 +355,21 @@ class CollectorAdapter:
             "iem_update_log_present": bool(updates),
             "relation_action_bias_present": _domain_present(action_bias, "relation"),
             "normative_local_update_blocked": _normative_update_blocked(updates),
+            "relation_training_sample_present": bool(
+                relation_training.get("training_sample_present")
+            ),
+            "relation_negative_fast_learning_present": bool(
+                relation_training.get("negative_fast_learning_present")
+            ),
+            "relation_repair_sample_present": bool(
+                relation_training.get("repair_sample_present")
+            ),
+            "relation_repair_slow_recovery_present": bool(
+                relation_training.get("repair_slow_recovery_present")
+            ),
+            "relation_history_preserved_present": bool(
+                relation_training.get("history_preserved_present")
+            ),
             "identity_action_bias_present": _identity_action_bias_present(action_bias),
             "constitutional_surprise_present": _domain_present(surprise, "constitutional"),
             "normative_governance_trigger_present": _governance_trigger_present(

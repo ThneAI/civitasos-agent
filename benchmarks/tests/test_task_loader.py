@@ -40,6 +40,9 @@ def test_v2_relation_manifest_loads_and_has_expanded_g3_coverage() -> None:
     seeded = {task.id: task.backend_seed_failures for task in m.tasks}
     assert seeded["G03_happy_01"] == 1
     assert seeded["G03_adversarial_01"] == 1
+    repair_seeded = {task.id: task.backend_seed_repairs for task in m.tasks}
+    assert repair_seeded["G03_happy_01"] == 1
+    assert repair_seeded["G03_adversarial_01"] == 0
 
 
 def test_lookup_by_id() -> None:

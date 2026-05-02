@@ -21,6 +21,10 @@ def compute(tasks: Iterable[TaskRun]) -> dict[str, float | None]:
             "h0_iem_update_log_ratio": None,
             "h0_relation_action_bias_ratio": None,
             "h0_normative_guard_ratio": None,
+            "h0_relation_training_sample_ratio": None,
+            "h0_relation_negative_fast_learning_ratio": None,
+            "h0_relation_repair_slow_recovery_ratio": None,
+            "h0_relation_history_preserved_ratio": None,
             "h0_identity_domain_trace_ratio": None,
             "h0_reputation_surprise_ratio": None,
             "h0_task_surprise_ratio": None,
@@ -54,6 +58,18 @@ def compute(tasks: Iterable[TaskRun]) -> dict[str, float | None]:
         ),
         "h0_normative_guard_ratio": _ratio(
             tick.h0_normative_local_update_blocked for tick in traced
+        ),
+        "h0_relation_training_sample_ratio": _ratio(
+            tick.h0_relation_training_sample_present for tick in traced
+        ),
+        "h0_relation_negative_fast_learning_ratio": _ratio(
+            tick.h0_relation_negative_fast_learning_present for tick in traced
+        ),
+        "h0_relation_repair_slow_recovery_ratio": _ratio(
+            tick.h0_relation_repair_slow_recovery_present for tick in traced
+        ),
+        "h0_relation_history_preserved_ratio": _ratio(
+            tick.h0_relation_history_preserved_present for tick in traced
         ),
         "h0_identity_domain_trace_ratio": _ratio(
             tick.h0_survival_surprise_present and tick.h0_economic_surprise_present

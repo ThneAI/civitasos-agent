@@ -30,6 +30,10 @@ allowed_metric_codes:
   - h0_governed_revision_ratio
   - h0_predicted_update_ratio
   - h0_normative_guard_ratio
+  - h0_relation_training_sample_ratio
+  - h0_relation_negative_fast_learning_ratio
+  - h0_relation_repair_slow_recovery_ratio
+  - h0_relation_history_preserved_ratio
 
 taxonomy:
   - id: G01
@@ -93,6 +97,10 @@ tasks:
       - g3_relation_memory_hit_ratio
       - g3_relation_aware_decision_ratio
       - g3_relation_pair_failure_ref_ratio
+      - h0_relation_training_sample_ratio
+      - h0_relation_negative_fast_learning_ratio
+      - h0_relation_repair_slow_recovery_ratio
+      - h0_relation_history_preserved_ratio
     backend_seed_failures: 1
     verifier_tools:
       - get_failure_events
@@ -153,7 +161,12 @@ tasks:
       - g3_relation_memory_hit_ratio
       - g3_relation_aware_decision_ratio
       - g3_relation_pair_failure_ref_ratio
+      - h0_relation_training_sample_ratio
+      - h0_relation_negative_fast_learning_ratio
+      - h0_relation_repair_slow_recovery_ratio
+      - h0_relation_history_preserved_ratio
     backend_seed_failures: 1
+    backend_seed_repairs: 1
     verifier_tools:
       - get_failure_events
       - pool_get_task

@@ -397,6 +397,143 @@ def test_seed_backend_relation_failures_uses_task_metadata(tmp_path: Path) -> No
     assert payload == seeded
 
 
+def test_seed_backend_relation_repairs_uses_task_metadata(tmp_path: Path) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def seed_repair(self, **kwargs):
+            self.calls.append(kwargs)
+            return f"repair-{len(self.calls)}"
+
+    client = FakeClient()
+    orch = object.__new__(Orchestrator)
+    orch._cfg = SimpleNamespace(
+        backend_mode="backend-tasks",
+        backend_client=client,
+        target_agent_id="did:civ:worker",
+        backend_capability="general",
+    )
+    task = SimpleNamespace(
+        id="G03_happy_01",
+        briefing="relation repair accountability",
+        backend_seed_repairs=2,
+    )
+
+    seeded = orch._seed_backend_relation_repairs(
+        task,
+        task_dir=tmp_path,
+        repaired_failure_ids=["failure-1"],
+    )
+
+    assert seeded == ["repair-1", "repair-2"]
+    assert len(client.calls) == 2
+    assert client.calls[0]["target_agent_id"] == "did:civ:worker"
+    assert client.calls[0]["repaired_failure_ids"] == ["failure-1"]
+    payload = json.loads((tmp_path / "backend_seed_repair_ids.json").read_text())
+    assert payload == seeded
+
+    extra_input = orch._backend_task_extra_input(
+        task,
+        task_dir=tmp_path,
+        relation_repair_task_ids=seeded,
+        repaired_failure_ids=["failure-1"],
+    )
+    assert extra_input["relation_repair_context"] == {
+        "benchmark_task_id": "G03_happy_01",
+        "repair_task_ids": ["repair-1", "repair-2"],
+        "repaired_failure_task_ids": ["failure-1"],
+        "source": "backend_relation_repair_seed_task",
+    }
+
+
+class _FakeH0ESDK:
+    _agent_id = "did:civ:orch"
+
+
+class _FakeH0EClient:
+    def __init__(self) -> None:
+        self._sdk = _FakeH0ESDK()
+        self.replay = None
+        self.votes = []
+
+    def create_normative_revision(self, **kwargs):
+        self.replay = kwargs["iem_anchor_replay"]
+        return {
+            "proposal": {"id": "prop-1"},
+            "governed_revision_context": {
+                "proposal_id": "prop-1",
+                "revision_id": "rev-1",
+                "iem_anchor": kwargs["iem_anchor"],
+                "iem_anchor_replay": kwargs["iem_anchor_replay"],
+                "source": "backend_governance_read_model",
+            },
+        }
+
+    def cast_governance_vote(self, proposal_id: str, **kwargs) -> None:
+        self.votes.append({"proposal_id": proposal_id, **kwargs})
+
+    def finalize_governance_proposal(self, proposal_id: str, *, approved: bool):
+        return {
+            "governed_revision_context": {
+                "proposal_id": proposal_id,
+                "revision_id": "rev-1",
+                "approved": approved,
+                "status": "approved",
+                "source": "backend_governance_read_model",
+                "iem_anchor_replay": self.replay,
+                "decision_proof": {"proof_hash": "sha256:test"},
+            }
+        }
+
+
+def test_h0e_backend_revision_embeds_replay_without_sidecar_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BENCHMARK_H0E_WRITE_LEGACY_REPLAY_SIDECAR", raising=False)
+    client = _FakeH0EClient()
+    orch = object.__new__(Orchestrator)
+    orch._cfg = SimpleNamespace(
+        backend_client=client,
+        orch_agent_name="orch",
+        target_agent_id="did:civ:worker",
+    )
+    task = SimpleNamespace(id="G08_h0e_governed_revision_01")
+
+    extra_input = orch._backend_task_extra_input(task, task_dir=tmp_path)
+
+    assert extra_input == {
+        "benchmark_task_id": "G08_h0e_governed_revision_01",
+        "governed_revision_id": "rev-1",
+        "governance_proposal_id": "prop-1",
+    }
+    assert not (tmp_path / "h0e_iem_anchor_replay.json").exists()
+    evidence = json.loads((tmp_path / "h0e_governed_revision.json").read_text())
+    assert evidence["iem_anchor_replay"]["update_log"][0]["rule"] == "governed_revision"
+    assert client.votes
+
+
+def test_h0e_legacy_replay_sidecar_is_explicit_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BENCHMARK_H0E_WRITE_LEGACY_REPLAY_SIDECAR", "1")
+    client = _FakeH0EClient()
+    orch = object.__new__(Orchestrator)
+    orch._cfg = SimpleNamespace(
+        backend_client=client,
+        orch_agent_name="orch",
+        target_agent_id="did:civ:worker",
+    )
+    task = SimpleNamespace(id="G08_h0e_governed_revision_01")
+
+    orch._backend_task_extra_input(task, task_dir=tmp_path)
+
+    sidecar = json.loads((tmp_path / "h0e_iem_anchor_replay.json").read_text())
+    assert sidecar["update_log"][0]["rule"] == "governed_revision"
+
+
 def test_build_backend_client_rotates_alias_on_birth_proposal_conflict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

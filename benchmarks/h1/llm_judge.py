@@ -33,6 +33,10 @@ class LLMJudge(Protocol):
         ...
 
 
+class JudgeBackendUnavailable(RuntimeError):
+    """Raised when H.1 judge is explicitly required but no backend exists."""
+
+
 class DisabledJudge:
     """Fallback until H.1 evaluator is enabled and calibrated."""
 
@@ -56,5 +60,8 @@ def build_judge_from_env() -> LLMJudge:
     """
     enabled = os.getenv("CIVITASOS_H1_JUDGE_ENABLED", "").strip().lower()
     if enabled in {"1", "true", "yes", "on"}:
-        return DisabledJudge("H.1 judge requested but backend not implemented yet")
+        raise JudgeBackendUnavailable(
+            "CIVITASOS_H1_JUDGE_ENABLED is set, but no calibrated H.1 judge "
+            "backend is implemented yet"
+        )
     return DisabledJudge()

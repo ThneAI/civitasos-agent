@@ -22,6 +22,7 @@ class FakeSDK:
         self.get_task_calls: list[str] = []
         self.failures_calls: list[dict[str, Any]] = []
         self.claim_calls: list[dict[str, Any]] = []
+        self.execute_calls: list[dict[str, Any]] = []
         self.confirm_calls: list[str] = []
         self.fail_calls: list[str] = []
         self._next_id = 1
@@ -120,7 +121,36 @@ class FakeSDK:
         if self.confirm_should_raise:
             raise RuntimeError("backend confirm failed")
         self.confirm_calls.append(task_id)
+        for task in self.tasks:
+            if task["id"] == task_id and task.get("status") == "Delivered":
+                task["status"] = "Completed"
+                break
         return {"ok": True}
+
+    def task_execute(
+        self,
+        task_id: str,
+        output: Any,
+        success: bool = True,
+        metadata: dict[str, str] | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.execute_calls.append({
+            "task_id": task_id,
+            "output": output,
+            "success": success,
+            "metadata": metadata,
+            "agent_id": agent_id,
+        })
+        for task in self.tasks:
+            if task["id"] == task_id:
+                task["status"] = "Delivered" if success else "Failed"
+                task["output"] = output
+                task["delivered_at"] = "2026-05-01T12:02:00Z" if success else None
+                if not success:
+                    task["failed_at"] = "2026-05-01T12:02:00Z"
+                return {"ok": True}
+        raise LookupError(task_id)
 
     def pool_fail(self, task_id: str) -> dict[str, Any]:
         if self.fail_should_raise:
@@ -215,11 +245,13 @@ def test_create_normative_revision_unwraps_sdk_response():
         old_value="v1",
         new_value="v2",
         iem_anchor={"schema_version": "iem:v1"},
+        iem_anchor_replay={"anchor": {"schema_version": "iem:v1"}},
     )
     assert payload["proposal"]["id"] == "prop-1"
     assert payload["governed_revision_context"]["revision_id"] == "rev-1"
     assert sdk.normative_calls[0]["source"] == "backend_governance_read_model"
     assert sdk.normative_calls[0]["iem_anchor"] == {"schema_version": "iem:v1"}
+    assert sdk.normative_calls[0]["iem_anchor_replay"] == {"anchor": {"schema_version": "iem:v1"}}
 
 
 def test_finalize_governance_proposal_unwraps_sdk_response():
@@ -596,6 +628,37 @@ def test_seed_failure_creates_claimed_failed_relation_sample():
     )
     assert len(events) == 1
     assert events[0]["relation_id"] == "rel:requester-1:worker-1"
+
+
+def test_seed_repair_creates_claimed_delivered_relation_sample():
+    sdk = FakeSDK()
+    client = BackendTaskClient(sdk)
+
+    tid = client.seed_repair(
+        briefing="seed relation repair",
+        target_agent_id="worker-1",
+        repaired_failure_ids=["failed-1"],
+        capability="general",
+        reward=1,
+        deadline_secs=60,
+        claim_timeout_s=0.0,
+        claim_retry_interval_s=0.01,
+    )
+
+    assert tid == "task_1"
+    assert sdk.post_calls[0]["input_data"]["relation_repair_seed"] == {
+        "repaired_failure_task_ids": ["failed-1"],
+        "source": "backend_relation_repair_seed_task",
+    }
+    assert sdk.claim_calls == [{
+        "task_id": "task_1",
+        "agent_id": "worker-1",
+        "stake_amount": 0,
+    }]
+    assert sdk.execute_calls[0]["agent_id"] == "worker-1"
+    assert sdk.execute_calls[0]["output"]["repaired_failure_task_ids"] == ["failed-1"]
+    assert sdk.confirm_calls == ["task_1"]
+    assert sdk.pool_get_task("task_1")["status"] == "Completed"
 
 
 # ── state_to_sentinel (the 5-row table) ──────────────────────────────

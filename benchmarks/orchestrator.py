@@ -122,6 +122,7 @@ class _PersistentAgentSession:
     proc: subprocess.Popen[Any]
     task_id_file: Path
     backend_task_id_file: Path
+    h0f_runtime_iem_audit_path_file: Path
 
 
 @dataclass
@@ -283,24 +284,41 @@ class Orchestrator:
             logger.warning("[orch-faucet] unexpected error: %s", exc)
             return False
 
-    def _backend_task_extra_input(self, task: TaskSpec, *, task_dir: Path) -> dict[str, Any]:
+    def _backend_task_extra_input(
+        self,
+        task: TaskSpec,
+        *,
+        task_dir: Path,
+        relation_repair_task_ids: list[str] | None = None,
+        repaired_failure_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Build extra backend task input for stage-specific read models."""
+        extra_input: dict[str, Any] = {}
+        if relation_repair_task_ids:
+            extra_input["relation_repair_context"] = {
+                "benchmark_task_id": task.id,
+                "repair_task_ids": list(relation_repair_task_ids),
+                "repaired_failure_task_ids": list(repaired_failure_ids or []),
+                "source": "backend_relation_repair_seed_task",
+            }
+
         if "h0e" not in task.id.lower():
-            return {}
+            return extra_input
         if not _env_bool("BENCHMARK_H0E_BACKEND_REVISION_SEED_ENABLED", default=True):
-            return {}
+            return extra_input
         client = self._cfg.backend_client
         if client is None:
-            return {}
+            return extra_input
         try:
             sdk = client._sdk  # type: ignore[attr-defined]
             proposer = str(getattr(sdk, "_agent_id", "") or self._cfg.orch_agent_name)
             profile = _h0e_revision_seed_profile(task.id)
             replay = _h0e_iem_anchor_replay_payload(task.id, profile)
-            (task_dir / "h0e_iem_anchor_replay.json").write_text(
-                json.dumps(replay, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            if _env_bool("BENCHMARK_H0E_WRITE_LEGACY_REPLAY_SIDECAR", default=False):
+                (task_dir / "h0e_iem_anchor_replay.json").write_text(
+                    json.dumps(replay, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
             revision_payload = client.create_normative_revision(
                 proposer=proposer,
                 rule_id=str(profile["rule_id"]),
@@ -308,6 +326,7 @@ class Orchestrator:
                 new_value=profile["new_value"],
                 authority=str(profile["authority"]),
                 iem_anchor=replay["anchor"],
+                iem_anchor_replay=replay,
             )
             revision = revision_payload.get("governed_revision_context") or {}
             proposal = revision_payload.get("proposal") or {}
@@ -322,11 +341,12 @@ class Orchestrator:
                 json.dumps(finalized_revision, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            return {
+            extra_input.update({
                 "benchmark_task_id": task.id,
                 "governed_revision_id": revision_id,
                 "governance_proposal_id": proposal_id,
-            }
+            })
+            return extra_input
         except Exception as exc:  # noqa: BLE001
             if _env_bool("BENCHMARK_H0E_REQUIRE_BACKEND_SOURCE", default=False):
                 raise
@@ -336,7 +356,7 @@ class Orchestrator:
                 task.id,
                 exc,
             )
-            return {}
+            return extra_input
 
     def _seed_h0e_governance_votes(
         self,
@@ -413,8 +433,10 @@ class Orchestrator:
 
         task_id_file = runtime_dir / "current_task_id.txt"
         backend_task_id_file = runtime_dir / "current_backend_task_id.txt"
+        h0f_runtime_iem_audit_path_file = runtime_dir / "current_h0f_runtime_iem_audit_path.txt"
         task_id_file.write_text(initial_task_id, encoding="utf-8")
         backend_task_id_file.write_text("", encoding="utf-8")
+        h0f_runtime_iem_audit_path_file.write_text("", encoding="utf-8")
 
         env = {
             **os.environ,
@@ -427,6 +449,7 @@ class Orchestrator:
             "BENCHMARK_BACKEND_TASK_ID": "bootstrap-target",
             "BENCHMARK_TASK_ID_FILE": str(task_id_file),
             "BENCHMARK_BACKEND_TASK_ID_FILE": str(backend_task_id_file),
+            "BENCHMARK_H0F_RUNTIME_IEM_AUDIT_PATH_FILE": str(h0f_runtime_iem_audit_path_file),
             # Keep legacy var for compatibility; collector rotates by *_DIR + *_FILE.
             "BENCHMARK_RAW_CSV": str(raw_dir / f"{initial_task_id}.csv"),
             "BENCHMARK_RAW_CSV_DIR": str(raw_dir),
@@ -446,6 +469,7 @@ class Orchestrator:
             proc=proc,
             task_id_file=task_id_file,
             backend_task_id_file=backend_task_id_file,
+            h0f_runtime_iem_audit_path_file=h0f_runtime_iem_audit_path_file,
         )
 
     def _run_one_reuse(
@@ -464,7 +488,12 @@ class Orchestrator:
 
         # Publish current task ids for benchmark_mode rule/collector inside agent.py.
         session.task_id_file.write_text(task.id, encoding="utf-8")
+        session.h0f_runtime_iem_audit_path_file.write_text(
+            str(task_dir / "h0f_runtime_iem_audit.json"),
+            encoding="utf-8",
+        )
         pre_task_probe_ticks = 0
+        pre_target_ticks = 0
         if _env_bool("BENCHMARK_G2_MODE_PROBE_ENABLED", default=False):
             # Hold back the backend target id briefly so benchmark_mode can let
             # the real LLM make one no-active-task subjective-time decision.
@@ -488,17 +517,27 @@ class Orchestrator:
                     task.id,
                 )
 
-            self._seed_backend_relation_failures(task, task_dir=task_dir)
-            pre_target_ticks = _tail_tick_seq(raw_csv)
-            if pre_target_ticks > pre_task_probe_ticks:
-                logger.info(
-                    "[orch-g3-seed] task=%s counted %d pre-target tick(s) after failure seeding",
-                    task.id,
-                    pre_target_ticks,
-                )
+        seeded_failure_ids = self._seed_backend_relation_failures(task, task_dir=task_dir)
+        seeded_repair_ids = self._seed_backend_relation_repairs(
+            task,
+            task_dir=task_dir,
+            repaired_failure_ids=seeded_failure_ids,
+        )
+        pre_target_ticks = _tail_tick_seq(raw_csv)
+        if pre_target_ticks > pre_task_probe_ticks:
+            logger.info(
+                "[orch-g3-seed] task=%s counted %d pre-target tick(s) after relation precondition seeding",
+                task.id,
+                pre_target_ticks,
+            )
 
         backend_task_id: str
-        extra_input = self._backend_task_extra_input(task, task_dir=task_dir)
+        extra_input = self._backend_task_extra_input(
+            task,
+            task_dir=task_dir,
+            relation_repair_task_ids=seeded_repair_ids,
+            repaired_failure_ids=seeded_failure_ids,
+        )
         try:
             backend_task_id = self._cfg.backend_client.create(
                 briefing=task.briefing,
@@ -682,6 +721,9 @@ class Orchestrator:
             "BENCHMARK_TASK_ID": task.id,
             "BENCHMARK_RAW_CSV": str(raw_csv),
             "BENCHMARK_SENTINEL_DIR": str(sentinel_dir),
+            "BENCHMARK_H0F_RUNTIME_IEM_AUDIT_PATH": str(
+                task_dir / "h0f_runtime_iem_audit.json"
+            ),
         }
 
         # F.1.b: branch on backend_mode for briefing delivery.
@@ -689,8 +731,18 @@ class Orchestrator:
         if self._cfg.backend_mode == BACKEND_MODE_BACKEND_TASKS:
             assert self._cfg.backend_client is not None  # guaranteed by __post_init__
             assert self._cfg.target_agent_id is not None
-            self._seed_backend_relation_failures(task, task_dir=task_dir)
-            extra_input = self._backend_task_extra_input(task, task_dir=task_dir)
+            seeded_failure_ids = self._seed_backend_relation_failures(task, task_dir=task_dir)
+            seeded_repair_ids = self._seed_backend_relation_repairs(
+                task,
+                task_dir=task_dir,
+                repaired_failure_ids=seeded_failure_ids,
+            )
+            extra_input = self._backend_task_extra_input(
+                task,
+                task_dir=task_dir,
+                relation_repair_task_ids=seeded_repair_ids,
+                repaired_failure_ids=seeded_failure_ids,
+            )
             try:
                 backend_task_id = self._cfg.backend_client.create(
                     briefing=task.briefing,
@@ -941,6 +993,64 @@ class Orchestrator:
                 encoding="utf-8",
             )
             logger.info("seeded %d backend failure(s) for %s", len(seeded_ids), task.id)
+        return seeded_ids
+
+    def _seed_backend_relation_repairs(
+        self,
+        task: TaskSpec,
+        *,
+        task_dir: Path,
+        repaired_failure_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Materialise task-declared G.3 repair-memory preconditions."""
+        count = max(0, int(getattr(task, "backend_seed_repairs", 0) or 0))
+        if count <= 0:
+            return []
+        if not _env_bool("BENCHMARK_G3_SEED_REPAIRS_ENABLED", default=True):
+            return []
+        if self._cfg.backend_mode != BACKEND_MODE_BACKEND_TASKS:
+            return []
+        client = self._cfg.backend_client
+        target_agent_id = self._cfg.target_agent_id
+        if client is None or not target_agent_id:
+            raise RuntimeError("backend repair seeding requires backend_client and target_agent_id")
+
+        reward = _env_int("BENCHMARK_G3_SEED_REPAIR_REWARD", 1, min_value=1)
+        deadline_secs = _env_int("BENCHMARK_G3_SEED_REPAIR_DEADLINE_SECS", 60, min_value=1)
+        claim_timeout_s = _env_float(
+            "BENCHMARK_G3_SEED_REPAIR_CLAIM_TIMEOUT_S",
+            40.0,
+            min_value=0.0,
+        )
+        claim_retry_interval_s = _env_float(
+            "BENCHMARK_G3_SEED_REPAIR_CLAIM_RETRY_INTERVAL_S",
+            1.0,
+            min_value=0.05,
+        )
+        repaired_ids = list(repaired_failure_ids or [])
+        seeded_ids: list[str] = []
+        for idx in range(count):
+            seed_id = client.seed_repair(
+                briefing=(
+                    f"G.3 relation repair seed {idx + 1}/{count} for {task.id}. "
+                    "This hidden precondition exists only to ground relation-pair "
+                    "repair-memory observability."
+                ),
+                target_agent_id=target_agent_id,
+                repaired_failure_ids=repaired_ids,
+                capability=self._cfg.backend_capability,
+                reward=reward,
+                deadline_secs=deadline_secs,
+                claim_timeout_s=claim_timeout_s,
+                claim_retry_interval_s=claim_retry_interval_s,
+            )
+            seeded_ids.append(seed_id)
+        if seeded_ids:
+            (task_dir / "backend_seed_repair_ids.json").write_text(
+                json.dumps(seeded_ids),
+                encoding="utf-8",
+            )
+            logger.info("seeded %d backend repair(s) for %s", len(seeded_ids), task.id)
         return seeded_ids
 
     # ---- F.1.b: backend-task state polling ---------------------------

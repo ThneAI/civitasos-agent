@@ -128,13 +128,18 @@ observability/metrics/
 | `h0_iem_update_log_present` | bool | H.0 是否生成 IEM update log / candidate | optional |
 | `h0_relation_action_bias_present` | bool | H.0 relation expectation 是否产生 action bias | optional |
 | `h0_normative_local_update_blocked` | bool | H.0 Normative State 本地改写是否被 guard 阻止 | optional |
+| `h0_relation_training_sample_present` | bool | H0-G relation expectation update 是否携带可训练样本 | optional |
+| `h0_relation_negative_fast_learning_present` | bool | H0-G failure 样本是否触发负面快速学习 | optional |
+| `h0_relation_repair_sample_present` | bool | H0-G 是否包含 repair 样本 | optional |
+| `h0_relation_repair_slow_recovery_present` | bool | H0-G repair 是否按慢恢复规则更新 | optional |
+| `h0_relation_history_preserved_present` | bool | H0-G failure/repair source refs 是否保留 | optional |
 | `h0_identity_action_bias_present` | bool | H0-C identity expectation 是否产生 survival/economic/normative action bias | optional |
 | `h0_constitutional_surprise_present` | bool | H0-C constitutional / normative surprise trace 是否存在 | optional |
 | `h0_normative_governance_trigger_present` | bool | H0-C Normative breach 是否生成 governance trigger | optional |
 | `h0_predicted_update_present` | bool | H0-C Predicted State 是否生成 precision-weighted update | optional |
 | `h0_desired_slow_drift_present` | bool | H0-C Desired State 是否生成 slow drift update | optional |
 
-**Schema 版本**：v1.9。冻结后只允许追加新列，不允许修改/删除。
+**Schema 版本**：v1.13。冻结后只允许追加新列，不允许修改/删除。
 
 ### CSV 转义策略（v1.1 新增）
 
@@ -182,6 +187,10 @@ observability/metrics/
 | `h0_iem_update_log_ratio` | float \| null | traced tick 中生成 IEM update log / candidate 的比例 |
 | `h0_relation_action_bias_ratio` | float \| null | traced tick 中 relation expectation 影响 action bias 的比例 |
 | `h0_normative_guard_ratio` | float \| null | traced tick 中 Normative local update 被 guard 阻止的比例 |
+| `h0_relation_training_sample_ratio` | float \| null | traced tick 中 relation training sample 可审计的比例 |
+| `h0_relation_negative_fast_learning_ratio` | float \| null | traced tick 中 failure 样本触发负面快速学习的比例 |
+| `h0_relation_repair_slow_recovery_ratio` | float \| null | traced tick 中 repair 样本遵守慢恢复规则的比例 |
+| `h0_relation_history_preserved_ratio` | float \| null | traced tick 中 failure/repair 历史未被训练抹除的比例 |
 | `h0_identity_domain_trace_ratio` | float \| null | traced tick 中 survival/economic identity surprise 均存在的比例 |
 | `h0_identity_action_bias_ratio` | float \| null | traced tick 中 identity expectation 产生 action bias 的比例 |
 | `h0_constitutional_surprise_ratio` | float \| null | traced tick 中 constitutional / normative surprise trace 的比例 |

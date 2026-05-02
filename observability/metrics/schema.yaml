@@ -14,7 +14,7 @@
 # v1.11 变更：新增 H0-D reputation/task/governance expectation trace observability 与 expanded domain 聚合指标。
 # v1.12 变更：新增 H0-E governed revision read model 观测列与聚合指标。
 
-schema_version: "1.12"
+schema_version: "1.13"
 artifact: "raw_tick"
 
 columns:
@@ -53,7 +53,7 @@ columns:
   - name: phase_reached
     type: enum
     required: true
-    values: [perceive, recall, expect, decide, conscience, act, evaluate, reflect, remember]
+    values: [perceive, recall, expect, align, decide, conscience, act, evaluate, reflect, remember]
     source: TickContext.phase
 
   - name: decision_action
@@ -75,7 +75,7 @@ columns:
   - name: served_intent_layer
     type: string
     required: false
-    source: H.1 之后 Decision 自报；F.1 阶段写空字符串
+    source: H.1-A opt-in Decision 自报；未启用时写空字符串
 
   - name: conscience_allowed
     type: bool
@@ -153,7 +153,7 @@ columns:
   - name: wait_references_telos
     type: bool
     required: false
-    source: 'F.0 阶段固定 false（M6 已弱化为 wait_ratio）；H.1 后基于 served_intent_layer 重新计算'
+    source: 'H.1-A opt-in：wait 且 served_intent_layer 指向 short/mid/long/telos 时为 true；未启用时 false'
 
   - name: subjective_lifecycle_stage
     type: enum
@@ -286,6 +286,31 @@ columns:
     required: false
     source: "H.0：Normative State 本地改写是否被 guard 阻止"
 
+  - name: h0_relation_training_sample_present
+    type: bool
+    required: false
+    source: "H0-G：relation expectation update 是否携带可训练样本与 before/after 证据"
+
+  - name: h0_relation_negative_fast_learning_present
+    type: bool
+    required: false
+    source: "H0-G：failure 样本是否触发负面快速学习（trust/delivery 下降、risk/precision 上升）"
+
+  - name: h0_relation_repair_sample_present
+    type: bool
+    required: false
+    source: "H0-G：relation expectation update 是否包含 repair 样本"
+
+  - name: h0_relation_repair_slow_recovery_present
+    type: bool
+    required: false
+    source: "H0-G：repair 样本是否按慢恢复规则更新，且不抹除历史"
+
+  - name: h0_relation_history_preserved_present
+    type: bool
+    required: false
+    source: "H0-G：failure/repair source_event_ids 是否保留在训练审计链中"
+
   - name: h0_identity_action_bias_present
     type: bool
     required: false
@@ -320,7 +345,7 @@ columns:
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.12"
+  schema_version: "1.13"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
@@ -395,6 +420,18 @@ final_metrics:
     - {name: h0_normative_guard_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'H.0：traced ticks 中 Normative local update 被 guard 阻止的比例'}
+    - {name: h0_relation_training_sample_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-G：traced ticks 中 relation expectation training sample 可审计的比例'}
+    - {name: h0_relation_negative_fast_learning_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-G：traced ticks 中 failure 样本触发负面快速学习的比例'}
+    - {name: h0_relation_repair_slow_recovery_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-G：traced ticks 中 repair 样本遵守慢恢复规则的比例'}
+    - {name: h0_relation_history_preserved_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H0-G：traced ticks 中 failure/repair 历史未被训练抹除的比例'}
     - {name: h0_identity_domain_trace_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'H0-C：traced ticks 中 survival/economic identity surprise 均存在的比例'}

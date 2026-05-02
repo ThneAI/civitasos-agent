@@ -30,11 +30,13 @@ Design notes:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
 from typing import Any
 
+from civitasos_runtime.iem_anchor import normalize_iem_payload
 from civitasos_runtime.models import Decision, DecisionSource
 
 logger = logging.getLogger(__name__)
@@ -498,6 +500,12 @@ def _build_backend_g3_relation_context(
         relation_id=relation_id,
         limit=10,
     )
+    repairs = _lookup_relation_repair_events(
+        runner,
+        task=task,
+        relation_id=relation_id,
+        limit=10,
+    )
 
     memory_refs = [
         f"task:{backend_task_id}",
@@ -514,6 +522,16 @@ def _build_backend_g3_relation_context(
                 memory_refs.append(f"failure:{event_relation_id}:{failed_task_id}{suffix}")
             else:
                 memory_refs.append(f"failure:{failed_task_id}{suffix}")
+    for event in repairs[:5]:
+        repair_task_id = _first_text(event, "task_id", "id")
+        repaired_at = _first_text(event, "repaired_at", "delivered_at", "completed_at", "timestamp")
+        if repair_task_id:
+            suffix = f":{_ref_token(repaired_at)}" if repaired_at else ""
+            event_relation_id = _first_text(event, "r2r_relation_id", "relation_id") or relation_id
+            if event_relation_id:
+                memory_refs.append(f"repair:{event_relation_id}:{repair_task_id}{suffix}")
+            else:
+                memory_refs.append(f"repair:{repair_task_id}{suffix}")
 
     relation_context = {
         "id": f"{relation_id}:task:{backend_task_id}",
@@ -534,6 +552,7 @@ def _build_backend_g3_relation_context(
         "task_delivered_at": _first_text(task, "delivered_at"),
         "task_failed_at": _first_text(task, "failed_at"),
         "recent_failures": failures[:5],
+        "recent_repairs": repairs[:5],
         "source": "backend_read_model",
     }
     time_window = {
@@ -672,6 +691,88 @@ def _lookup_relation_failure_events(
     return [event for event in failures if isinstance(event, dict)]
 
 
+def _lookup_relation_repair_events(
+    runner: Any | None,
+    *,
+    task: dict[str, Any],
+    relation_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    repair_context = _relation_repair_context_from_task(task)
+    if not repair_context:
+        return []
+
+    events: list[dict[str, Any]] = []
+    raw_repairs = repair_context.get("repairs")
+    if isinstance(raw_repairs, list):
+        for raw_event in raw_repairs:
+            if not isinstance(raw_event, dict):
+                continue
+            event = dict(raw_event)
+            event.setdefault("relation_id", relation_id)
+            event.setdefault("r2r_relation_id", relation_id)
+            event.setdefault("source", _first_text(repair_context, "source") or "backend_relation_repair_seed_task")
+            events.append(event)
+
+    repair_ids = repair_context.get("repair_task_ids")
+    if isinstance(repair_ids, str):
+        repair_task_ids = [part.strip() for part in repair_ids.replace(",", ";").split(";") if part.strip()]
+    elif isinstance(repair_ids, list):
+        repair_task_ids = [str(value).strip() for value in repair_ids if str(value).strip()]
+    else:
+        repair_task_ids = []
+
+    repaired_failure_ids = repair_context.get("repaired_failure_task_ids")
+    if isinstance(repaired_failure_ids, list):
+        failure_ids = [str(value).strip() for value in repaired_failure_ids if str(value).strip()]
+    else:
+        failure_ids = []
+
+    for repair_task_id in repair_task_ids:
+        seed_task = _lookup_backend_task_snapshot({}, backend_task_id=repair_task_id, runner=runner)
+        output = seed_task.get("output") if isinstance(seed_task, dict) else None
+        output_map = output if isinstance(output, dict) else {}
+        event = {
+            "task_id": repair_task_id,
+            "relation_id": relation_id,
+            "r2r_relation_id": relation_id,
+            "repaired_failure_task_ids": output_map.get("repaired_failure_task_ids") or failure_ids,
+            "source": _first_text(repair_context, "source") or "backend_relation_repair_seed_task",
+        }
+        if seed_task:
+            event.update({
+                "status": str(seed_task.get("status") or ""),
+                "repaired_at": _first_text(seed_task, "delivered_at", "claimed_at", "posted_at"),
+                "delivered_at": _first_text(seed_task, "delivered_at"),
+                "completed_at": _first_text(seed_task, "completed_at"),
+            })
+        events.append(event)
+
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for event in events:
+        repair_task_id = _first_text(event, "task_id", "id")
+        if not repair_task_id or repair_task_id in seen:
+            continue
+        seen.add(repair_task_id)
+        deduped.append(event)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _relation_repair_context_from_task(task: dict[str, Any]) -> dict[str, Any]:
+    direct = task.get("relation_repair_context")
+    if isinstance(direct, dict):
+        return direct
+    task_input = task.get("input")
+    if isinstance(task_input, dict):
+        nested = task_input.get("relation_repair_context")
+        if isinstance(nested, dict):
+            return nested
+    return {}
+
+
 def _first_text(source: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = source.get(key)
@@ -791,6 +892,9 @@ def install(runner: Any) -> None:
             "no CollectorAdapter; raw_ticks.csv will not be written"
         )
 
+    # ── 2.5 H0-F Runtime Identity IEM audit artifact ───────────────
+    _install_h0f_runtime_iem_audit(runner, task_id=task_id)
+
     # ── 3. tighten cognitive-loop intervals ──────────────────────────
     # Production defaults (loop.py:_INTERVALS): ACTIVE=10s, IDLE=45s,
     # SLEEPING=300s. In benchmark mode the orchestrator drives task
@@ -803,6 +907,110 @@ def install(runner: Any) -> None:
     logger.info(
         "benchmark_mode installed: task_id=%s backend_task_id=%s",
         task_id, backend_task_id,
+    )
+
+
+def _install_h0f_runtime_iem_audit(runner: Any, *, task_id: str) -> None:
+    """Persist Runtime-owned IEM replay evidence after Remember phase."""
+    audit_path = os.getenv("BENCHMARK_H0F_RUNTIME_IEM_AUDIT_PATH", "").strip()
+    audit_path_file = os.getenv("BENCHMARK_H0F_RUNTIME_IEM_AUDIT_PATH_FILE", "").strip()
+    if not audit_path and not audit_path_file:
+        return
+    register = getattr(runner, "on_remember", None)
+    if not callable(register):
+        logger.warning(
+            "benchmark_mode: runner.on_remember unavailable; "
+            "H0-F Runtime IEM audit artifact skipped"
+        )
+        return
+    task_id_file = os.environ.get("BENCHMARK_TASK_ID_FILE", "").strip()
+
+    def _on_remember(ctx: Any) -> None:
+        current_task_id = _read_text_file(task_id_file) if task_id_file else task_id
+        target = _read_text_file(audit_path_file) if audit_path_file else audit_path
+        if not target:
+            return
+        loop = getattr(runner, "_loop", None) or getattr(runner, "loop", None)
+        payload = _h0f_runtime_iem_audit_payload(
+            ctx,
+            loop=loop,
+            task_id=current_task_id,
+        )
+        if payload is None:
+            return
+        path = Path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    register(_on_remember)
+
+
+def _h0f_runtime_iem_audit_payload(
+    ctx: Any,
+    *,
+    loop: Any,
+    task_id: str,
+) -> dict[str, Any] | None:
+    governed_updates = _h0f_governed_revision_updates(ctx)
+    if not governed_updates:
+        return None
+    state = _runtime_memory_recall(loop, "identity_iem_state")
+    update_log = _runtime_memory_recall(loop, "expectation_update_log")
+    anchor = _runtime_memory_recall(loop, "identity_iem_anchor")
+    if not isinstance(state, dict) or not isinstance(update_log, list) or not isinstance(anchor, dict):
+        return None
+    identity_id = str(state.get("identity_id") or _runtime_agent_id(loop) or "unknown")
+    did_anchor = _runtime_agent_id(loop) or identity_id
+    return {
+        "source": "runtime_identity_iem_audit_log",
+        "task_id": task_id,
+        "tick_id": str(getattr(ctx, "tick_id", "")),
+        "identity_id": identity_id,
+        "did_anchor": str(did_anchor),
+        "identity_iem_state": normalize_iem_payload(state),
+        "expectation_update_log": normalize_iem_payload(update_log),
+        "identity_iem_anchor": normalize_iem_payload(anchor),
+        "governed_revision_updates": governed_updates,
+    }
+
+
+def _h0f_governed_revision_updates(ctx: Any) -> list[dict[str, Any]]:
+    updates = getattr(ctx, "expectation_updates", None) or []
+    governed: list[dict[str, Any]] = []
+    for update in updates:
+        item = normalize_iem_payload(update)
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("rule") or "") != "governed_revision":
+            continue
+        if bool(item.get("local_update_blocked")):
+            continue
+        governed.append(item)
+    return governed
+
+
+def _runtime_memory_recall(loop: Any, key: str) -> Any:
+    memory = getattr(loop, "_memory", None) if loop is not None else None
+    if memory is not None and hasattr(memory, "recall"):
+        try:
+            return memory.recall(key)
+        except Exception:  # noqa: BLE001
+            logger.debug("benchmark_mode: memory.recall(%s) failed", key, exc_info=True)
+    agent = getattr(loop, "_agent", None) if loop is not None else None
+    if agent is not None and hasattr(agent, "recall"):
+        try:
+            return agent.recall(key)
+        except Exception:  # noqa: BLE001
+            logger.debug("benchmark_mode: agent.recall(%s) failed", key, exc_info=True)
+    return None
+
+
+def _runtime_agent_id(loop: Any) -> str:
+    agent = getattr(loop, "_agent", None) if loop is not None else None
+    return str(
+        getattr(agent, "agent_id", None)
+        or getattr(agent, "_agent_id", None)
+        or ""
     )
 
 

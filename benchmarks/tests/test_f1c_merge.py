@@ -41,6 +41,11 @@ def _write_raw_ticks(
     h0_iem_update_log_present: list[bool] | None = None,
     h0_relation_action_bias_present: list[bool] | None = None,
     h0_normative_local_update_blocked: list[bool] | None = None,
+    h0_relation_training_sample_present: list[bool] | None = None,
+    h0_relation_negative_fast_learning_present: list[bool] | None = None,
+    h0_relation_repair_sample_present: list[bool] | None = None,
+    h0_relation_repair_slow_recovery_present: list[bool] | None = None,
+    h0_relation_history_preserved_present: list[bool] | None = None,
     h0_survival_surprise_present: list[bool] | None = None,
     h0_economic_surprise_present: list[bool] | None = None,
     h0_reputation_surprise_present: list[bool] | None = None,
@@ -114,6 +119,26 @@ def _write_raw_ticks(
             row["h0_normative_local_update_blocked"] = (
                 "true" if h0_normative_local_update_blocked[idx] else "false"
             )
+        if h0_relation_training_sample_present is not None:
+            row["h0_relation_training_sample_present"] = (
+                "true" if h0_relation_training_sample_present[idx] else "false"
+            )
+        if h0_relation_negative_fast_learning_present is not None:
+            row["h0_relation_negative_fast_learning_present"] = (
+                "true" if h0_relation_negative_fast_learning_present[idx] else "false"
+            )
+        if h0_relation_repair_sample_present is not None:
+            row["h0_relation_repair_sample_present"] = (
+                "true" if h0_relation_repair_sample_present[idx] else "false"
+            )
+        if h0_relation_repair_slow_recovery_present is not None:
+            row["h0_relation_repair_slow_recovery_present"] = (
+                "true" if h0_relation_repair_slow_recovery_present[idx] else "false"
+            )
+        if h0_relation_history_preserved_present is not None:
+            row["h0_relation_history_preserved_present"] = (
+                "true" if h0_relation_history_preserved_present[idx] else "false"
+            )
         if h0_survival_surprise_present is not None:
             row["h0_survival_surprise_present"] = (
                 "true" if h0_survival_surprise_present[idx] else "false"
@@ -166,6 +191,40 @@ def _write_raw_ticks(
         w.writerows(rows)
 
 
+def _task_spec(
+    task_id: str,
+    *,
+    category_id: str = "G03",
+    metrics_targeted: list[str] | None = None,
+    backend_seed_failures: int = 0,
+    variant: str = "happy_path",
+) -> TaskSpec:
+    return TaskSpec(
+        id=task_id,
+        category_id=category_id,
+        category_name=category_id,
+        targets_disease="G",
+        variant=variant,
+        description="d",
+        briefing="b",
+        telos="t",
+        success_criteria=[{"kind": "regex", "body": "x"}],
+        max_ticks=10,
+        metrics_targeted=metrics_targeted or ["g3_relation_aware_decision_ratio"],
+        backend_seed_failures=backend_seed_failures,
+    )
+
+
+def _manifest_for_tasks(tmp_path: Path, tasks: list[TaskSpec]) -> Manifest:
+    return Manifest(
+        schema_version="2.0",
+        allowed_metric_codes=sorted({metric for task in tasks for metric in task.metrics_targeted}),
+        taxonomy=[{"id": task.category_id} for task in tasks],
+        tasks=tasks,
+        path=tmp_path / "manifest.yaml",
+    )
+
+
 def _json_hash(payload: object) -> str:
     blob = json.dumps(
         payload,
@@ -182,6 +241,9 @@ def _write_h0e_evidence(
     *,
     authority: str = "governance_council",
     corrupt_proof_hash: bool = False,
+    embed_replay: bool = False,
+    write_sidecar: bool = True,
+    write_runtime_audit: bool = False,
 ) -> None:
     task_dir = run_dir / "tasks" / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -224,22 +286,70 @@ def _write_h0e_evidence(
         "iem_anchor_hash": _json_hash(anchor),
     }
     proof["proof_hash"] = "sha256:bad" if corrupt_proof_hash else _json_hash(proof)
-    (task_dir / "h0e_iem_anchor_replay.json").write_text(
-        json.dumps({"state": state, "update_log": update_log, "anchor": anchor}),
-        encoding="utf-8",
-    )
+    replay = {"state": state, "update_log": update_log, "anchor": anchor}
+    if write_sidecar:
+        (task_dir / "h0e_iem_anchor_replay.json").write_text(
+            json.dumps(replay),
+            encoding="utf-8",
+        )
+    evidence = {
+        "revision_id": "rev-1",
+        "proposal_id": "prop-1",
+        "approved": True,
+        "status": "approved",
+        "authority": authority,
+        "source": "backend_governance_read_model",
+        "rule_id": "h0e_constitutional_guard",
+        "old_value": "review_required_v1",
+        "new_value": "review_required_v2",
+        "iem_anchor": anchor,
+        "iem_anchor_hash": _json_hash(anchor),
+        "decision_proof": proof,
+    }
+    if embed_replay:
+        evidence["iem_anchor_replay"] = replay
+    if write_runtime_audit:
+        runtime_update_log = [
+            {
+                "target": "normative_state",
+                "parameter_name": "h0e_constitutional_guard",
+                "old_value": "review_required_v1",
+                "new_value": "review_required_v2",
+                "rule": "governed_revision",
+                "reason_event": "rev-1",
+                "update_params": {"status": "approved"},
+                "local_update_blocked": False,
+            }
+        ]
+        runtime_state = {
+            **state,
+            "identity_id": "did:civ:devnet:worker",
+            "normative_state": {"h0e_constitutional_guard": "review_required_v2"},
+            "last_tick_id": "tick-1",
+        }
+        runtime_anchor = {
+            "schema_version": "iem:v1",
+            "version_id": "iem:v1:runtime",
+            "state_hash": _json_hash(runtime_state),
+            "latest_update_log_hash": _json_hash(runtime_update_log),
+            "storage_hint": "civitasos://identity/did:civ:devnet:worker/iem/latest",
+        }
+        (task_dir / "h0f_runtime_iem_audit.json").write_text(
+            json.dumps({
+                "source": "runtime_identity_iem_audit_log",
+                "task_id": task_id,
+                "tick_id": "tick-1",
+                "identity_id": "did:civ:devnet:worker",
+                "did_anchor": "did:civ:devnet:worker",
+                "identity_iem_state": runtime_state,
+                "expectation_update_log": runtime_update_log,
+                "identity_iem_anchor": runtime_anchor,
+                "governed_revision_updates": runtime_update_log,
+            }),
+            encoding="utf-8",
+        )
     (task_dir / "h0e_governed_revision.json").write_text(
-        json.dumps({
-            "revision_id": "rev-1",
-            "proposal_id": "prop-1",
-            "approved": True,
-            "status": "approved",
-            "authority": authority,
-            "source": "backend_governance_read_model",
-            "iem_anchor": anchor,
-            "iem_anchor_hash": _json_hash(anchor),
-            "decision_proof": proof,
-        }),
+        json.dumps(evidence),
         encoding="utf-8",
     )
 
@@ -328,6 +438,10 @@ def _write_g2_final_metrics(path: Path, rows: list[dict[str, str]]) -> None:
         "h0_iem_update_log_ratio",
         "h0_relation_action_bias_ratio",
         "h0_normative_guard_ratio",
+        "h0_relation_training_sample_ratio",
+        "h0_relation_negative_fast_learning_ratio",
+        "h0_relation_repair_slow_recovery_ratio",
+        "h0_relation_history_preserved_ratio",
         "h0_identity_domain_trace_ratio",
         "h0_reputation_surprise_ratio",
         "h0_task_surprise_ratio",
@@ -977,6 +1091,278 @@ def test_h0_gate_passes_on_failure_memory_trace(tmp_path: Path) -> None:
     assert gate["raw_h0_normative_guard_ratio"] == 1.0
 
 
+def test_h0_gate_passes_on_relation_training_invariants(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G03_relation_training_01",
+        ["task_execute", "task_execute"],
+        relation_pair_failure_events_present=[True, True],
+        h0_expectation_trace_present=[True, True],
+        h0_relation_surprise_present=[True, True],
+        h0_iem_update_log_present=[True, True],
+        h0_relation_action_bias_present=[True, True],
+        h0_normative_local_update_blocked=[True, True],
+        h0_relation_training_sample_present=[True, True],
+        h0_relation_negative_fast_learning_present=[True, False],
+        h0_relation_repair_sample_present=[True, False],
+        h0_relation_repair_slow_recovery_present=[True, False],
+        h0_relation_history_preserved_present=[True, True],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G03",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_relation_action_bias_ratio": "1.0",
+                "h0_normative_guard_ratio": "1.0",
+                "h0_relation_training_sample_ratio": "1.0",
+                "h0_relation_negative_fast_learning_ratio": "1.0",
+                "h0_relation_repair_slow_recovery_ratio": "0.5",
+                "h0_relation_history_preserved_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+        min_relation_training_sample_ratio=1.0,
+        min_relation_negative_fast_learning_ratio=1.0,
+        min_relation_repair_slow_recovery_ratio=1.0,
+        min_relation_history_preserved_ratio=1.0,
+    )
+
+    assert gate["passed"] is True
+    assert gate["raw_h0_relation_training_sample_ratio"] == 1.0
+    assert gate["raw_h0_relation_negative_fast_learning_ratio"] == 1.0
+    assert gate["raw_h0_relation_negative_fast_learning_tick_ratio"] == 0.5
+    assert gate["raw_h0_relation_negative_fast_learning_task_count"] == 1
+    assert gate["raw_h0_relation_repair_sample_rows"] == 1
+    assert gate["raw_h0_relation_repair_slow_recovery_ratio"] == 1.0
+    assert gate["raw_h0_relation_history_preserved_ratio"] == 1.0
+
+
+def test_h0_gate_excludes_generic_relation_context_from_negative_training_denominator(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G03_seeded_failure_01",
+        ["task_execute"],
+        relation_pair_failure_events_present=[True],
+        h0_expectation_trace_present=[True],
+        h0_relation_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_relation_action_bias_present=[True],
+        h0_normative_local_update_blocked=[True],
+        h0_relation_training_sample_present=[True],
+        h0_relation_negative_fast_learning_present=[True],
+        h0_relation_history_preserved_present=[True],
+    )
+    _write_raw_ticks(
+        alpha,
+        "G02_context_only_01",
+        ["task_execute"],
+        relation_pair_failure_events_present=[True],
+        h0_expectation_trace_present=[True],
+        h0_relation_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_relation_action_bias_present=[True],
+        h0_normative_local_update_blocked=[True],
+        h0_relation_training_sample_present=[True],
+        h0_relation_negative_fast_learning_present=[False],
+        h0_relation_history_preserved_present=[True],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G03",
+                "targets_disease": "G",
+                "task_count": "2",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_relation_action_bias_ratio": "1.0",
+                "h0_normative_guard_ratio": "1.0",
+                "h0_relation_training_sample_ratio": "1.0",
+                "h0_relation_negative_fast_learning_ratio": "1.0",
+                "h0_relation_history_preserved_ratio": "1.0",
+            },
+        ],
+    )
+    manifest = _manifest_for_tasks(
+        tmp_path,
+        [
+            _task_spec("G03_seeded_failure_01", backend_seed_failures=1),
+            _task_spec("G02_context_only_01", category_id="G02"),
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        manifest=manifest,
+        require_active=True,
+        min_relation_training_sample_ratio=1.0,
+        min_relation_negative_fast_learning_ratio=1.0,
+        min_relation_history_preserved_ratio=1.0,
+    )
+
+    assert gate["passed"] is True
+    assert gate["raw_h0_relation_failure_task_count"] == 2
+    assert gate["raw_h0_relation_negative_fast_learning_required_task_count"] == 1
+    assert gate["raw_h0_relation_negative_fast_learning_task_count"] == 1
+    assert gate["raw_h0_relation_negative_fast_learning_ratio"] == 1.0
+    assert gate["raw_h0_relation_negative_fast_learning_tick_ratio"] == 0.5
+
+
+def test_h0_gate_fails_when_relation_training_negative_learning_missing(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G03_relation_training_01",
+        ["task_execute", "task_execute"],
+        relation_pair_failure_events_present=[True, True],
+        h0_expectation_trace_present=[True, True],
+        h0_relation_surprise_present=[True, True],
+        h0_iem_update_log_present=[True, True],
+        h0_relation_action_bias_present=[True, True],
+        h0_normative_local_update_blocked=[True, True],
+        h0_relation_training_sample_present=[True, True],
+        h0_relation_negative_fast_learning_present=[False, False],
+        h0_relation_history_preserved_present=[True, True],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G03",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_relation_action_bias_ratio": "1.0",
+                "h0_normative_guard_ratio": "1.0",
+                "h0_relation_training_sample_ratio": "1.0",
+                "h0_relation_negative_fast_learning_ratio": "0.0",
+                "h0_relation_history_preserved_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        manifest=_manifest_for_tasks(
+            tmp_path,
+            [
+                _task_spec(
+                    "G03_relation_training_01",
+                    metrics_targeted=[
+                        "g3_relation_aware_decision_ratio",
+                        "h0_relation_negative_fast_learning_ratio",
+                    ],
+                ),
+            ],
+        ),
+        require_active=True,
+        min_relation_training_sample_ratio=1.0,
+        min_relation_negative_fast_learning_ratio=1.0,
+        min_relation_history_preserved_ratio=1.0,
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_h0_relation_negative_fast_learning_ratio"] == 0.0
+    assert gate["raw_h0_relation_negative_fast_learning_tick_ratio"] == 0.0
+    assert any(
+        "raw_h0_relation_negative_fast_learning_ratio" in reason
+        for reason in gate["failure_reasons"]
+    )
+
+
+def test_h0_gate_fails_when_relation_repair_required_without_samples(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G03_relation_training_01",
+        ["task_execute"],
+        relation_pair_failure_events_present=[True],
+        h0_expectation_trace_present=[True],
+        h0_relation_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_relation_action_bias_present=[True],
+        h0_normative_local_update_blocked=[True],
+        h0_relation_training_sample_present=[True],
+        h0_relation_negative_fast_learning_present=[True],
+        h0_relation_history_preserved_present=[True],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G03",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_relation_action_bias_ratio": "1.0",
+                "h0_normative_guard_ratio": "1.0",
+                "h0_relation_training_sample_ratio": "1.0",
+                "h0_relation_negative_fast_learning_ratio": "1.0",
+                "h0_relation_history_preserved_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+        min_relation_training_sample_ratio=1.0,
+        min_relation_negative_fast_learning_ratio=1.0,
+        min_relation_repair_slow_recovery_ratio=1.0,
+        min_relation_history_preserved_ratio=1.0,
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_h0_relation_repair_sample_rows"] == 0
+    assert any(
+        "no repair sample rows" in reason
+        for reason in gate["failure_reasons"]
+    )
+
+
 def test_h0_gate_passes_on_identity_evolution_trace_without_relation_failure(tmp_path: Path) -> None:
     alpha = tmp_path / "baseline-alpha-20260101T000000Z"
     _write_raw_ticks(
@@ -1133,11 +1519,433 @@ def test_h0_gate_passes_on_governed_revision_trace(tmp_path: Path) -> None:
     assert gate["passed"] is True
     assert gate["raw_h0_governed_revision_event_rows"] == 2
     assert gate["raw_h0_governed_revision_rows"] == 2
+    assert gate["raw_h0_governed_revision_tick_ratio"] == 1.0
+    assert gate["raw_h0_governed_revision_expected_task_count"] == 1
+    assert gate["raw_h0_governed_revision_task_count"] == 1
     assert gate["raw_h0_governed_revision_ratio"] == 1.0
     assert gate["raw_h0_decision_proof_hash_valid_ratio"] == 1.0
     assert gate["raw_h0_iem_anchor_replay_valid_ratio"] == 1.0
+    assert gate["raw_h0_iem_anchor_replay_embedded_ratio"] == 0.0
+    assert gate["raw_h0_iem_anchor_replay_legacy_sidecar_files"] == 1
+    assert gate["raw_h0_iem_anchor_replay_legacy_sidecar_ratio"] == 1.0
     assert gate["raw_h0_vote_refs_present_ratio"] == 1.0
     assert gate["raw_h0_governed_revision_authority_kinds"] == ["governance"]
+
+
+def test_h0_gate_uses_governed_revision_task_coverage(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        ["wait", "task_execute"],
+        h0_expectation_trace_present=[True, True],
+        h0_survival_surprise_present=[True, True],
+        h0_economic_surprise_present=[True, True],
+        h0_iem_update_log_present=[True, True],
+        h0_identity_action_bias_present=[True, True],
+        h0_predicted_update_present=[True, True],
+        h0_governed_revision_present=[False, True],
+    )
+    _write_h0e_evidence(alpha, "G08_h0e_governed_revision_01")
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G08",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_governed_revision_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+        min_governed_revision_ratio=1.0,
+    )
+
+    assert gate["passed"] is True
+    assert gate["raw_h0_governed_revision_event_rows"] == 2
+    assert gate["raw_h0_governed_revision_rows"] == 1
+    assert gate["raw_h0_governed_revision_tick_ratio"] == 0.5
+    assert gate["raw_h0_governed_revision_expected_task_count"] == 1
+    assert gate["raw_h0_governed_revision_task_count"] == 1
+    assert gate["raw_h0_governed_revision_ratio"] == 1.0
+
+
+def test_h0_gate_excludes_unapproved_local_revision_from_governed_denominator(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        ["task_execute"],
+        h0_expectation_trace_present=[True],
+        h0_survival_surprise_present=[True],
+        h0_economic_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_identity_action_bias_present=[True],
+        h0_predicted_update_present=[True],
+        h0_governed_revision_present=[True],
+    )
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_unapproved_local_revision_01",
+        ["task_execute"],
+        h0_expectation_trace_present=[True],
+        h0_survival_surprise_present=[True],
+        h0_economic_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_identity_action_bias_present=[True],
+        h0_predicted_update_present=[True],
+        h0_governed_revision_present=[False],
+    )
+    _write_h0e_evidence(alpha, "G08_h0e_governed_revision_01")
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G08",
+                "targets_disease": "G",
+                "task_count": "2",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_governed_revision_ratio": "1.0",
+            },
+        ],
+    )
+    manifest = _manifest_for_tasks(
+        tmp_path,
+        [
+            _task_spec(
+                "G08_h0e_governed_revision_01",
+                category_id="G08",
+                metrics_targeted=["h0_governed_revision_ratio"],
+            ),
+            _task_spec(
+                "G08_h0e_unapproved_local_revision_01",
+                category_id="G08",
+                metrics_targeted=["h0_governed_revision_ratio"],
+                variant="adversarial",
+            ),
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        manifest=manifest,
+        require_active=True,
+    )
+
+    assert gate["passed"] is True
+    assert gate["raw_h0_governed_revision_event_rows"] == 1
+    assert gate["raw_h0_governed_revision_rows"] == 1
+    assert gate["raw_h0_governed_revision_expected_task_count"] == 1
+    assert gate["raw_h0_governed_revision_task_count"] == 1
+    assert gate["raw_h0_governed_revision_ratio"] == 1.0
+
+
+def test_h0_gate_passes_on_backend_embedded_replay_without_sidecar(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        ["task_execute"],
+        h0_expectation_trace_present=[True],
+        h0_survival_surprise_present=[True],
+        h0_economic_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_identity_action_bias_present=[True],
+        h0_predicted_update_present=[True],
+        h0_governed_revision_present=[True],
+    )
+    _write_h0e_evidence(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        embed_replay=True,
+        write_sidecar=False,
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G08",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_governed_revision_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+        min_iem_anchor_replay_embedded_ratio=1.0,
+    )
+
+    assert gate["passed"] is True
+    assert gate["raw_h0_iem_anchor_replay_valid_ratio"] == 1.0
+    assert gate["raw_h0_iem_anchor_replay_embedded_files"] == 1
+    assert gate["raw_h0_iem_anchor_replay_embedded_ratio"] == 1.0
+    assert gate["raw_h0_iem_anchor_replay_legacy_sidecar_files"] == 0
+    assert gate["raw_h0_iem_anchor_replay_legacy_sidecar_ratio"] == 0.0
+
+
+def test_h0_gate_fails_when_legacy_sidecar_fallback_is_disallowed(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        ["task_execute"],
+        h0_expectation_trace_present=[True],
+        h0_survival_surprise_present=[True],
+        h0_economic_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_identity_action_bias_present=[True],
+        h0_predicted_update_present=[True],
+        h0_governed_revision_present=[True],
+    )
+    _write_h0e_evidence(alpha, "G08_h0e_governed_revision_01")
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G08",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_governed_revision_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+        max_iem_anchor_replay_legacy_sidecar_ratio=0.0,
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_h0_iem_anchor_replay_valid_ratio"] == 1.0
+    assert gate["raw_h0_iem_anchor_replay_legacy_sidecar_ratio"] == 1.0
+    assert any(
+        "raw_h0_iem_anchor_replay_legacy_sidecar_ratio" in reason
+        for reason in gate["failure_reasons"]
+    )
+
+
+def test_h0_gate_passes_on_runtime_iem_audit_artifact(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        ["task_execute"],
+        h0_expectation_trace_present=[True],
+        h0_survival_surprise_present=[True],
+        h0_economic_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_identity_action_bias_present=[True],
+        h0_predicted_update_present=[True],
+        h0_governed_revision_present=[True],
+    )
+    _write_h0e_evidence(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        embed_replay=True,
+        write_runtime_audit=True,
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G08",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_governed_revision_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+        min_iem_anchor_replay_embedded_ratio=1.0,
+        min_runtime_iem_audit_ratio=1.0,
+    )
+
+    assert gate["passed"] is True
+    assert gate["raw_h0_runtime_iem_audit_valid_files"] == 1
+    assert gate["raw_h0_runtime_iem_audit_valid_ratio"] == 1.0
+
+
+def test_h0_gate_fails_when_runtime_iem_audit_required_but_missing(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        ["task_execute"],
+        h0_expectation_trace_present=[True],
+        h0_survival_surprise_present=[True],
+        h0_economic_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_identity_action_bias_present=[True],
+        h0_predicted_update_present=[True],
+        h0_governed_revision_present=[True],
+    )
+    _write_h0e_evidence(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        embed_replay=True,
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G08",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_governed_revision_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+        min_iem_anchor_replay_embedded_ratio=1.0,
+        min_runtime_iem_audit_ratio=1.0,
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_h0_runtime_iem_audit_valid_ratio"] == 0.0
+    assert any(
+        "raw_h0_runtime_iem_audit_valid_ratio" in reason
+        for reason in gate["failure_reasons"]
+    )
+
+
+def test_h0_gate_fails_when_embedded_replay_required_but_only_sidecar_exists(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "G08_h0e_governed_revision_01",
+        ["task_execute"],
+        h0_expectation_trace_present=[True],
+        h0_survival_surprise_present=[True],
+        h0_economic_surprise_present=[True],
+        h0_iem_update_log_present=[True],
+        h0_identity_action_bias_present=[True],
+        h0_predicted_update_present=[True],
+        h0_governed_revision_present=[True],
+    )
+    _write_h0e_evidence(alpha, "G08_h0e_governed_revision_01")
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "G08",
+                "targets_disease": "G",
+                "task_count": "1",
+                "g2_mode_choice_observable_ratio": "1.0",
+                "h0_expectation_trace_ratio": "1.0",
+                "h0_iem_update_log_ratio": "1.0",
+                "h0_identity_domain_trace_ratio": "1.0",
+                "h0_identity_action_bias_ratio": "1.0",
+                "h0_predicted_update_ratio": "1.0",
+                "h0_governed_revision_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h0_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        require_active=True,
+        min_iem_anchor_replay_embedded_ratio=1.0,
+    )
+
+    assert gate["passed"] is False
+    assert gate["raw_h0_iem_anchor_replay_valid_ratio"] == 1.0
+    assert gate["raw_h0_iem_anchor_replay_embedded_ratio"] == 0.0
+    assert any(
+        "raw_h0_iem_anchor_replay_embedded_ratio" in reason
+        for reason in gate["failure_reasons"]
+    )
 
 
 def test_h0_gate_fails_on_invalid_governed_revision_proof_hash(tmp_path: Path) -> None:

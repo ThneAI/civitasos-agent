@@ -47,6 +47,7 @@ class TaskSpec:
     verifier_tools: list[str] = field(default_factory=list)
     fixtures: list[str] = field(default_factory=list)
     backend_seed_failures: int = 0
+    backend_seed_repairs: int = 0
 
 
 @dataclass
@@ -197,4 +198,5 @@ def _parse_task(
         verifier_tools=list(raw.get("verifier_tools", [])),
         fixtures=list(fixtures),
         backend_seed_failures=max(0, int(raw.get("backend_seed_failures", 0) or 0)),
+        backend_seed_repairs=max(0, int(raw.get("backend_seed_repairs", 0) or 0)),
     )

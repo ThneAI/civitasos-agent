@@ -26,6 +26,7 @@ class FakeRunner:
         self._rules = FakeRuleEngine()
         self._on_reflect_fn = None
         self._on_perceive_fn = None
+        self._on_remember_fn = None
         self._loop = None  # set later to simulate post-start
         self._agent = None
         self._name = "test-agent"
@@ -40,6 +41,10 @@ class FakeRunner:
 
     def on_perceive(self, fn):
         self._on_perceive_fn = fn
+        return fn
+
+    def on_remember(self, fn):
+        self._on_remember_fn = fn
         return fn
 
     def tool(
@@ -115,6 +120,36 @@ class FakeBackendAgent:
         }
 
 
+class FakeRepairBackendAgent(FakeBackendAgent):
+    def pool_get_task(self, task_id: str) -> dict[str, Any]:
+        if task_id == "repair_1":
+            self.pool_get_task_calls.append(task_id)
+            return {
+                "task": {
+                    "id": task_id,
+                    "requester": "did:civ:devnet:requester",
+                    "allowed_agents": ["did:civ:devnet:worker"],
+                    "claimed_by": "did:civ:devnet:worker",
+                    "status": "Delivered",
+                    "delivered_at": "2026-05-01T10:02:00Z",
+                    "output": {
+                        "status": "relation_repair_completed",
+                        "repaired_failure_task_ids": ["failed_1"],
+                    },
+                }
+            }
+        payload = super().pool_get_task(task_id)
+        payload["task"]["input"] = {
+            "description": "relation repair accountability",
+            "relation_repair_context": {
+                "repair_task_ids": ["repair_1"],
+                "repaired_failure_task_ids": ["failed_1"],
+                "source": "backend_relation_repair_seed_task",
+            },
+        }
+        return payload
+
+
 class FakeRevisionBackendAgent(FakeBackendAgent):
     def pool_get_task(self, task_id: str) -> dict[str, Any]:
         payload = super().pool_get_task(task_id)
@@ -130,6 +165,11 @@ class FakeRevisionBackendAgent(FakeBackendAgent):
             "old_value": "review_required_v1",
             "new_value": "review_required_v2",
             "iem_anchor_hash": "sha256:anchor",
+            "iem_anchor_replay": {
+                "anchor": {"state_hash": "sha256:state", "latest_update_log_hash": "sha256:log"},
+                "state": {"identity_id": "benchmark:G08_h0e_governed_revision_01"},
+                "update_log": [{"rule": "governed_revision"}],
+            },
             "decision_proof": {"proof_hash": "sha256:proof"},
         }
         return payload
@@ -274,6 +314,46 @@ def test_prefer_target_rule_prefers_backend_g3_relation_context(monkeypatch):
     ]
 
 
+def test_prefer_target_rule_injects_backend_relation_repair_context(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G03_happy_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    backend_agent = FakeRepairBackendAgent()
+    runner._agent = backend_agent
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+
+    briefing = {"pool_tasks": [{"task_id": "backend_42"}]}
+    decision = rule_fn(briefing, {})
+
+    assert decision is not None
+    assert decision.action == "pool_claim"
+    relation = briefing["relation_context"]
+    assert relation["source"] == "backend_read_model"
+    assert relation["recent_repairs"] == [
+        {
+            "task_id": "repair_1",
+            "relation_id": "rel:did:civ:devnet:requester:did:civ:devnet:worker",
+            "r2r_relation_id": "rel:did:civ:devnet:requester:did:civ:devnet:worker",
+            "repaired_failure_task_ids": ["failed_1"],
+            "source": "backend_relation_repair_seed_task",
+            "status": "Delivered",
+            "repaired_at": "2026-05-01T10:02:00Z",
+            "delivered_at": "2026-05-01T10:02:00Z",
+            "completed_at": "",
+        }
+    ]
+    assert (
+        "failure:rel:did:civ:devnet:requester:did:civ:devnet:worker:"
+        "failed_1:2026-04-30T23_59_00Z"
+    ) in relation["memory_refs"]
+    assert (
+        "repair:rel:did:civ:devnet:requester:did:civ:devnet:worker:"
+        "repair_1:2026-05-01T10_02_00Z"
+    ) in relation["memory_refs"]
+    assert backend_agent.pool_get_task_calls == ["backend_42", "repair_1"]
+
+
 def test_pre_expect_hook_injects_g3_relation_context_before_decide(monkeypatch):
     monkeypatch.setenv("BENCHMARK_TASK_ID", "G01_happy_01")
     monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
@@ -413,7 +493,63 @@ def test_pre_expect_hook_prefers_backend_h0e_governed_revision(monkeypatch):
     assert briefing["h0e_expectation_context"]["source"] == "backend_governance_read_model"
     assert revision["revision_id"] == "rev-backend-1"
     assert revision["proposal_id"] == "prop-backend-1"
+    assert revision["iem_anchor_replay"]["update_log"][0]["rule"] == "governed_revision"
     assert revision["decision_proof"]["proof_hash"] == "sha256:proof"
+
+
+def test_h0f_runtime_iem_audit_payload_uses_persisted_memory() -> None:
+    state = {
+        "schema_version": "iem:v1",
+        "identity_id": "did:civ:devnet:worker",
+        "expectation_vector": {},
+        "precision_vector": {},
+        "desire_vector": {},
+        "domain_weight_matrix": {},
+        "drift_parameters": {},
+        "relation_expectation_matrix": {},
+    }
+    update_log = [
+        {
+            "target": "normative_state",
+            "parameter_name": "h0e_constitutional_guard",
+            "rule": "governed_revision",
+            "reason_event": "rev-1",
+            "local_update_blocked": False,
+        }
+    ]
+    from civitasos_runtime.iem_anchor import build_iem_anchor, normalize_iem_payload
+
+    anchor = normalize_iem_payload(
+        build_iem_anchor(
+            identity_id="did:civ:devnet:worker",
+            state=state,
+            update_log=update_log,
+        )
+    )
+    memory = SimpleNamespace(
+        recall=lambda key: {
+            "identity_iem_state": state,
+            "expectation_update_log": update_log,
+            "identity_iem_anchor": anchor,
+        }.get(key)
+    )
+    loop = SimpleNamespace(
+        _memory=memory,
+        _agent=SimpleNamespace(_agent_id="did:civ:devnet:worker"),
+    )
+    ctx = SimpleNamespace(tick_id="tick-1", expectation_updates=update_log)
+
+    payload = benchmark_mode._h0f_runtime_iem_audit_payload(
+        ctx,
+        loop=loop,
+        task_id="G08_h0e_governed_revision_01",
+    )
+
+    assert payload is not None
+    assert payload["source"] == "runtime_identity_iem_audit_log"
+    assert payload["did_anchor"] == "did:civ:devnet:worker"
+    assert payload["identity_iem_anchor"] == anchor
+    assert payload["governed_revision_updates"][0]["reason_event"] == "rev-1"
 
 
 def test_backend_g3_time_window_is_comparable_across_backend_tasks(monkeypatch):

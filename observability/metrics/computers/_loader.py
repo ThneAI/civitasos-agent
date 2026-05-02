@@ -28,6 +28,8 @@ class TickRow:
     llm_mode_request: str = ""
     llm_mode_selected: bool = False
     decision_reasoning: str = ""
+    served_intent_layer: str = ""
+    wait_references_telos: bool = False
     relation_context_id: str = ""
     relation_memory_refs: str = ""
     time_window_id: str = ""
@@ -49,6 +51,11 @@ class TickRow:
     h0_iem_update_log_present: bool = False
     h0_relation_action_bias_present: bool = False
     h0_normative_local_update_blocked: bool = False
+    h0_relation_training_sample_present: bool = False
+    h0_relation_negative_fast_learning_present: bool = False
+    h0_relation_repair_sample_present: bool = False
+    h0_relation_repair_slow_recovery_present: bool = False
+    h0_relation_history_preserved_present: bool = False
     h0_identity_action_bias_present: bool = False
     h0_constitutional_surprise_present: bool = False
     h0_normative_governance_trigger_present: bool = False
@@ -96,12 +103,14 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 phase_reached=raw.get("phase_reached", ""),
                 decision_action=raw.get("decision_action", ""),
                 decision_reasoning=raw.get("decision_reasoning", ""),
+                served_intent_layer=raw.get("served_intent_layer", ""),
                 eval_success=_optbool(raw.get("eval_success")),
                 eval_duration_ms=_optint(raw.get("eval_duration_ms")),
                 aspect_gap=_float(raw.get("aspect_gap"), 0.0),
                 is_wait=_optbool(raw.get("is_wait")) or False,
                 lessons_count=_int(raw.get("lessons_count"), 0),
                 mode=raw.get("mode", ""),
+                wait_references_telos=_optbool(raw.get("wait_references_telos")) or False,
                 subjective_lifecycle_stage=raw.get("subjective_lifecycle_stage", ""),
                 subjective_recommended_mode=raw.get("subjective_recommended_mode", ""),
                 llm_mode_request=raw.get("llm_mode_request", ""),
@@ -127,6 +136,11 @@ def _iter_rows(path: Path) -> Iterable[TickRow]:
                 h0_iem_update_log_present=_optbool(raw.get("h0_iem_update_log_present")) or False,
                 h0_relation_action_bias_present=_optbool(raw.get("h0_relation_action_bias_present")) or False,
                 h0_normative_local_update_blocked=_optbool(raw.get("h0_normative_local_update_blocked")) or False,
+                h0_relation_training_sample_present=_optbool(raw.get("h0_relation_training_sample_present")) or False,
+                h0_relation_negative_fast_learning_present=_optbool(raw.get("h0_relation_negative_fast_learning_present")) or False,
+                h0_relation_repair_sample_present=_optbool(raw.get("h0_relation_repair_sample_present")) or False,
+                h0_relation_repair_slow_recovery_present=_optbool(raw.get("h0_relation_repair_slow_recovery_present")) or False,
+                h0_relation_history_preserved_present=_optbool(raw.get("h0_relation_history_preserved_present")) or False,
                 h0_identity_action_bias_present=_optbool(raw.get("h0_identity_action_bias_present")) or False,
                 h0_constitutional_surprise_present=_optbool(raw.get("h0_constitutional_surprise_present")) or False,
                 h0_normative_governance_trigger_present=_optbool(raw.get("h0_normative_governance_trigger_present")) or False,

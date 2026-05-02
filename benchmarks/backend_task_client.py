@@ -65,6 +65,15 @@ class _SDKLike(Protocol):
 
     def pool_fail(self, task_id: str) -> dict[str, Any]: ...
 
+    def task_execute(
+        self,
+        task_id: str,
+        output: Any,
+        success: bool = True,
+        metadata: dict[str, str] | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
 
 @dataclass(frozen=True)
 class BackendTaskState:
@@ -170,6 +179,7 @@ class BackendTaskClient:
         new_value: Any,
         authority: str = "governance_council",
         iem_anchor: dict[str, Any] | None = None,
+        iem_anchor_replay: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a backend governance-store Normative revision proposal."""
         payload: dict[str, Any] = {
@@ -182,6 +192,8 @@ class BackendTaskClient:
         }
         if iem_anchor:
             payload["iem_anchor"] = iem_anchor
+        if iem_anchor_replay:
+            payload["iem_anchor_replay"] = iem_anchor_replay
         create = getattr(self._sdk, "create_normative_revision", None)
         if callable(create):
             return _expect_mapping(create(**payload), "create_normative_revision")
@@ -368,6 +380,61 @@ class BackendTaskClient:
         )
         if not self.force_fail(task_id):
             raise RuntimeError(f"failed to mark seed task {task_id!r} as failed")
+        return task_id
+
+    def seed_repair(
+        self,
+        *,
+        briefing: str,
+        target_agent_id: str,
+        repaired_failure_ids: list[str] | None = None,
+        capability: str | None = None,
+        reward: int = 1,
+        deadline_secs: int = 60,
+        claim_timeout_s: float = 40.0,
+        claim_retry_interval_s: float = 1.0,
+    ) -> str:
+        """Create a real claimed+delivered task as relation-pair repair memory."""
+        task_id = self.create(
+            briefing=briefing,
+            target_agent_id=target_agent_id,
+            capability=capability,
+            reward=reward,
+            deadline_secs=deadline_secs,
+            extra_input={
+                "relation_repair_seed": {
+                    "repaired_failure_task_ids": list(repaired_failure_ids or []),
+                    "source": "backend_relation_repair_seed_task",
+                }
+            },
+        )
+        self._claim_seed_task(
+            task_id,
+            target_agent_id=target_agent_id,
+            timeout_s=claim_timeout_s,
+            retry_interval_s=claim_retry_interval_s,
+        )
+        task_execute = getattr(self._sdk, "task_execute", None)
+        if not callable(task_execute):
+            raise RuntimeError("SDK does not support task_execute; cannot seed repair")
+        output = {
+            "status": "relation_repair_completed",
+            "repaired_failure_task_ids": list(repaired_failure_ids or []),
+            "source": "backend_relation_repair_seed_task",
+        }
+        metadata = {"benchmark_seed": "relation_repair"}
+        try:
+            task_execute(
+                task_id=task_id,
+                output=output,
+                success=True,
+                metadata=metadata,
+                agent_id=target_agent_id,
+            )
+        except TypeError:
+            task_execute(task_id=task_id, output=output, success=True)
+        if not self.confirm(task_id):
+            logger.warning("repair seed task %s delivered but requester confirm failed", task_id)
         return task_id
 
     def _claim_seed_task(

@@ -75,6 +75,22 @@ def test_writes_one_row_per_tick(tmp_path: Path) -> None:
     assert header.split(",") == list(RAW_COLUMNS)
 
 
+def test_h1_served_intent_snapshot_used(tmp_path: Path) -> None:
+    csv_path = tmp_path / "T.csv"
+    with RawWriter(csv_path) as writer:
+        adapter = CollectorAdapter(
+            run_id="R", agent_id="A", loop=_make_loop(), writer=writer,
+        )
+        adapter.bind_task("A01_happy_01")
+        ctx = _make_ctx(action="wait")
+        ctx.decision.served_intent_layer = "long"
+        adapter(ctx)
+
+    row = next(csv.DictReader(csv_path.open(encoding="utf-8")))
+    assert row["served_intent_layer"] == "long"
+    assert row["wait_references_telos"] == "true"
+
+
 def test_skip_when_unbound(tmp_path: Path) -> None:
     csv_path = tmp_path / "T.csv"
     with RawWriter(csv_path) as writer:
@@ -225,6 +241,13 @@ def test_relation_time_snapshot_used(tmp_path: Path) -> None:
 def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
     csv_path = tmp_path / "T.csv"
     ctx = _make_ctx()
+    ctx.briefing["h0_relation_training_invariants"] = {
+        "training_sample_present": True,
+        "negative_fast_learning_present": True,
+        "repair_sample_present": True,
+        "repair_slow_recovery_present": True,
+        "history_preserved_present": True,
+    }
     ctx.expectations = {"survival": {"expected_value": 0.9}}
     ctx.surprise = {
         "survival": {"surprise_score": -0.2},
@@ -293,6 +316,11 @@ def test_h0_expectation_snapshot_used(tmp_path: Path) -> None:
     assert row["h0_iem_update_log_present"] == "true"
     assert row["h0_relation_action_bias_present"] == "true"
     assert row["h0_normative_local_update_blocked"] == "true"
+    assert row["h0_relation_training_sample_present"] == "true"
+    assert row["h0_relation_negative_fast_learning_present"] == "true"
+    assert row["h0_relation_repair_sample_present"] == "true"
+    assert row["h0_relation_repair_slow_recovery_present"] == "true"
+    assert row["h0_relation_history_preserved_present"] == "true"
     assert row["h0_identity_action_bias_present"] == "true"
     assert row["h0_constitutional_surprise_present"] == "false"
     assert row["h0_normative_governance_trigger_present"] == "true"

@@ -66,6 +66,10 @@ _DEFAULT_H0_RELATION_FAILURE_TRACE_FLOOR = 1.0
 _DEFAULT_H0_IEM_UPDATE_LOG_FLOOR = 1.0
 _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR = 1.0
 _DEFAULT_H0_NORMATIVE_GUARD_FLOOR = 1.0
+_DEFAULT_H0_RELATION_TRAINING_SAMPLE_FLOOR = 0.0
+_DEFAULT_H0_RELATION_NEGATIVE_FAST_LEARNING_FLOOR = 0.0
+_DEFAULT_H0_RELATION_REPAIR_SLOW_RECOVERY_FLOOR = 0.0
+_DEFAULT_H0_RELATION_HISTORY_PRESERVED_FLOOR = 0.0
 _DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR = 1.0
 _DEFAULT_H0_EXPANDED_DOMAIN_TRACE_FLOOR = 1.0
 _DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR = 1.0
@@ -75,8 +79,13 @@ _DEFAULT_H0_NORMATIVE_GOVERNANCE_TRIGGER_FLOOR = 1.0
 _DEFAULT_H0_GOVERNED_REVISION_FLOOR = 1.0
 _DEFAULT_H0_DECISION_PROOF_HASH_FLOOR = 1.0
 _DEFAULT_H0_IEM_ANCHOR_REPLAY_FLOOR = 1.0
+_DEFAULT_H0_IEM_ANCHOR_REPLAY_EMBEDDED_FLOOR = 0.0
+_DEFAULT_H0_IEM_ANCHOR_REPLAY_LEGACY_SIDECAR_MAX = 1.0
+_DEFAULT_H0_RUNTIME_IEM_AUDIT_FLOOR = 0.0
 _DEFAULT_H0_VOTE_REFS_FLOOR = 1.0
 _DEFAULT_H0_AUTHORITY_KIND_FLOOR = 1
+_H0_RELATION_NEGATIVE_FAST_LEARNING_METRIC = "h0_relation_negative_fast_learning_ratio"
+_H0_GOVERNED_REVISION_METRIC = "h0_governed_revision_ratio"
 _DIM_WEIGHTS = {
     "completion_rate": 0.30,
     "latency_score": 0.20,
@@ -927,13 +936,27 @@ def _evaluate_g3_gate(
 def _evaluate_h0_raw_relation_expectation(
     runs: list[tuple[str, Path]],
     *,
+    manifest: Manifest | None = None,
     max_examples: int = 20,
 ) -> dict[str, object]:
+    relation_negative_training_task_ids = _h0_relation_negative_training_task_ids(manifest)
+    governed_revision_expected_task_ids = _h0_governed_revision_expected_task_ids(manifest)
     failure_rows = 0
     trace_rows = 0
     update_rows = 0
     action_bias_rows = 0
     normative_guard_rows = 0
+    relation_training_sample_rows = 0
+    relation_negative_fast_learning_rows = 0
+    relation_repair_sample_rows = 0
+    relation_repair_slow_recovery_rows = 0
+    relation_history_preserved_rows = 0
+    relation_failure_task_keys: set[str] = set()
+    relation_negative_fast_learning_required_task_keys: set[str] = set()
+    relation_negative_fast_learning_observed_task_keys: set[str] = set()
+    relation_negative_fast_learning_task_keys: set[str] = set()
+    relation_repair_sample_task_keys: set[str] = set()
+    relation_repair_slow_recovery_task_keys: set[str] = set()
     h0_trace_rows = 0
     identity_rows = 0
     identity_domain_rows = 0
@@ -949,6 +972,8 @@ def _evaluate_h0_raw_relation_expectation(
     governance_trigger_rows = 0
     governed_revision_event_rows = 0
     governed_revision_rows = 0
+    governed_revision_expected_task_keys: set[str] = set()
+    governed_revision_task_keys: set[str] = set()
     missing_sample: list[dict[str, str]] = []
     identity_missing_sample: list[dict[str, str]] = []
     governance_missing_sample: list[dict[str, str]] = []
@@ -970,6 +995,17 @@ def _evaluate_h0_raw_relation_expectation(
                     update_log = _raw_bool(row.get("h0_iem_update_log_present"))
                     action_bias = _raw_bool(row.get("h0_relation_action_bias_present"))
                     normative_guard = _raw_bool(row.get("h0_normative_local_update_blocked"))
+                    relation_training_sample = _raw_bool(row.get("h0_relation_training_sample_present"))
+                    relation_negative_fast_learning = _raw_bool(
+                        row.get("h0_relation_negative_fast_learning_present")
+                    )
+                    relation_repair_sample = _raw_bool(row.get("h0_relation_repair_sample_present"))
+                    relation_repair_slow_recovery = _raw_bool(
+                        row.get("h0_relation_repair_slow_recovery_present")
+                    )
+                    relation_history_preserved = _raw_bool(
+                        row.get("h0_relation_history_preserved_present")
+                    )
                     identity_action_bias = _raw_bool(row.get("h0_identity_action_bias_present"))
                     constitutional_surprise = _raw_bool(row.get("h0_constitutional_surprise_present"))
                     governance_trigger = _raw_bool(row.get("h0_normative_governance_trigger_present"))
@@ -987,6 +1023,11 @@ def _evaluate_h0_raw_relation_expectation(
                         update_log,
                         action_bias,
                         normative_guard,
+                        relation_training_sample,
+                        relation_negative_fast_learning,
+                        relation_repair_sample,
+                        relation_repair_slow_recovery,
+                        relation_history_preserved,
                         identity_action_bias,
                         constitutional_surprise,
                         governance_trigger,
@@ -1060,13 +1101,30 @@ def _evaluate_h0_raw_relation_expectation(
                                 "h0_normative_local_update_blocked": str(row.get("h0_normative_local_update_blocked") or ""),
                             })
 
-                    if "h0e" in csv_path.stem.lower() or governed_revision:
+                    governed_revision_expected = _h0_governed_revision_expected_task(
+                        csv_path.stem,
+                        governed_revision_expected_task_ids,
+                    )
+                    if governed_revision_expected or governed_revision:
+                        task_key = f"{alias}:{csv_path.stem}"
                         governed_revision_event_rows += 1
+                        if governed_revision_expected:
+                            governed_revision_expected_task_keys.add(task_key)
                         if governed_revision:
                             governed_revision_rows += 1
+                            if governed_revision_expected:
+                                governed_revision_task_keys.add(task_key)
 
                     if not _raw_bool(row.get("relation_pair_failure_events_present")):
                         continue
+                    task_key = f"{alias}:{csv_path.stem}"
+                    relation_failure_task_keys.add(task_key)
+                    negative_training_required = _h0_relation_negative_training_task(
+                        csv_path.stem,
+                        relation_negative_training_task_ids,
+                    )
+                    if negative_training_required:
+                        relation_negative_fast_learning_required_task_keys.add(task_key)
                     failure_rows += 1
                     if relation_surprise:
                         trace_rows += 1
@@ -1076,11 +1134,27 @@ def _evaluate_h0_raw_relation_expectation(
                         action_bias_rows += 1
                     if normative_guard:
                         normative_guard_rows += 1
+                    if relation_training_sample:
+                        relation_training_sample_rows += 1
+                    if relation_negative_fast_learning:
+                        relation_negative_fast_learning_rows += 1
+                        relation_negative_fast_learning_observed_task_keys.add(task_key)
+                        if negative_training_required:
+                            relation_negative_fast_learning_task_keys.add(task_key)
+                    if relation_repair_sample:
+                        relation_repair_sample_rows += 1
+                        relation_repair_sample_task_keys.add(task_key)
+                    if relation_repair_slow_recovery:
+                        relation_repair_slow_recovery_rows += 1
+                        relation_repair_slow_recovery_task_keys.add(task_key)
+                    if relation_history_preserved:
+                        relation_history_preserved_rows += 1
                     if (
                         relation_surprise
                         and update_log
                         and action_bias
                         and normative_guard
+                        and relation_training_sample
                     ):
                         continue
                     if len(missing_sample) < max_examples:
@@ -1093,10 +1167,27 @@ def _evaluate_h0_raw_relation_expectation(
                             "h0_iem_update_log_present": str(row.get("h0_iem_update_log_present") or ""),
                             "h0_relation_action_bias_present": str(row.get("h0_relation_action_bias_present") or ""),
                             "h0_normative_local_update_blocked": str(row.get("h0_normative_local_update_blocked") or ""),
+                            "h0_relation_training_sample_present": str(row.get("h0_relation_training_sample_present") or ""),
+                            "h0_relation_negative_fast_learning_present": str(row.get("h0_relation_negative_fast_learning_present") or ""),
+                            "h0_relation_history_preserved_present": str(row.get("h0_relation_history_preserved_present") or ""),
                         })
 
     def _relation_ratio(num: int) -> float | None:
         return (num / failure_rows) if failure_rows else None
+
+    def _relation_training_ratio(num: int) -> float | None:
+        return (num / relation_training_sample_rows) if relation_training_sample_rows else None
+
+    def _relation_negative_training_task_ratio(num: int) -> float | None:
+        denom = len(relation_negative_fast_learning_required_task_keys)
+        return (num / denom) if denom else None
+
+    def _relation_repair_task_ratio(num: int) -> float | None:
+        denom = len(relation_repair_sample_task_keys)
+        return (num / denom) if denom else None
+
+    def _relation_repair_ratio(num: int) -> float | None:
+        return (num / relation_repair_sample_rows) if relation_repair_sample_rows else None
 
     def _identity_ratio(num: int) -> float | None:
         return (num / identity_rows) if identity_rows else None
@@ -1110,6 +1201,10 @@ def _evaluate_h0_raw_relation_expectation(
     def _governed_revision_ratio(num: int) -> float | None:
         return (num / governed_revision_event_rows) if governed_revision_event_rows else None
 
+    def _governed_revision_task_ratio(num: int) -> float | None:
+        denom = len(governed_revision_expected_task_keys)
+        return (num / denom) if denom else None
+
     return {
         "raw_h0_trace_rows": h0_trace_rows,
         "raw_h0_relation_failure_event_rows": failure_rows,
@@ -1121,6 +1216,39 @@ def _evaluate_h0_raw_relation_expectation(
         "raw_h0_relation_action_bias_ratio": _relation_ratio(action_bias_rows),
         "raw_h0_normative_guard_rows": normative_guard_rows,
         "raw_h0_normative_guard_ratio": _relation_ratio(normative_guard_rows),
+        "raw_h0_relation_training_sample_rows": relation_training_sample_rows,
+        "raw_h0_relation_training_sample_ratio": _relation_ratio(relation_training_sample_rows),
+        "raw_h0_relation_negative_fast_learning_rows": relation_negative_fast_learning_rows,
+        "raw_h0_relation_negative_fast_learning_tick_ratio": _relation_ratio(
+            relation_negative_fast_learning_rows
+        ),
+        "raw_h0_relation_failure_task_count": len(relation_failure_task_keys),
+        "raw_h0_relation_negative_fast_learning_required_task_count": len(
+            relation_negative_fast_learning_required_task_keys
+        ),
+        "raw_h0_relation_negative_fast_learning_observed_task_count": len(
+            relation_negative_fast_learning_observed_task_keys
+        ),
+        "raw_h0_relation_negative_fast_learning_task_count": len(
+            relation_negative_fast_learning_task_keys
+        ),
+        "raw_h0_relation_negative_fast_learning_ratio": _relation_negative_training_task_ratio(
+            len(relation_negative_fast_learning_task_keys)
+        ),
+        "raw_h0_relation_repair_sample_rows": relation_repair_sample_rows,
+        "raw_h0_relation_repair_slow_recovery_rows": relation_repair_slow_recovery_rows,
+        "raw_h0_relation_repair_slow_recovery_tick_ratio": _relation_repair_ratio(
+            relation_repair_slow_recovery_rows
+        ),
+        "raw_h0_relation_repair_sample_task_count": len(relation_repair_sample_task_keys),
+        "raw_h0_relation_repair_slow_recovery_task_count": len(
+            relation_repair_slow_recovery_task_keys
+        ),
+        "raw_h0_relation_repair_slow_recovery_ratio": _relation_repair_task_ratio(
+            len(relation_repair_slow_recovery_task_keys)
+        ),
+        "raw_h0_relation_history_preserved_rows": relation_history_preserved_rows,
+        "raw_h0_relation_history_preserved_ratio": _relation_training_ratio(relation_history_preserved_rows),
         "raw_h0_identity_event_rows": identity_rows,
         "raw_h0_identity_domain_trace_rows": identity_domain_rows,
         "raw_h0_identity_domain_trace_ratio": _identity_ratio(identity_domain_rows),
@@ -1141,7 +1269,14 @@ def _evaluate_h0_raw_relation_expectation(
         "raw_h0_normative_governance_trigger_ratio": _constitutional_ratio(governance_trigger_rows),
         "raw_h0_governed_revision_event_rows": governed_revision_event_rows,
         "raw_h0_governed_revision_rows": governed_revision_rows,
-        "raw_h0_governed_revision_ratio": _governed_revision_ratio(governed_revision_rows),
+        "raw_h0_governed_revision_tick_ratio": _governed_revision_ratio(governed_revision_rows),
+        "raw_h0_governed_revision_expected_task_count": len(
+            governed_revision_expected_task_keys
+        ),
+        "raw_h0_governed_revision_task_count": len(governed_revision_task_keys),
+        "raw_h0_governed_revision_ratio": _governed_revision_task_ratio(
+            len(governed_revision_task_keys)
+        ),
         "raw_h0_missing_trace_sample": missing_sample,
         "raw_h0_identity_missing_trace_sample": identity_missing_sample,
         "raw_h0_governance_missing_trigger_sample": governance_missing_sample,
@@ -1156,6 +1291,9 @@ def _evaluate_h0_governed_revision_evidence(
     evidence_files = 0
     proof_hash_valid = 0
     anchor_replay_valid = 0
+    anchor_replay_embedded = 0
+    anchor_replay_legacy_sidecar = 0
+    runtime_iem_audit_valid = 0
     vote_refs_present = 0
     authority_kinds: set[str] = set()
     failure_sample: list[dict[str, str]] = []
@@ -1224,8 +1362,13 @@ def _evaluate_h0_governed_revision_evidence(
             kind = _governed_authority_kind(authority)
             if kind:
                 authority_kinds.add(kind)
-            if _iem_anchor_replay_valid(evidence, evidence_path):
+            replay_source = _iem_anchor_replay_valid_source(evidence, evidence_path)
+            if replay_source:
                 anchor_replay_valid += 1
+                if replay_source == "embedded":
+                    anchor_replay_embedded += 1
+                elif replay_source == "legacy_sidecar":
+                    anchor_replay_legacy_sidecar += 1
             else:
                 _append_h0e_evidence_failure(
                     failure_sample,
@@ -1233,6 +1376,16 @@ def _evaluate_h0_governed_revision_evidence(
                     alias=alias,
                     evidence_path=evidence_path,
                     reason="iem_anchor replay/hash check failed",
+                )
+            if _runtime_iem_audit_valid(evidence, evidence_path):
+                runtime_iem_audit_valid += 1
+            else:
+                _append_h0e_evidence_failure(
+                    failure_sample,
+                    max_examples=max_examples,
+                    alias=alias,
+                    evidence_path=evidence_path,
+                    reason="runtime Identity IEM audit replay check failed",
                 )
 
     def _evidence_ratio(num: int) -> float | None:
@@ -1244,6 +1397,12 @@ def _evaluate_h0_governed_revision_evidence(
         "raw_h0_decision_proof_hash_valid_ratio": _evidence_ratio(proof_hash_valid),
         "raw_h0_iem_anchor_replay_valid_files": anchor_replay_valid,
         "raw_h0_iem_anchor_replay_valid_ratio": _evidence_ratio(anchor_replay_valid),
+        "raw_h0_iem_anchor_replay_embedded_files": anchor_replay_embedded,
+        "raw_h0_iem_anchor_replay_embedded_ratio": _evidence_ratio(anchor_replay_embedded),
+        "raw_h0_iem_anchor_replay_legacy_sidecar_files": anchor_replay_legacy_sidecar,
+        "raw_h0_iem_anchor_replay_legacy_sidecar_ratio": _evidence_ratio(anchor_replay_legacy_sidecar),
+        "raw_h0_runtime_iem_audit_valid_files": runtime_iem_audit_valid,
+        "raw_h0_runtime_iem_audit_valid_ratio": _evidence_ratio(runtime_iem_audit_valid),
         "raw_h0_vote_refs_present_files": vote_refs_present,
         "raw_h0_vote_refs_present_ratio": _evidence_ratio(vote_refs_present),
         "raw_h0_governed_revision_authority_kinds": sorted(authority_kinds),
@@ -1285,28 +1444,105 @@ def _decision_proof_hashes_valid(proof: dict[str, object]) -> bool:
 
 
 def _iem_anchor_replay_valid(evidence: dict[str, object], evidence_path: Path) -> bool:
+    return _iem_anchor_replay_valid_source(evidence, evidence_path) is not None
+
+
+def _iem_anchor_replay_valid_source(
+    evidence: dict[str, object],
+    evidence_path: Path,
+) -> str | None:
     anchor = evidence.get("iem_anchor")
     if not isinstance(anchor, dict):
-        return False
+        return None
     anchor_hash = _hash_json_payload(anchor)
     if evidence.get("iem_anchor_hash") != anchor_hash:
-        return False
+        return None
     proof = evidence.get("decision_proof")
     if isinstance(proof, dict) and proof.get("iem_anchor_hash") != anchor_hash:
-        return False
+        return None
+    replay, source = _h0e_iem_anchor_replay_source(evidence, evidence_path)
+    if not isinstance(replay, dict):
+        return None
+    if replay.get("anchor") != anchor:
+        return None
+    if anchor.get("state_hash") != _hash_json_payload(replay.get("state")):
+        return None
+    if anchor.get("latest_update_log_hash") != _hash_json_payload(replay.get("update_log")):
+        return None
+    return source
+
+
+def _h0e_iem_anchor_replay_source(
+    evidence: dict[str, object],
+    evidence_path: Path,
+) -> tuple[dict[str, object] | None, str | None]:
+    embedded = evidence.get("iem_anchor_replay")
+    if isinstance(embedded, dict):
+        return embedded, "embedded"
     replay_path = evidence_path.with_name("h0e_iem_anchor_replay.json")
     try:
         replay = json.loads(replay_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None, None
+    if isinstance(replay, dict):
+        return replay, "legacy_sidecar"
+    return None, None
+
+
+def _runtime_iem_audit_valid(evidence: dict[str, object], evidence_path: Path) -> bool:
+    audit_path = evidence_path.with_name("h0f_runtime_iem_audit.json")
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return False
-    if not isinstance(replay, dict):
+    if not isinstance(audit, dict):
         return False
-    if replay.get("anchor") != anchor:
+    if audit.get("source") != "runtime_identity_iem_audit_log":
         return False
-    if anchor.get("state_hash") != _hash_json_payload(replay.get("state")):
+    state = audit.get("identity_iem_state")
+    update_log = audit.get("expectation_update_log")
+    anchor = audit.get("identity_iem_anchor")
+    if not isinstance(state, dict) or not isinstance(update_log, list) or not isinstance(anchor, dict):
         return False
-    if anchor.get("latest_update_log_hash") != _hash_json_payload(replay.get("update_log")):
+    identity_id = str(audit.get("identity_id") or state.get("identity_id") or "")
+    did_anchor = str(audit.get("did_anchor") or "")
+    if not identity_id or not did_anchor or state.get("identity_id") != identity_id:
         return False
+    if anchor.get("state_hash") != _hash_json_payload(state):
+        return False
+    if anchor.get("latest_update_log_hash") != _hash_json_payload(update_log):
+        return False
+    if anchor.get("storage_hint") != f"civitasos://identity/{identity_id}/iem/latest":
+        return False
+    governed_updates = audit.get("governed_revision_updates")
+    if not isinstance(governed_updates, list) or not governed_updates:
+        return False
+    return any(_runtime_governed_update_matches_evidence(update, evidence) for update in governed_updates)
+
+
+def _runtime_governed_update_matches_evidence(
+    update: object,
+    evidence: dict[str, object],
+) -> bool:
+    if not isinstance(update, dict):
+        return False
+    if update.get("target") != "normative_state":
+        return False
+    if update.get("rule") != "governed_revision":
+        return False
+    if update.get("local_update_blocked"):
+        return False
+    rule_id = str(evidence.get("rule_id") or "")
+    if rule_id and update.get("parameter_name") != rule_id:
+        return False
+    revision_id = str(evidence.get("revision_id") or "")
+    if revision_id and update.get("reason_event") != revision_id:
+        return False
+    update_params = update.get("update_params")
+    if isinstance(update_params, dict):
+        status = str(update_params.get("status") or "").lower()
+        if status and status not in {"approved", "ratified", "enacted"}:
+            return False
     return True
 
 
@@ -1319,6 +1555,53 @@ def _governed_authority_kind(authority: str) -> str | None:
     if "governance" in value or "council" in value:
         return "governance"
     return None
+
+
+def _h0_relation_negative_training_task_ids(manifest: Manifest | None) -> set[str] | None:
+    if manifest is None:
+        return None
+    return {
+        task.id
+        for task in manifest.tasks
+        if task.backend_seed_failures > 0
+        or _H0_RELATION_NEGATIVE_FAST_LEARNING_METRIC in task.metrics_targeted
+    }
+
+
+def _h0_relation_negative_training_task(
+    task_id: str,
+    relation_negative_training_task_ids: set[str] | None,
+) -> bool:
+    if relation_negative_training_task_ids is None:
+        return True
+    return task_id in relation_negative_training_task_ids
+
+
+def _h0_unapproved_local_revision_task(task_id: str) -> bool:
+    value = task_id.lower()
+    return "h0e" in value and "unapproved" in value and "local_revision" in value
+
+
+def _h0_governed_revision_expected_task_ids(manifest: Manifest | None) -> set[str] | None:
+    if manifest is None:
+        return None
+    return {
+        task.id
+        for task in manifest.tasks
+        if _H0_GOVERNED_REVISION_METRIC in task.metrics_targeted
+        and not _h0_unapproved_local_revision_task(task.id)
+    }
+
+
+def _h0_governed_revision_expected_task(
+    task_id: str,
+    governed_revision_expected_task_ids: set[str] | None,
+) -> bool:
+    if _h0_unapproved_local_revision_task(task_id):
+        return False
+    if governed_revision_expected_task_ids is None:
+        return "h0e" in task_id.lower()
+    return task_id in governed_revision_expected_task_ids
 
 
 def _hash_json_payload(payload: object) -> str:
@@ -1339,6 +1622,10 @@ def _h0_final_metric_counts(rows: list[dict[str, str]]) -> dict[str, object]:
         "h0_iem_update_log_ratio",
         "h0_relation_action_bias_ratio",
         "h0_normative_guard_ratio",
+        "h0_relation_training_sample_ratio",
+        "h0_relation_negative_fast_learning_ratio",
+        "h0_relation_repair_slow_recovery_ratio",
+        "h0_relation_history_preserved_ratio",
         "h0_identity_domain_trace_ratio",
         "h0_reputation_surprise_ratio",
         "h0_task_surprise_ratio",
@@ -1370,11 +1657,16 @@ def _evaluate_h0_gate(
     *,
     final_metrics_csv: Path,
     runs: list[tuple[str, Path]] | None = None,
+    manifest: Manifest | None = None,
     require_active: bool = False,
     min_relation_failure_trace_ratio: float = _DEFAULT_H0_RELATION_FAILURE_TRACE_FLOOR,
     min_iem_update_log_ratio: float = _DEFAULT_H0_IEM_UPDATE_LOG_FLOOR,
     min_relation_action_bias_ratio: float = _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR,
     min_normative_guard_ratio: float = _DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
+    min_relation_training_sample_ratio: float = _DEFAULT_H0_RELATION_TRAINING_SAMPLE_FLOOR,
+    min_relation_negative_fast_learning_ratio: float = _DEFAULT_H0_RELATION_NEGATIVE_FAST_LEARNING_FLOOR,
+    min_relation_repair_slow_recovery_ratio: float = _DEFAULT_H0_RELATION_REPAIR_SLOW_RECOVERY_FLOOR,
+    min_relation_history_preserved_ratio: float = _DEFAULT_H0_RELATION_HISTORY_PRESERVED_FLOOR,
     min_identity_domain_trace_ratio: float = _DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR,
     min_expanded_domain_trace_ratio: float = _DEFAULT_H0_EXPANDED_DOMAIN_TRACE_FLOOR,
     min_identity_action_bias_ratio: float = _DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR,
@@ -1384,6 +1676,9 @@ def _evaluate_h0_gate(
     min_governed_revision_ratio: float = _DEFAULT_H0_GOVERNED_REVISION_FLOOR,
     min_decision_proof_hash_ratio: float = _DEFAULT_H0_DECISION_PROOF_HASH_FLOOR,
     min_iem_anchor_replay_ratio: float = _DEFAULT_H0_IEM_ANCHOR_REPLAY_FLOOR,
+    min_iem_anchor_replay_embedded_ratio: float = _DEFAULT_H0_IEM_ANCHOR_REPLAY_EMBEDDED_FLOOR,
+    max_iem_anchor_replay_legacy_sidecar_ratio: float = _DEFAULT_H0_IEM_ANCHOR_REPLAY_LEGACY_SIDECAR_MAX,
+    min_runtime_iem_audit_ratio: float = _DEFAULT_H0_RUNTIME_IEM_AUDIT_FLOOR,
     min_vote_refs_ratio: float = _DEFAULT_H0_VOTE_REFS_FLOOR,
     min_authority_kind_count: int = _DEFAULT_H0_AUTHORITY_KIND_FLOOR,
 ) -> dict[str, object]:
@@ -1391,7 +1686,7 @@ def _evaluate_h0_gate(
     final_counts = _h0_final_metric_counts(rows)
     raw = (
         {
-            **_evaluate_h0_raw_relation_expectation(runs),
+            **_evaluate_h0_raw_relation_expectation(runs, manifest=manifest),
             **_evaluate_h0_governed_revision_evidence(runs),
         }
         if runs is not None
@@ -1406,6 +1701,23 @@ def _evaluate_h0_gate(
             "raw_h0_relation_action_bias_ratio": None,
             "raw_h0_normative_guard_rows": 0,
             "raw_h0_normative_guard_ratio": None,
+            "raw_h0_relation_training_sample_rows": 0,
+            "raw_h0_relation_training_sample_ratio": None,
+            "raw_h0_relation_negative_fast_learning_rows": 0,
+            "raw_h0_relation_negative_fast_learning_tick_ratio": None,
+            "raw_h0_relation_failure_task_count": 0,
+            "raw_h0_relation_negative_fast_learning_required_task_count": 0,
+            "raw_h0_relation_negative_fast_learning_observed_task_count": 0,
+            "raw_h0_relation_negative_fast_learning_task_count": 0,
+            "raw_h0_relation_negative_fast_learning_ratio": None,
+            "raw_h0_relation_repair_sample_rows": 0,
+            "raw_h0_relation_repair_slow_recovery_rows": 0,
+            "raw_h0_relation_repair_slow_recovery_tick_ratio": None,
+            "raw_h0_relation_repair_sample_task_count": 0,
+            "raw_h0_relation_repair_slow_recovery_task_count": 0,
+            "raw_h0_relation_repair_slow_recovery_ratio": None,
+            "raw_h0_relation_history_preserved_rows": 0,
+            "raw_h0_relation_history_preserved_ratio": None,
             "raw_h0_identity_event_rows": 0,
             "raw_h0_identity_domain_trace_rows": 0,
             "raw_h0_identity_domain_trace_ratio": None,
@@ -1426,12 +1738,21 @@ def _evaluate_h0_gate(
             "raw_h0_normative_governance_trigger_ratio": None,
             "raw_h0_governed_revision_event_rows": 0,
             "raw_h0_governed_revision_rows": 0,
+            "raw_h0_governed_revision_tick_ratio": None,
+            "raw_h0_governed_revision_expected_task_count": 0,
+            "raw_h0_governed_revision_task_count": 0,
             "raw_h0_governed_revision_ratio": None,
             "raw_h0_governed_revision_evidence_files": 0,
             "raw_h0_decision_proof_hash_valid_files": 0,
             "raw_h0_decision_proof_hash_valid_ratio": None,
             "raw_h0_iem_anchor_replay_valid_files": 0,
             "raw_h0_iem_anchor_replay_valid_ratio": None,
+            "raw_h0_iem_anchor_replay_embedded_files": 0,
+            "raw_h0_iem_anchor_replay_embedded_ratio": None,
+            "raw_h0_iem_anchor_replay_legacy_sidecar_files": 0,
+            "raw_h0_iem_anchor_replay_legacy_sidecar_ratio": None,
+            "raw_h0_runtime_iem_audit_valid_files": 0,
+            "raw_h0_runtime_iem_audit_valid_ratio": None,
             "raw_h0_vote_refs_present_files": 0,
             "raw_h0_vote_refs_present_ratio": None,
             "raw_h0_governed_revision_authority_kinds": [],
@@ -1481,6 +1802,13 @@ def _evaluate_h0_gate(
             ):
                 if int(final_counts[field]) == 0:
                     failure_reasons.append(f"H.0 active required but {field} is absent")
+            for field, floor in (
+                ("h0_relation_training_sample_ratio", min_relation_training_sample_ratio),
+                ("h0_relation_negative_fast_learning_ratio", min_relation_negative_fast_learning_ratio),
+                ("h0_relation_history_preserved_ratio", min_relation_history_preserved_ratio),
+            ):
+                if floor > 0 and int(final_counts[field]) == 0:
+                    failure_reasons.append(f"H.0 active required but {field} is absent")
         if raw_identity_rows > 0:
             for field in (
                 "h0_identity_domain_trace_ratio",
@@ -1527,13 +1855,48 @@ def _evaluate_h0_gate(
             raw["raw_h0_normative_guard_ratio"],
             min_normative_guard_ratio,
         ),
+        (
+            "raw_h0_relation_training_sample_ratio",
+            raw["raw_h0_relation_training_sample_ratio"],
+            min_relation_training_sample_ratio,
+        ),
+        (
+            "raw_h0_relation_negative_fast_learning_ratio",
+            raw["raw_h0_relation_negative_fast_learning_ratio"],
+            min_relation_negative_fast_learning_ratio,
+        ),
     ]
     if raw_failure_rows > 0:
         for field, value, floor in relation_checks:
+            if floor <= 0 and value is None:
+                continue
             if value is not None and value >= floor:
                 continue
             failure_reasons.append(
                 f"{field} {0.0 if value is None else value:.4f} < {floor:.4f}",
+            )
+        value = raw["raw_h0_relation_history_preserved_ratio"]
+        if min_relation_history_preserved_ratio > 0 and (
+            value is None or value < min_relation_history_preserved_ratio
+        ):
+            failure_reasons.append(
+                "raw_h0_relation_history_preserved_ratio "
+                f"{0.0 if value is None else value:.4f} < "
+                f"{min_relation_history_preserved_ratio:.4f}",
+            )
+    repair_sample_rows = int(raw["raw_h0_relation_repair_sample_rows"])
+    if min_relation_repair_slow_recovery_ratio > 0 and repair_sample_rows == 0:
+        failure_reasons.append(
+            "raw_h0_relation_repair_slow_recovery_ratio 0.0000 < "
+            f"{min_relation_repair_slow_recovery_ratio:.4f} (no repair sample rows)",
+        )
+    elif repair_sample_rows > 0:
+        value = raw["raw_h0_relation_repair_slow_recovery_ratio"]
+        if value is None or value < min_relation_repair_slow_recovery_ratio:
+            failure_reasons.append(
+                "raw_h0_relation_repair_slow_recovery_ratio "
+                f"{0.0 if value is None else value:.4f} < "
+                f"{min_relation_repair_slow_recovery_ratio:.4f}",
             )
     identity_checks = [
         (
@@ -1602,6 +1965,16 @@ def _evaluate_h0_gate(
                 min_iem_anchor_replay_ratio,
             ),
             (
+                "raw_h0_iem_anchor_replay_embedded_ratio",
+                raw["raw_h0_iem_anchor_replay_embedded_ratio"],
+                min_iem_anchor_replay_embedded_ratio,
+            ),
+            (
+                "raw_h0_runtime_iem_audit_valid_ratio",
+                raw["raw_h0_runtime_iem_audit_valid_ratio"],
+                min_runtime_iem_audit_ratio,
+            ),
+            (
                 "raw_h0_vote_refs_present_ratio",
                 raw["raw_h0_vote_refs_present_ratio"],
                 min_vote_refs_ratio,
@@ -1612,6 +1985,16 @@ def _evaluate_h0_gate(
                 continue
             failure_reasons.append(
                 f"{field} {0.0 if value is None else value:.4f} < {floor:.4f}",
+            )
+        legacy_sidecar_ratio = raw["raw_h0_iem_anchor_replay_legacy_sidecar_ratio"]
+        if (
+            legacy_sidecar_ratio is not None
+            and legacy_sidecar_ratio > max_iem_anchor_replay_legacy_sidecar_ratio
+        ):
+            failure_reasons.append(
+                "raw_h0_iem_anchor_replay_legacy_sidecar_ratio "
+                f"{legacy_sidecar_ratio:.4f} > "
+                f"{max_iem_anchor_replay_legacy_sidecar_ratio:.4f}",
             )
         authority_kind_count = int(raw["raw_h0_governed_revision_authority_kind_count"])
         if authority_kind_count < min_authority_kind_count:
@@ -1628,6 +2011,10 @@ def _evaluate_h0_gate(
         "min_iem_update_log_ratio": min_iem_update_log_ratio,
         "min_relation_action_bias_ratio": min_relation_action_bias_ratio,
         "min_normative_guard_ratio": min_normative_guard_ratio,
+        "min_relation_training_sample_ratio": min_relation_training_sample_ratio,
+        "min_relation_negative_fast_learning_ratio": min_relation_negative_fast_learning_ratio,
+        "min_relation_repair_slow_recovery_ratio": min_relation_repair_slow_recovery_ratio,
+        "min_relation_history_preserved_ratio": min_relation_history_preserved_ratio,
         "min_identity_domain_trace_ratio": min_identity_domain_trace_ratio,
         "min_expanded_domain_trace_ratio": min_expanded_domain_trace_ratio,
         "min_identity_action_bias_ratio": min_identity_action_bias_ratio,
@@ -1637,6 +2024,9 @@ def _evaluate_h0_gate(
         "min_governed_revision_ratio": min_governed_revision_ratio,
         "min_decision_proof_hash_ratio": min_decision_proof_hash_ratio,
         "min_iem_anchor_replay_ratio": min_iem_anchor_replay_ratio,
+        "min_iem_anchor_replay_embedded_ratio": min_iem_anchor_replay_embedded_ratio,
+        "max_iem_anchor_replay_legacy_sidecar_ratio": max_iem_anchor_replay_legacy_sidecar_ratio,
+        "min_runtime_iem_audit_ratio": min_runtime_iem_audit_ratio,
         "min_vote_refs_ratio": min_vote_refs_ratio,
         "min_authority_kind_count": min_authority_kind_count,
         **final_counts,
@@ -2123,6 +2513,10 @@ def merge(
     h0_min_iem_update_log_ratio: float = _DEFAULT_H0_IEM_UPDATE_LOG_FLOOR,
     h0_min_relation_action_bias_ratio: float = _DEFAULT_H0_RELATION_ACTION_BIAS_FLOOR,
     h0_min_normative_guard_ratio: float = _DEFAULT_H0_NORMATIVE_GUARD_FLOOR,
+    h0_min_relation_training_sample_ratio: float = _DEFAULT_H0_RELATION_TRAINING_SAMPLE_FLOOR,
+    h0_min_relation_negative_fast_learning_ratio: float = _DEFAULT_H0_RELATION_NEGATIVE_FAST_LEARNING_FLOOR,
+    h0_min_relation_repair_slow_recovery_ratio: float = _DEFAULT_H0_RELATION_REPAIR_SLOW_RECOVERY_FLOOR,
+    h0_min_relation_history_preserved_ratio: float = _DEFAULT_H0_RELATION_HISTORY_PRESERVED_FLOOR,
     h0_min_identity_domain_trace_ratio: float = _DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR,
     h0_min_expanded_domain_trace_ratio: float = _DEFAULT_H0_EXPANDED_DOMAIN_TRACE_FLOOR,
     h0_min_identity_action_bias_ratio: float = _DEFAULT_H0_IDENTITY_ACTION_BIAS_FLOOR,
@@ -2132,6 +2526,9 @@ def merge(
     h0_min_governed_revision_ratio: float = _DEFAULT_H0_GOVERNED_REVISION_FLOOR,
     h0_min_decision_proof_hash_ratio: float = _DEFAULT_H0_DECISION_PROOF_HASH_FLOOR,
     h0_min_iem_anchor_replay_ratio: float = _DEFAULT_H0_IEM_ANCHOR_REPLAY_FLOOR,
+    h0_min_iem_anchor_replay_embedded_ratio: float = _DEFAULT_H0_IEM_ANCHOR_REPLAY_EMBEDDED_FLOOR,
+    h0_max_iem_anchor_replay_legacy_sidecar_ratio: float = _DEFAULT_H0_IEM_ANCHOR_REPLAY_LEGACY_SIDECAR_MAX,
+    h0_min_runtime_iem_audit_ratio: float = _DEFAULT_H0_RUNTIME_IEM_AUDIT_FLOOR,
     h0_min_vote_refs_ratio: float = _DEFAULT_H0_VOTE_REFS_FLOOR,
     h0_min_authority_kind_count: int = _DEFAULT_H0_AUTHORITY_KIND_FLOOR,
 ) -> dict:
@@ -2203,11 +2600,16 @@ def merge(
     h0_gate = _evaluate_h0_gate(
         final_metrics_csv=out_csv,
         runs=runs,
+        manifest=manifest,
         require_active=require_h0_active,
         min_relation_failure_trace_ratio=h0_min_relation_failure_trace_ratio,
         min_iem_update_log_ratio=h0_min_iem_update_log_ratio,
         min_relation_action_bias_ratio=h0_min_relation_action_bias_ratio,
         min_normative_guard_ratio=h0_min_normative_guard_ratio,
+        min_relation_training_sample_ratio=h0_min_relation_training_sample_ratio,
+        min_relation_negative_fast_learning_ratio=h0_min_relation_negative_fast_learning_ratio,
+        min_relation_repair_slow_recovery_ratio=h0_min_relation_repair_slow_recovery_ratio,
+        min_relation_history_preserved_ratio=h0_min_relation_history_preserved_ratio,
         min_identity_domain_trace_ratio=h0_min_identity_domain_trace_ratio,
         min_expanded_domain_trace_ratio=h0_min_expanded_domain_trace_ratio,
         min_identity_action_bias_ratio=h0_min_identity_action_bias_ratio,
@@ -2217,6 +2619,9 @@ def merge(
         min_governed_revision_ratio=h0_min_governed_revision_ratio,
         min_decision_proof_hash_ratio=h0_min_decision_proof_hash_ratio,
         min_iem_anchor_replay_ratio=h0_min_iem_anchor_replay_ratio,
+        min_iem_anchor_replay_embedded_ratio=h0_min_iem_anchor_replay_embedded_ratio,
+        max_iem_anchor_replay_legacy_sidecar_ratio=h0_max_iem_anchor_replay_legacy_sidecar_ratio,
+        min_runtime_iem_audit_ratio=h0_min_runtime_iem_audit_ratio,
         min_vote_refs_ratio=h0_min_vote_refs_ratio,
         min_authority_kind_count=h0_min_authority_kind_count,
     )
@@ -2335,6 +2740,30 @@ def main() -> int:
         help="Require relation-pair failure rows to prove normative local update guard.",
     )
     p.add_argument(
+        "--h0-min-relation-training-sample-ratio",
+        type=float,
+        default=_DEFAULT_H0_RELATION_TRAINING_SAMPLE_FLOOR,
+        help="Require relation-pair failure rows to expose H0-G training samples.",
+    )
+    p.add_argument(
+        "--h0-min-relation-negative-fast-learning-ratio",
+        type=float,
+        default=_DEFAULT_H0_RELATION_NEGATIVE_FAST_LEARNING_FLOOR,
+        help="Require seeded/targeted relation-training tasks to prove negative fast-learning updates.",
+    )
+    p.add_argument(
+        "--h0-min-relation-repair-slow-recovery-ratio",
+        type=float,
+        default=_DEFAULT_H0_RELATION_REPAIR_SLOW_RECOVERY_FLOOR,
+        help="Require repair rows to prove bounded slow recovery.",
+    )
+    p.add_argument(
+        "--h0-min-relation-history-preserved-ratio",
+        type=float,
+        default=_DEFAULT_H0_RELATION_HISTORY_PRESERVED_FLOOR,
+        help="Require H0-G training samples to preserve failure/repair source refs.",
+    )
+    p.add_argument(
         "--h0-min-identity-domain-trace-ratio",
         type=float,
         default=_DEFAULT_H0_IDENTITY_DOMAIN_TRACE_FLOOR,
@@ -2389,6 +2818,24 @@ def main() -> int:
         help="Require H0-E governed revision evidence files to have replayable IEM anchors.",
     )
     p.add_argument(
+        "--h0-min-iem-anchor-replay-embedded-ratio",
+        type=float,
+        default=_DEFAULT_H0_IEM_ANCHOR_REPLAY_EMBEDDED_FLOOR,
+        help="Require H0-F governed revision evidence replay to come from embedded backend read-model evidence.",
+    )
+    p.add_argument(
+        "--h0-max-iem-anchor-replay-legacy-sidecar-ratio",
+        type=float,
+        default=_DEFAULT_H0_IEM_ANCHOR_REPLAY_LEGACY_SIDECAR_MAX,
+        help="Reject H0-F governed revision replay that falls back to legacy sidecar above this ratio.",
+    )
+    p.add_argument(
+        "--h0-min-runtime-iem-audit-ratio",
+        type=float,
+        default=_DEFAULT_H0_RUNTIME_IEM_AUDIT_FLOOR,
+        help="Require H0-F governed revision evidence to have a replayable Runtime Identity IEM audit artifact.",
+    )
+    p.add_argument(
         "--h0-min-vote-refs-ratio",
         type=float,
         default=_DEFAULT_H0_VOTE_REFS_FLOOR,
@@ -2424,6 +2871,10 @@ def main() -> int:
         h0_min_iem_update_log_ratio=args.h0_min_iem_update_log_ratio,
         h0_min_relation_action_bias_ratio=args.h0_min_relation_action_bias_ratio,
         h0_min_normative_guard_ratio=args.h0_min_normative_guard_ratio,
+        h0_min_relation_training_sample_ratio=args.h0_min_relation_training_sample_ratio,
+        h0_min_relation_negative_fast_learning_ratio=args.h0_min_relation_negative_fast_learning_ratio,
+        h0_min_relation_repair_slow_recovery_ratio=args.h0_min_relation_repair_slow_recovery_ratio,
+        h0_min_relation_history_preserved_ratio=args.h0_min_relation_history_preserved_ratio,
         h0_min_identity_domain_trace_ratio=args.h0_min_identity_domain_trace_ratio,
         h0_min_expanded_domain_trace_ratio=args.h0_min_expanded_domain_trace_ratio,
         h0_min_identity_action_bias_ratio=args.h0_min_identity_action_bias_ratio,
@@ -2433,6 +2884,9 @@ def main() -> int:
         h0_min_governed_revision_ratio=args.h0_min_governed_revision_ratio,
         h0_min_decision_proof_hash_ratio=args.h0_min_decision_proof_hash_ratio,
         h0_min_iem_anchor_replay_ratio=args.h0_min_iem_anchor_replay_ratio,
+        h0_min_iem_anchor_replay_embedded_ratio=args.h0_min_iem_anchor_replay_embedded_ratio,
+        h0_max_iem_anchor_replay_legacy_sidecar_ratio=args.h0_max_iem_anchor_replay_legacy_sidecar_ratio,
+        h0_min_runtime_iem_audit_ratio=args.h0_min_runtime_iem_audit_ratio,
         h0_min_vote_refs_ratio=args.h0_min_vote_refs_ratio,
         h0_min_authority_kind_count=args.h0_min_authority_kind_count,
     )
