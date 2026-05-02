@@ -45,6 +45,9 @@ from .aggregator import (
 from observability.metrics.computers.m2_verification_miss import (
     is_verification_observed,
 )
+from observability.metrics.computers.h1_telos_gate import (
+    verifier_before_delivery_observed,
+)
 from .task_loader import Manifest, load_manifest
 
 logger = logging.getLogger("f1c_merge")
@@ -84,6 +87,8 @@ _DEFAULT_H0_IEM_ANCHOR_REPLAY_LEGACY_SIDECAR_MAX = 1.0
 _DEFAULT_H0_RUNTIME_IEM_AUDIT_FLOOR = 0.0
 _DEFAULT_H0_VOTE_REFS_FLOOR = 1.0
 _DEFAULT_H0_AUTHORITY_KIND_FLOOR = 1
+_DEFAULT_H1_SERVED_INTENT_COVERAGE_FLOOR = 1.0
+_DEFAULT_H1_VERIFIER_BEFORE_DELIVERY_FLOOR = 1.0
 _H0_RELATION_NEGATIVE_FAST_LEARNING_METRIC = "h0_relation_negative_fast_learning_ratio"
 _H0_GOVERNED_REVISION_METRIC = "h0_governed_revision_ratio"
 _DIM_WEIGHTS = {
@@ -704,6 +709,215 @@ def _evaluate_g2_gate(
         "missing_rows_sample": missing_rows,
         "per_agent": sorted(per_agent, key=lambda row: str(row["agent_alias"])),
         "failure_reasons": failure_reasons,
+    }
+
+
+def _evaluate_h1_raw_served_intent(
+    runs: list[tuple[str, Path]],
+    *,
+    max_examples: int = 20,
+) -> dict[str, object]:
+    non_wait = 0
+    with_layer = 0
+    missing_sample: list[dict[str, str]] = []
+
+    for alias, run_dir in runs:
+        raw_dir = run_dir / "raw_ticks"
+        if not raw_dir.exists():
+            continue
+        for csv_path in sorted(raw_dir.glob("*.csv")):
+            with csv_path.open(newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    action = str(row.get("decision_action") or "").strip()
+                    is_wait = _raw_bool(row.get("is_wait")) or action == "wait"
+                    if is_wait:
+                        continue
+                    non_wait += 1
+                    layer = str(row.get("served_intent_layer") or "").strip()
+                    if layer:
+                        with_layer += 1
+                        continue
+                    if len(missing_sample) < max_examples:
+                        missing_sample.append({
+                            "agent_alias": alias,
+                            "task_id": csv_path.stem,
+                            "tick_seq": str(row.get("tick_seq") or ""),
+                            "decision_action": action,
+                        })
+
+    ratio = (with_layer / non_wait) if non_wait else None
+    return {
+        "raw_h1_non_wait_decision_rows": non_wait,
+        "raw_h1_served_intent_rows": with_layer,
+        "raw_h1_served_intent_layer_coverage_ratio": ratio,
+        "raw_h1_missing_served_intent_sample": missing_sample,
+    }
+
+
+def _evaluate_h1_raw_verifier_before_delivery(
+    runs: list[tuple[str, Path]],
+    manifest: Manifest | None,
+    *,
+    max_examples: int = 20,
+) -> dict[str, object]:
+    if manifest is None:
+        return {
+            "raw_h1_verifier_task_count": 0,
+            "raw_h1_verifier_before_delivery_count": 0,
+            "raw_h1_verifier_before_delivery_ratio": None,
+            "raw_h1_verifier_missing_sample": [],
+        }
+
+    total = 0
+    observed = 0
+    missing_sample: list[dict[str, str]] = []
+    verifier_tasks = [task for task in manifest.tasks if task.verifier_tools]
+    for alias, run_dir in runs:
+        for task in verifier_tasks:
+            seq = _action_seq(run_dir, task.id)
+            if not seq:
+                continue
+            total += 1
+            if verifier_before_delivery_observed(
+                verifier_tools=task.verifier_tools,
+                decision_actions=seq,
+            ):
+                observed += 1
+                continue
+            if len(missing_sample) < max_examples:
+                missing_sample.append({
+                    "agent_alias": alias,
+                    "task_id": task.id,
+                    "verifier_tools": ",".join(task.verifier_tools),
+                    "decision_actions": ",".join(seq[:8]),
+                })
+
+    ratio = (observed / total) if total else None
+    return {
+        "raw_h1_verifier_task_count": total,
+        "raw_h1_verifier_before_delivery_count": observed,
+        "raw_h1_verifier_before_delivery_ratio": ratio,
+        "raw_h1_verifier_missing_sample": missing_sample,
+    }
+
+
+def _evaluate_h1_gate(
+    *,
+    final_metrics_csv: Path,
+    runs: list[tuple[str, Path]] | None = None,
+    manifest: Manifest | None = None,
+    g3_gate: dict[str, object] | None = None,
+    h0_gate: dict[str, object] | None = None,
+    require_active: bool = False,
+    min_served_intent_layer_coverage_ratio: float = _DEFAULT_H1_SERVED_INTENT_COVERAGE_FLOOR,
+    min_verifier_before_delivery_ratio: float = _DEFAULT_H1_VERIFIER_BEFORE_DELIVERY_FLOOR,
+) -> dict[str, object]:
+    rows = _load_g2_final_metric_rows(final_metrics_csv)
+    served_rows: list[tuple[dict[str, str], float]] = []
+    verifier_rows: list[tuple[dict[str, str], float]] = []
+    failure_reasons: list[str] = []
+
+    for row in rows:
+        served = _safe_float(row.get("h1_served_intent_layer_coverage_ratio"))
+        verifier = _safe_float(row.get("h1_verifier_before_delivery_ratio"))
+        if served is not None:
+            served_rows.append((row, served))
+        if verifier is not None:
+            verifier_rows.append((row, verifier))
+
+    raw_served = (
+        _evaluate_h1_raw_served_intent(runs)
+        if runs is not None
+        else {
+            "raw_h1_non_wait_decision_rows": 0,
+            "raw_h1_served_intent_rows": 0,
+            "raw_h1_served_intent_layer_coverage_ratio": None,
+            "raw_h1_missing_served_intent_sample": [],
+        }
+    )
+    raw_verifier = (
+        _evaluate_h1_raw_verifier_before_delivery(runs, manifest)
+        if runs is not None
+        else {
+            "raw_h1_verifier_task_count": 0,
+            "raw_h1_verifier_before_delivery_count": 0,
+            "raw_h1_verifier_before_delivery_ratio": None,
+            "raw_h1_verifier_missing_sample": [],
+        }
+    )
+    active = bool(
+        served_rows
+        or verifier_rows
+        or int(raw_served["raw_h1_served_intent_rows"]) > 0
+    )
+    if not active:
+        if require_active:
+            failure_reasons.append("H1 gate required but no H1 served-intent evidence was found")
+        return {
+            "passed": not failure_reasons,
+            "skipped": not failure_reasons,
+            "require_active": require_active,
+            "failure_reasons": failure_reasons,
+            "final_metrics_served_rows": len(served_rows),
+            "final_metrics_verifier_rows": len(verifier_rows),
+            **raw_served,
+            **raw_verifier,
+            "g3_carry_through_passed": None,
+            "h0_carry_through_passed": None,
+        }
+
+    if not served_rows:
+        failure_reasons.append("H1 served-intent coverage metric is missing")
+    for row, value in served_rows:
+        if value < min_served_intent_layer_coverage_ratio:
+            failure_reasons.append(
+                f"{row.get('agent_alias', '')}/{row.get('category_id', '')}: "
+                "h1_served_intent_layer_coverage_ratio "
+                f"{value:.4f} < {min_served_intent_layer_coverage_ratio:.4f}",
+            )
+
+    if not verifier_rows:
+        failure_reasons.append("H1 verifier-before-delivery metric is missing")
+    for row, value in verifier_rows:
+        if value < min_verifier_before_delivery_ratio:
+            failure_reasons.append(
+                f"{row.get('agent_alias', '')}/{row.get('category_id', '')}: "
+                "h1_verifier_before_delivery_ratio "
+                f"{value:.4f} < {min_verifier_before_delivery_ratio:.4f}",
+            )
+
+    raw_served_ratio = raw_served["raw_h1_served_intent_layer_coverage_ratio"]
+    if raw_served_ratio is not None and raw_served_ratio < min_served_intent_layer_coverage_ratio:
+        failure_reasons.append(
+            "raw H1 served-intent coverage ratio "
+            f"{raw_served_ratio:.4f} < {min_served_intent_layer_coverage_ratio:.4f}",
+        )
+    raw_verifier_ratio = raw_verifier["raw_h1_verifier_before_delivery_ratio"]
+    if raw_verifier_ratio is not None and raw_verifier_ratio < min_verifier_before_delivery_ratio:
+        failure_reasons.append(
+            "raw H1 verifier-before-delivery ratio "
+            f"{raw_verifier_ratio:.4f} < {min_verifier_before_delivery_ratio:.4f}",
+        )
+
+    if g3_gate is not None and not bool(g3_gate.get("passed", True)):
+        failure_reasons.append("G3 carry-through failed under H1 gate")
+    if h0_gate is not None and not bool(h0_gate.get("passed", True)):
+        failure_reasons.append("H0 carry-through failed under H1 gate")
+
+    return {
+        "passed": not failure_reasons,
+        "skipped": False,
+        "require_active": require_active,
+        "min_served_intent_layer_coverage_ratio": min_served_intent_layer_coverage_ratio,
+        "min_verifier_before_delivery_ratio": min_verifier_before_delivery_ratio,
+        "failure_reasons": failure_reasons,
+        "final_metrics_served_rows": len(served_rows),
+        "final_metrics_verifier_rows": len(verifier_rows),
+        **raw_served,
+        **raw_verifier,
+        "g3_carry_through_passed": None if g3_gate is None else bool(g3_gate.get("passed")),
+        "h0_carry_through_passed": None if h0_gate is None else bool(h0_gate.get("passed")),
     }
 
 
@@ -2531,6 +2745,9 @@ def merge(
     h0_min_runtime_iem_audit_ratio: float = _DEFAULT_H0_RUNTIME_IEM_AUDIT_FLOOR,
     h0_min_vote_refs_ratio: float = _DEFAULT_H0_VOTE_REFS_FLOOR,
     h0_min_authority_kind_count: int = _DEFAULT_H0_AUTHORITY_KIND_FLOOR,
+    enable_h1_gate: bool = False,
+    h1_min_served_intent_layer_coverage_ratio: float = _DEFAULT_H1_SERVED_INTENT_COVERAGE_FLOOR,
+    h1_min_verifier_before_delivery_ratio: float = _DEFAULT_H1_VERIFIER_BEFORE_DELIVERY_FLOOR,
 ) -> dict:
     runs = _discover_runs(runs_root)
     if not runs:
@@ -2625,6 +2842,16 @@ def merge(
         min_vote_refs_ratio=h0_min_vote_refs_ratio,
         min_authority_kind_count=h0_min_authority_kind_count,
     )
+    h1_gate = _evaluate_h1_gate(
+        final_metrics_csv=out_csv,
+        runs=runs,
+        manifest=manifest,
+        g3_gate=g3_gate,
+        h0_gate=h0_gate,
+        require_active=enable_h1_gate,
+        min_served_intent_layer_coverage_ratio=h1_min_served_intent_layer_coverage_ratio,
+        min_verifier_before_delivery_ratio=h1_min_verifier_before_delivery_ratio,
+    )
 
     summary = {
         "runs_root": str(runs_root),
@@ -2657,6 +2884,7 @@ def merge(
         "g2_gate": g2_gate,
         "g3_gate": g3_gate,
         "h0_gate": h0_gate,
+        "h1_gate": h1_gate,
     }
     ii2_scorecard = _build_ii2_scorecard(
         runs=runs,
@@ -2847,6 +3075,23 @@ def main() -> int:
         default=_DEFAULT_H0_AUTHORITY_KIND_FLOOR,
         help="Require at least this many governed authority kinds across H0-E evidence files.",
     )
+    p.add_argument(
+        "--enable-h1-gate",
+        action="store_true",
+        help="Require H1-B served-intent/verifier gate evidence instead of auto-skipping when absent.",
+    )
+    p.add_argument(
+        "--h1-min-served-intent-layer-coverage-ratio",
+        type=float,
+        default=_DEFAULT_H1_SERVED_INTENT_COVERAGE_FLOOR,
+        help="Require non-wait H1 decisions to carry served_intent_layer at this minimum ratio.",
+    )
+    p.add_argument(
+        "--h1-min-verifier-before-delivery-ratio",
+        type=float,
+        default=_DEFAULT_H1_VERIFIER_BEFORE_DELIVERY_FLOOR,
+        help="Require verifier-required H1 tasks to verify before delivery at this minimum ratio.",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
     logging.basicConfig(
@@ -2889,6 +3134,9 @@ def main() -> int:
         h0_min_runtime_iem_audit_ratio=args.h0_min_runtime_iem_audit_ratio,
         h0_min_vote_refs_ratio=args.h0_min_vote_refs_ratio,
         h0_min_authority_kind_count=args.h0_min_authority_kind_count,
+        enable_h1_gate=args.enable_h1_gate,
+        h1_min_served_intent_layer_coverage_ratio=args.h1_min_served_intent_layer_coverage_ratio,
+        h1_min_verifier_before_delivery_ratio=args.h1_min_verifier_before_delivery_ratio,
     )
     print(json.dumps(summary, indent=2))
     if not summary["integrity_gate"]["passed"]:
@@ -2927,8 +3175,14 @@ def main() -> int:
             "; ".join(summary["h0_gate"]["failure_reasons"]),
         )
         return 8
+    if not summary["h1_gate"]["passed"]:
+        logger.error(
+            "H.1 Telos/verifier gate FAILED: %s",
+            "; ".join(summary["h1_gate"]["failure_reasons"]),
+        )
+        return 9
     logger.info(
-        "F.1.c integrity+sentinel, G.2, G.3, and H.0 gates PASSED: pair_ratio=%.4f task_ratio=%.4f",
+        "F.1.c integrity+sentinel, G.2, G.3, H.0, and H.1 gates PASSED: pair_ratio=%.4f task_ratio=%.4f",
         summary["jaccard_flagged_ratio"],
         summary["jaccard_flagged_task_ratio"],
     )

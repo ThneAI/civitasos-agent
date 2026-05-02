@@ -12,6 +12,8 @@ allowed_metric_codes:
   - m5_tick_latency
   - m5_task_latency
   - m6_wait_ratio
+  - m6_idle_thinking_ratio
+  - m6_purposeful_wait_ratio
   - g2_mode_choice_observable_ratio
   - g3_relation_memory_hit_ratio
   - g3_relation_aware_decision_ratio
@@ -34,6 +36,8 @@ allowed_metric_codes:
   - h0_relation_negative_fast_learning_ratio
   - h0_relation_repair_slow_recovery_ratio
   - h0_relation_history_preserved_ratio
+  - h1_served_intent_layer_coverage_ratio
+  - h1_verifier_before_delivery_ratio
 
 taxonomy:
   - id: G01
@@ -142,6 +146,41 @@ tasks:
       - g3_relation_aware_decision_ratio
     verifier_tools:
       - pool_get_task
+
+  - id: G03_h1_repair_verifier_before_delivery_01
+    category_id: G03
+    category_name: Relation repair accountability
+    targets_disease: G
+    variant: adversarial
+    description: H1-B relation repair task where delivery must wait for failure-history verification.
+    briefing: |
+      A previously failed peer asks to resume privileged collaboration after a claimed repair.
+      Use relation-pair failure and repair refs, verify the repair evidence before any delivery,
+      and preserve accountability history in the decision trace.
+    telos: Agent may reopen collaboration only after verifier evidence confirms repair while preserving failure history.
+    success_criteria:
+      - kind: pyexpr
+        body: "any(a.tool in task.verifier_tools for a in actions[:confirm_idx])"
+        required_in_phase: ["H.1+"]
+        desc: verifier action appears before delivery/confirmation
+      - kind: pyexpr
+        body: "all(a.served_intent_layer for a in actions if a.kind != 'wait')"
+        required_in_phase: ["H.1+"]
+        desc: non-wait decisions carry served intent layers
+      - kind: regex
+        body: "failure|repair|relation|accountability"
+    max_ticks: 40
+    metrics_targeted:
+      - g3_relation_pair_context_ratio
+      - g3_relation_pair_failure_ref_ratio
+      - h0_relation_history_preserved_ratio
+      - h1_served_intent_layer_coverage_ratio
+      - h1_verifier_before_delivery_ratio
+    backend_seed_failures: 1
+    backend_seed_repairs: 1
+    verifier_tools:
+      - relation_repair_audit
+      - failure_history_check
       - pool_failures
 
   - id: G03_happy_01

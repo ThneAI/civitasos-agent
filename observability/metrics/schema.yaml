@@ -1,4 +1,4 @@
-# Raw Tick CSV Schema — F.0.a v1.12
+# Raw Tick CSV Schema — F.0.a v1.14
 # 与 README.md 中的「Raw Tick CSV」表格一一对应，作为 schema.py 的真值来源。
 # 修改本文件需同步更新 schema.py 与 test_schema.py。
 # v1.1 变更：mode/wait_references_telos 改 optional，final_metrics M5 拆 tick/task 层 与 M6 重命名，M4 标 nullable。
@@ -13,8 +13,10 @@
 # v1.10 变更：新增 H0-C identity/evolution observability：identity action bias、constitutional surprise、governance trigger、predicted update、desired slow drift。
 # v1.11 变更：新增 H0-D reputation/task/governance expectation trace observability 与 expanded domain 聚合指标。
 # v1.12 变更：新增 H0-E governed revision read model 观测列与聚合指标。
+# v1.13 变更：新增 H1-A ALIGN phase / served_intent_layer 语义与 H0-F/H0-G 聚合指标。
+# v1.14 变更：final_metrics 新增 H1-B wait split、served intent coverage 与 verifier-before-delivery 指标。
 
-schema_version: "1.13"
+schema_version: "1.14"
 artifact: "raw_tick"
 
 columns:
@@ -345,7 +347,7 @@ columns:
 # Final Metrics CSV — computers/ 聚合输出
 # ---------------------------------------------------------------------------
 final_metrics:
-  schema_version: "1.13"
+  schema_version: "1.14"
   artifact: "final_metrics"
   columns:
     - {name: run_id, type: string, required: true}
@@ -375,6 +377,18 @@ final_metrics:
     - {name: m6_wait_ratio, type: float, required: true,
        constraint: '0.0 <= x <= 1.0',
        note: 'F.0 弱化版；H.1 后拆分为 idle_thinking_ratio + purposeful_wait_ratio'}
+    - {name: m6_idle_thinking_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H1-B：wait 且未引用 short/mid/long/telos 的 idle thinking tick / total ticks'}
+    - {name: m6_purposeful_wait_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H1-B：wait 且 wait_references_telos 或 served_intent_layer 指向 short/mid/long/telos 的 tick / total ticks'}
+    - {name: h1_served_intent_layer_coverage_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H1-B：H1 active 时 non-wait decision 带 served_intent_layer 的比例'}
+    - {name: h1_verifier_before_delivery_ratio, type: float, required: false,
+       constraint: '0.0 <= x <= 1.0',
+       note: 'H1-B：带 verifier_tools 的任务中，交付/执行前已有验证动作证据的比例'}
     - {name: g2_mode_choice_observable_ratio, type: float, required: false,
        constraint: '0.0 <= x <= 1.0',
        note: 'G.2：LLM 显式 mode_request tick / wait tick；无 wait tick 时为 null'}

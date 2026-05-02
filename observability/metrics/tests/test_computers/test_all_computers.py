@@ -10,6 +10,7 @@ from observability.metrics.computers import (
     m6_wait_ratio,
     g2_subjective_mode,
     g3_relation_time,
+    h1_telos_gate,
     h0_expectation_trace,
 )
 from observability.metrics.computers._loader import TaskRun, TickRow
@@ -18,6 +19,7 @@ from observability.metrics.computers._loader import TaskRun, TickRow
 def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
           gap: float = 0.0, ts: str = "", lessons_count: int = 0,
           llm_mode_request: str = "", llm_mode_selected: bool = False,
+          served_intent_layer: str = "", wait_references_telos: bool = False,
           relation_context_id: str = "", relation_memory_refs: str = "",
           time_window_id: str = "", decision_reasoning: str = "",
           relation_id_source: str = "", relation_pair_present: bool = False,
@@ -48,6 +50,8 @@ def _tick(seq: int, *, action: str = "noop", success=None, dur=None,
         lessons_count=lessons_count,
         llm_mode_request=llm_mode_request,
         llm_mode_selected=llm_mode_selected,
+        served_intent_layer=served_intent_layer,
+        wait_references_telos=wait_references_telos,
         relation_context_id=relation_context_id,
         relation_memory_refs=relation_memory_refs,
         time_window_id=time_window_id,
@@ -257,6 +261,40 @@ def test_m6_basic_ratio() -> None:
 
 def test_m6_no_ticks_returns_none() -> None:
     assert m6_wait_ratio.compute([]) is None
+
+
+def test_h1_wait_split_distinguishes_idle_and_purposeful_waits() -> None:
+    t = TaskRun(task_id="T", ticks=[
+        _tick(1, action="wait", served_intent_layer="long", wait_references_telos=True),
+        _tick(2, action="wait"),
+        _tick(3, action="task_execute", served_intent_layer="short"),
+        _tick(4, action="task_execute", served_intent_layer="immediate"),
+    ])
+    out = h1_telos_gate.compute([t])
+    assert out["m6_purposeful_wait_ratio"] == 0.25
+    assert out["m6_idle_thinking_ratio"] == 0.25
+    assert out["h1_served_intent_layer_coverage_ratio"] == 1.0
+
+
+def test_h1_verifier_before_delivery_requires_verifier_prefix() -> None:
+    verified = TaskRun(
+        task_id="verified",
+        verifier_tools=["verifier_compare"],
+        ticks=[
+            _tick(1, action="verifier_compare", served_intent_layer="short"),
+            _tick(2, action="task_execute", served_intent_layer="short"),
+        ],
+    )
+    late = TaskRun(
+        task_id="late",
+        verifier_tools=["verifier_compare"],
+        ticks=[
+            _tick(1, action="task_execute", served_intent_layer="short"),
+            _tick(2, action="verifier_compare", served_intent_layer="short"),
+        ],
+    )
+    out = h1_telos_gate.compute([verified, late])
+    assert out["h1_verifier_before_delivery_ratio"] == 0.5
 
 
 # --- G.2 ---------------------------------------------------------------

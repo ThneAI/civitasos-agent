@@ -43,7 +43,8 @@
 | **M3** | `aspect_gap_response_rate` | ✅ | 遍历 tick 序列，找到首次 `aspect_gap` 跨越阈值 θ=0.7 的 tick t；定义前窗 W_pre = action 集合 of tick[t-3..t-1]，后窗 W_post = tick[t+1..t+3]；若 `Jaccard(W_pre, W_post) < 0.5` 记为 1 次 response。指标 = response 次数 / 触发次数。**θ=0.7 与 Jaccard<0.5 是 F.0 经验值，F.1 实施后用真实数据校准** | `EnergyState.aspect_gap` 时序 + 同窗 `Decision.action` |
 | **M4** | `lessons_impact_rate` | ✅ **H.2-lite** | 任务中先失败后恢复，且 `lessons_count` 有信号（`max>0`）；若恢复 tick 的 lessons_count 高于首次失败 tick，记为 impacted。指标= impacted / eligible | `eval_success` 时序 + `lessons_count` |
 | **M5** | `reaction_latency_dist` | ✅ | **per-tick 层**：每 tick `Evaluation.duration_ms` 的 P50/P95/P99；**per-task 层**：从 task 开始（tick_seq=1）到首次 `Evaluation.success==True` 或 task 终止的 wall-clock 总耗时分布 | `TickContext.timestamp` + `Evaluation.duration_ms` |
-| **M6** | `wait_ratio` | ✅ 弱化 | F.0 阶段：`count(Decision.action=="wait") / total_ticks`，单纯比率。**真正的「无所事事 vs 有目的等待」需 H.1 `served_intent_layer` 字段上线后才能区分**，那时再分裂为 `idle_thinking_ratio` 与 `purposeful_wait_ratio` 两指标 | `Decision.action` |
+| **M6** | `wait_ratio` / `idle_thinking_ratio` / `purposeful_wait_ratio` | ✅ | `wait_ratio` 保留 F/G/H0 兼容；H1-B 追加 `m6_idle_thinking_ratio` 与 `m6_purposeful_wait_ratio`，后者要求 wait tick 明确引用 `served_intent_layer ∈ {short,mid,long,telos}` 或 `wait_references_telos=true` | `Decision.action` + `served_intent_layer` |
+| **H1** | `served_intent_layer_coverage_ratio` / `verifier_before_delivery_ratio` | ✅ opt-in | H1 trace 出现后，non-wait decision 必须带 `served_intent_layer`；带 `verifier_tools` 的任务必须在交付/执行动作前出现 verifier evidence | `served_intent_layer` + task `verifier_tools` |
 
 ---
 
@@ -62,9 +63,10 @@ observability/metrics/
 │   ├── m3_aspect_gap_response.py
 │   ├── m4_lessons_impact.py    # H.2-lite 可计算（无信号时返回 null+notes）
 │   ├── m5_reaction_latency.py  # 输出 per-tick + per-task 双层
-│   ├── m6_wait_ratio.py        # F.0 弱化版；H.1 后拆为 idle_thinking + purposeful_wait
+│   ├── m6_wait_ratio.py        # F.0 兼容版 wait_ratio
 │   ├── g2_subjective_mode.py   # G.2 mode-choice 聚合指标
-│   └── g3_relation_time.py     # G.3 relation memory / time-window / provenance 聚合指标
+│   ├── g3_relation_time.py     # G.3 relation memory / time-window / provenance 聚合指标
+│   └── h1_telos_gate.py        # H1-B wait split / served intent / verifier-before-delivery
 └── tests/
     ├── test_schema.py          # schema 字段完备性
     ├── test_collector.py       # adapter 注入与 tick 解析
@@ -105,7 +107,7 @@ observability/metrics/
 | `mode` | enum | LoopMode (active/idle/sleeping/waiting/deep_think/event)；无法读取时默认 `active` | optional |
 | `is_wait` | bool | Decision.action == "wait" | ✅ |
 | `lessons_count` | int | memory 中 lessons_learned 长度快照（每 tick 采样） | optional |
-| `wait_references_telos` | bool | F.0 阶段固定 `false`（M6 已弱化为 wait_ratio）；H.1 后基于 `served_intent_layer` 重新计算 | optional |
+| `wait_references_telos` | bool | F.0 阶段固定 `false`；H1-B 后用于区分 purposeful wait 与 idle thinking | optional |
 | `subjective_lifecycle_stage` | enum | briefing.subjective_time.lifecycle_stage（G.2 Agent 主观时间） | optional |
 | `subjective_recommended_mode` | enum | briefing.subjective_time.recommended_mode（规则/LLM 选择后最终推荐模式） | optional |
 | `llm_mode_request` | enum | LLM 显式声明的 `mode_request: waiting/deep_think` | optional |

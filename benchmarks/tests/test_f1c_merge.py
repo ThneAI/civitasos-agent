@@ -11,6 +11,7 @@ from benchmarks.f1c_merge import (
     _evaluate_g2_gate,
     _evaluate_g3_gate,
     _evaluate_h0_gate,
+    _evaluate_h1_gate,
     _evaluate_integrity_gate,
     _evaluate_sentinel_gate,
     _inter_agent_jaccard,
@@ -28,6 +29,8 @@ def _write_raw_ticks(
     identity_prompt_injected: list[bool] | None = None,
     llm_mode_requests: list[str] | None = None,
     llm_mode_selected: list[bool] | None = None,
+    served_intent_layers: list[str] | None = None,
+    wait_references_telos: list[bool] | None = None,
     time_window_ids: list[str] | None = None,
     relation_context_ids: list[str] | None = None,
     relation_memory_refs: list[str] | None = None,
@@ -79,6 +82,10 @@ def _write_raw_ticks(
             row["llm_mode_request"] = llm_mode_requests[idx]
         if llm_mode_selected is not None:
             row["llm_mode_selected"] = "true" if llm_mode_selected[idx] else "false"
+        if served_intent_layers is not None:
+            row["served_intent_layer"] = served_intent_layers[idx]
+        if wait_references_telos is not None:
+            row["wait_references_telos"] = "true" if wait_references_telos[idx] else "false"
         if time_window_ids is not None:
             row["time_window_id"] = time_window_ids[idx]
         if relation_context_ids is not None:
@@ -432,6 +439,8 @@ def _write_g2_final_metrics(path: Path, rows: list[dict[str, str]]) -> None:
         "g3_r2r_relation_id_ratio",
         "g3_relation_pair_context_ratio",
         "g3_relation_pair_failure_ref_ratio",
+        "h1_served_intent_layer_coverage_ratio",
+        "h1_verifier_before_delivery_ratio",
         "h0_expectation_trace_ratio",
         "h0_hard_domain_trace_ratio",
         "h0_drive_constitution_verdict_ratio",
@@ -696,6 +705,115 @@ def test_g2_gate_fails_on_blank_ratio_and_missing_raw_selection(tmp_path: Path) 
     assert gate["missing_rows_sample"] == [
         {"agent_alias": "alpha", "category_id": "A01", "task_count": "2"},
     ]
+
+
+def test_h1_gate_passes_with_served_intent_verifier_and_carry_through(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "V04_h1_verifier_before_delivery_01",
+        ["verifier_compare", "task_execute"],
+        served_intent_layers=["short", "short"],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "V04",
+                "targets_disease": "V",
+                "task_count": "1",
+                "h1_served_intent_layer_coverage_ratio": "1.0",
+                "h1_verifier_before_delivery_ratio": "1.0",
+            },
+        ],
+    )
+    manifest = _manifest_for_tasks(
+        tmp_path,
+        [
+            _task_spec(
+                "V04_h1_verifier_before_delivery_01",
+                category_id="V04",
+                metrics_targeted=["h1_verifier_before_delivery_ratio"],
+                variant="adversarial",
+            ),
+        ],
+    )
+    manifest.tasks[0].verifier_tools = ["verifier_compare"]
+
+    gate = _evaluate_h1_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        manifest=manifest,
+        g3_gate={"passed": True},
+        h0_gate={"passed": True},
+        require_active=True,
+    )
+
+    assert gate["passed"] is True
+    assert gate["skipped"] is False
+    assert gate["raw_h1_served_intent_layer_coverage_ratio"] == 1.0
+    assert gate["raw_h1_verifier_before_delivery_ratio"] == 1.0
+
+
+def test_h1_gate_fails_on_missing_served_intent_and_late_verifier(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "V04_h1_verifier_before_delivery_01",
+        ["task_execute", "verifier_compare"],
+        served_intent_layers=["", "short"],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "V04",
+                "targets_disease": "V",
+                "task_count": "1",
+                "h1_served_intent_layer_coverage_ratio": "0.5",
+                "h1_verifier_before_delivery_ratio": "0.0",
+            },
+        ],
+    )
+    manifest = _manifest_for_tasks(
+        tmp_path,
+        [
+            _task_spec(
+                "V04_h1_verifier_before_delivery_01",
+                category_id="V04",
+                metrics_targeted=["h1_verifier_before_delivery_ratio"],
+                variant="adversarial",
+            ),
+        ],
+    )
+    manifest.tasks[0].verifier_tools = ["verifier_compare"]
+
+    gate = _evaluate_h1_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        manifest=manifest,
+        g3_gate={"passed": False},
+        h0_gate={"passed": True},
+        require_active=True,
+    )
+
+    assert gate["passed"] is False
+    reasons = gate["failure_reasons"]
+    assert any("h1_served_intent_layer_coverage_ratio" in r for r in reasons)
+    assert any("h1_verifier_before_delivery_ratio" in r for r in reasons)
+    assert any("G3 carry-through" in r for r in reasons)
 
 
 def test_g3_gate_skips_when_no_relation_rows(tmp_path: Path) -> None:

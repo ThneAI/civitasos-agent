@@ -40,7 +40,7 @@ def test_final_metrics_has_six_metric_families() -> None:
     data = _load_yaml()
     cols = [c["name"] for c in data["final_metrics"]["columns"]]
     # M1..M6 plus G/H stage families — at least one column per family.
-    families = {"m1_", "m2_", "m3_", "m4_", "m5_", "m6_", "g2_", "g3_", "h0_"}
+    families = {"m1_", "m2_", "m3_", "m4_", "m5_", "m6_", "g2_", "g3_", "h0_", "h1_"}
     for f in families:
         assert any(c.startswith(f) for c in cols), f"missing metric family {f}"
 

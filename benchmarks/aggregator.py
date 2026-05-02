@@ -25,6 +25,7 @@ from observability.metrics.computers import (
     m6_wait_ratio,
     g2_subjective_mode,
     g3_relation_time,
+    h1_telos_gate,
     h0_expectation_trace,
 )
 from observability.metrics.computers._loader import TaskRun
@@ -47,6 +48,10 @@ FINAL_METRIC_COLUMNS: tuple[str, ...] = (
     "m5_task_latency_p50_ms",
     "m5_task_latency_p95_ms",
     "m6_wait_ratio",
+        "m6_idle_thinking_ratio",
+        "m6_purposeful_wait_ratio",
+        "h1_served_intent_layer_coverage_ratio",
+        "h1_verifier_before_delivery_ratio",
     "g2_mode_choice_observable_ratio",
     "g2_llm_waiting_ratio",
     "g2_llm_deep_think_ratio",
@@ -136,6 +141,7 @@ def aggregate_run(run_dir: str | Path, manifest: Manifest, *, schema_yaml: str |
         targets_disease = tasks[0].targets_disease
         m4_val, m4_notes = m4_lessons_impact.compute(tasks)
         m5 = m5_reaction_latency.compute(tasks)
+        h1 = h1_telos_gate.compute(tasks)
         g2 = g2_subjective_mode.compute(tasks)
         g3 = g3_relation_time.compute(tasks)
         h0 = h0_expectation_trace.compute(tasks)
@@ -146,6 +152,7 @@ def aggregate_run(run_dir: str | Path, manifest: Manifest, *, schema_yaml: str |
             "m4_lessons_impact_rate": m4_val,
             **m5,
             "m6_wait_ratio": m6_wait_ratio.compute(tasks),
+                **h1,
             **g2,
             **g3,
             **h0,
@@ -181,6 +188,10 @@ def write_final_metrics(rows: Iterable[AggregateRow], out_path: str | Path) -> P
                 _fmt(r.metrics.get("m5_task_latency_p50_ms")),
                 _fmt(r.metrics.get("m5_task_latency_p95_ms")),
                 _fmt(r.metrics.get("m6_wait_ratio")),
+                    _fmt(r.metrics.get("m6_idle_thinking_ratio")),
+                    _fmt(r.metrics.get("m6_purposeful_wait_ratio")),
+                    _fmt(r.metrics.get("h1_served_intent_layer_coverage_ratio")),
+                    _fmt(r.metrics.get("h1_verifier_before_delivery_ratio")),
                 _fmt(r.metrics.get("g2_mode_choice_observable_ratio")),
                 _fmt(r.metrics.get("g2_llm_waiting_ratio")),
                 _fmt(r.metrics.get("g2_llm_deep_think_ratio")),

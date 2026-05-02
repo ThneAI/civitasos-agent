@@ -85,7 +85,7 @@ REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "is_wait",
 })
 
-SCHEMA_VERSION = "1.13"
+SCHEMA_VERSION = "1.14"
 
 # Truncation for decision_reasoning (post-newline-escape).
 REASONING_MAX_LEN = 500
