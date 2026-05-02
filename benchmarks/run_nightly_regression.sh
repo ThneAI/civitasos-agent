@@ -88,9 +88,15 @@ H0_MAX_IEM_ANCHOR_REPLAY_LEGACY_SIDECAR_RATIO="${H0_MAX_IEM_ANCHOR_REPLAY_LEGACY
 H0_MIN_RUNTIME_IEM_AUDIT_RATIO="${H0_MIN_RUNTIME_IEM_AUDIT_RATIO:-1.0}"
 H0_MIN_VOTE_REFS_RATIO="${H0_MIN_VOTE_REFS_RATIO:-1.0}"
 H0_MIN_AUTHORITY_KIND_COUNT="${H0_MIN_AUTHORITY_KIND_COUNT:-1}"
+REQUIRE_H1_ACTIVE="${REQUIRE_H1_ACTIVE:-0}"
+H1_MIN_SERVED_INTENT_LAYER_COVERAGE_RATIO="${H1_MIN_SERVED_INTENT_LAYER_COVERAGE_RATIO:-1.0}"
+H1_MIN_VERIFIER_BEFORE_DELIVERY_RATIO="${H1_MIN_VERIFIER_BEFORE_DELIVERY_RATIO:-1.0}"
 
 export CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED="${CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED:-1}"
 export CIVITASOS_IDENTITY_EMERGENCE_ENABLED="${CIVITASOS_IDENTITY_EMERGENCE_ENABLED:-1}"
+if [ "$REQUIRE_H1_ACTIVE" = "1" ]; then
+  export CIVITASOS_H1_TELOS_ENABLED="${CIVITASOS_H1_TELOS_ENABLED:-1}"
+fi
 export CIVITASOS_BIRTH_SPONSOR="${CIVITASOS_BIRTH_SPONSOR:-${BENCHMARK_BIRTH_SPONSOR:-@guardian}}"
 export BENCHMARK_BIRTH_SPONSOR="${BENCHMARK_BIRTH_SPONSOR:-$CIVITASOS_BIRTH_SPONSOR}"
 # For newly created benchmark identities, keep provisional window long enough
@@ -138,6 +144,12 @@ if [ "$REQUIRE_H0_ACTIVE" = "1" ]; then
   echo "  h0_runtime_iem  : $H0_MIN_RUNTIME_IEM_AUDIT_RATIO"
   echo "  h0_vote_refs    : $H0_MIN_VOTE_REFS_RATIO"
   echo "  h0_authorities  : $H0_MIN_AUTHORITY_KIND_COUNT"
+fi
+echo "  require_h1_active: $REQUIRE_H1_ACTIVE"
+if [ "$REQUIRE_H1_ACTIVE" = "1" ]; then
+  echo "  h1_telos_enabled: ${CIVITASOS_H1_TELOS_ENABLED:-0}"
+  echo "  h1_served_layer : $H1_MIN_SERVED_INTENT_LAYER_COVERAGE_RATIO"
+  echo "  h1_verifier_pre : $H1_MIN_VERIFIER_BEFORE_DELIVERY_RATIO"
 fi
 echo "  institutional_on : $CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED"
 echo "  identity_on      : $CIVITASOS_IDENTITY_EMERGENCE_ENABLED"
@@ -208,9 +220,14 @@ if [ "$REQUIRE_H0_ACTIVE" = "1" ]; then
   MERGE_ARGS+=(--h0-min-vote-refs-ratio "$H0_MIN_VOTE_REFS_RATIO")
   MERGE_ARGS+=(--h0-min-authority-kind-count "$H0_MIN_AUTHORITY_KIND_COUNT")
 fi
+if [ "$REQUIRE_H1_ACTIVE" = "1" ]; then
+  MERGE_ARGS+=(--enable-h1-gate)
+  MERGE_ARGS+=(--h1-min-served-intent-layer-coverage-ratio "$H1_MIN_SERVED_INTENT_LAYER_COVERAGE_RATIO")
+  MERGE_ARGS+=(--h1-min-verifier-before-delivery-ratio "$H1_MIN_VERIFIER_BEFORE_DELIVERY_RATIO")
+fi
 "$PYTHON" -m benchmarks.f1c_merge "${MERGE_ARGS[@]}"
 
-"$PYTHON" - <<'PY' "$RUNS_ROOT" "$REQUIRE_G3_ACTIVE" "$REQUIRE_H0_ACTIVE"
+"$PYTHON" - <<'PY' "$RUNS_ROOT" "$REQUIRE_G3_ACTIVE" "$REQUIRE_H0_ACTIVE" "$REQUIRE_H1_ACTIVE"
 import json
 import sys
 from pathlib import Path
@@ -218,6 +235,7 @@ from pathlib import Path
 runs_root = Path(sys.argv[1])
 require_g3_active = sys.argv[2] == "1"
 require_h0_active = sys.argv[3] == "1"
+require_h1_active = sys.argv[4] == "1"
 summary_path = runs_root / "merge_summary.json"
 if not summary_path.exists():
     raise SystemExit(f"merge summary missing: {summary_path}")
@@ -233,6 +251,9 @@ g3_active_ok = (not require_g3_active) or (not bool(g3_gate.get("skipped", False
 h0_gate = summary.get("h0_gate", {})
 h0_ok = bool(h0_gate.get("passed", False))
 h0_active_ok = (not require_h0_active) or (not bool(h0_gate.get("skipped", False)))
+h1_gate = summary.get("h1_gate", {})
+h1_ok = bool(h1_gate.get("passed", False))
+h1_active_ok = (not require_h1_active) or (not bool(h1_gate.get("skipped", False)))
 if not (
   integrity_ok
   and sentinel_ok
@@ -242,6 +263,8 @@ if not (
   and g3_active_ok
   and h0_ok
   and h0_active_ok
+  and h1_ok
+  and h1_active_ok
 ):
     print(json.dumps(
         {
@@ -252,10 +275,13 @@ if not (
             "g2_gate": summary.get("g2_gate"),
             "g3_gate": summary.get("g3_gate"),
             "h0_gate": summary.get("h0_gate"),
+            "h1_gate": summary.get("h1_gate"),
             "require_g3_active": require_g3_active,
             "g3_active_ok": g3_active_ok,
             "require_h0_active": require_h0_active,
             "h0_active_ok": h0_active_ok,
+            "require_h1_active": require_h1_active,
+            "h1_active_ok": h1_active_ok,
         },
         indent=2,
     ))
@@ -269,8 +295,10 @@ print(json.dumps(
         "g2_gate": summary.get("g2_gate"),
         "g3_gate": summary.get("g3_gate"),
         "h0_gate": summary.get("h0_gate"),
+        "h1_gate": summary.get("h1_gate"),
         "require_g3_active": require_g3_active,
         "require_h0_active": require_h0_active,
+        "require_h1_active": require_h1_active,
     },
     indent=2,
 ))

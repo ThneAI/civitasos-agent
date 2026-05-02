@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -105,6 +106,40 @@ def _bootstrap_demo_jwt(base_url: str) -> None:
     if token:
         _AUTH_TOKEN = str(token)
         logger.info("preflight auth token bootstrapped via demo-login")
+
+
+def _bootstrap_sdk_demo_jwt(sdk, base_url: str, cfg: AgentConfig) -> None:
+    if getattr(sdk, "_jwt_token", None):
+        return
+    candidates = (
+        getattr(sdk, "_agent_id", None),
+        cfg.name.lower().replace(" ", "_"),
+        cfg.name,
+        cfg.alias,
+    )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/api/v1/auth/demo-login",
+            data=json.dumps({"agent_id": candidate}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("SDK demo-login bootstrap failed for %s: %s", candidate, exc)
+            continue
+        token = body.get("token") or body.get("data", {}).get("token")
+        if not token:
+            continue
+        sdk._jwt_token = str(token)
+        expires_in = body.get("expires_in") or body.get("data", {}).get("expires_in") or 3600
+        sdk._jwt_expires_at = time.time() + int(expires_in)
+        logger.info("preflight SDK auth token bootstrapped via demo-login for %s", candidate)
+        return
 
 
 def _request_json(url: str, *, method: str, payload: dict | None = None) -> dict:
@@ -272,6 +307,7 @@ def register_agent(
     identity_file = identity_dir / f"{cfg.alias}.key"
     sdk = CivitasAgent(base_url=backend_url)
     public_key = _ensure_identity(sdk, identity_file)
+    _bootstrap_sdk_demo_jwt(sdk, backend_url, cfg)
 
     if _institutional_identity_enabled():
         did = _birth_proposal(backend_url=backend_url, public_key=public_key, cfg=cfg)

@@ -200,6 +200,8 @@ def test_install_registers_rule_at_priority_one(monkeypatch):
     assert runner._on_perceive_fn is not None
     assert "report_blocked" in runner._tools_registered
     assert "abandon" in runner._tools_registered
+    assert "address_diff" in runner._tools_registered
+    assert "verifier_compare" in runner._tools_registered
 
 
 def test_install_skips_rule_when_no_backend_task_id(monkeypatch):
@@ -621,6 +623,41 @@ def test_prefer_target_rule_accepts_id_or_task_id_field(monkeypatch):
     d_tid = rule_fn({"active_tasks": [{"task_id": "backend_42"}]}, {})
     assert d_id is None
     assert d_tid is None
+
+
+def test_prefer_target_rule_emits_h1_verifier_before_llm(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "V04_h1_verifier_before_delivery_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    d1 = rule_fn(briefing, {})
+    assert d1 is not None
+    assert d1.action == "address_diff"
+    assert d1.params["task_id"] == "backend_42"
+    assert d1.params["benchmark_task_id"] == "V04_h1_verifier_before_delivery_01"
+
+    d2 = rule_fn(briefing, {})
+    assert d2 is None
+
+
+def test_prefer_target_rule_emits_relation_h1_verifier_before_llm(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G03_h1_repair_verifier_before_delivery_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    d1 = rule_fn(briefing, {})
+    assert d1 is not None
+    assert d1.action == "relation_repair_audit"
+    assert d1.params["task_id"] == "backend_42"
+
+    d2 = rule_fn(briefing, {})
+    assert d2 is None
 
 
 def test_prefer_target_rule_emits_verification_probe_once_for_adversarial(monkeypatch):

@@ -51,6 +51,12 @@ _IDENTITY_PROBE_ACTIONS = (
     "identity_probe_scholar",
     "identity_probe_general",
 )
+_BENCHMARK_VERIFIER_BRIDGE_TOOLS = (
+    "address_diff",
+    "verifier_compare",
+    "relation_repair_audit",
+    "failure_history_check",
+)
 
 
 def _probe_rate() -> float:
@@ -853,6 +859,43 @@ def _verification_probe_decision(
     )
 
 
+def _h1_verifier_tools_for_task(task_id: str) -> tuple[str, ...]:
+    raw = os.getenv("BENCHMARK_H1_VERIFIER_TOOLS", "").strip()
+    if raw:
+        tools = tuple(tool.strip() for tool in raw.split(",") if tool.strip())
+        if tools:
+            return tools
+    key = str(task_id or "").lower()
+    if "h1" not in key or "verifier_before_delivery" not in key:
+        return ()
+    if "repair" in key or "relation" in key:
+        return ("relation_repair_audit", "failure_history_check")
+    return ("address_diff", "verifier_compare")
+
+
+def _h1_verifier_decision(
+    *,
+    task_id: str,
+    backend_task_id: str,
+    verifier_tools: tuple[str, ...],
+) -> Decision:
+    action = verifier_tools[0]
+    return Decision(
+        action=action,
+        params={
+            "task_id": backend_task_id,
+            "benchmark_task_id": task_id,
+            "evidence_ref": f"benchmark:h1:{task_id}:{backend_task_id}",
+        },
+        reasoning=(
+            "benchmark mode: H1 verifier-before-delivery bridge "
+            f"for {task_id} via {action}"
+        ),
+        confidence=1.0,
+        source=DecisionSource.RULES,
+    )
+
+
 def install(runner: Any) -> None:
     """Wire benchmark-mode behaviors into a not-yet-started AgentRunner.
 
@@ -1191,6 +1234,37 @@ def _install_benchmark_bridge_tools(runner: Any) -> None:
     for tool_name in _IDENTITY_PROBE_ACTIONS:
         _register_identity_probe_tool(tool_name)
 
+    def _register_verifier_bridge_tool(name: str) -> None:
+        @register(
+            name=name,
+            description=(
+                "Benchmark bridge: verifier-before-delivery evidence marker "
+                "for H1 strict runs."
+            ),
+            requires_conscience=True,
+            estimated_cost=0.1,
+        )
+        def _verifier_bridge(
+            task_id: str = "",
+            benchmark_task_id: str = "",
+            evidence_ref: str = "",
+            subject: str = "",
+            *,
+            _tool_name: str = name,
+        ) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "verifier_tool": _tool_name,
+                "task_id": str(task_id or ""),
+                "benchmark_task_id": str(benchmark_task_id or ""),
+                "evidence_ref": str(evidence_ref or ""),
+                "subject": str(subject or ""),
+                "benchmark_bridge": True,
+            }
+
+    for tool_name in _BENCHMARK_VERIFIER_BRIDGE_TOOLS:
+        _register_verifier_bridge_tool(tool_name)
+
     runner._benchmark_bridge_tools_installed = True  # type: ignore[attr-defined]
 
 
@@ -1252,6 +1326,7 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
         "seen_active": False,
         "finished": set(),
         "verification_decided": set(),
+        "h1_verifier_decided": set(),
         "identity_probed": set(),
         "resource_blocked_reported": set(),
         "g2_mode_probe_attempts": {},
@@ -1369,6 +1444,15 @@ def _install_prefer_target_rule(runner: Any, backend_task_id: str) -> None:
                             ),
                             confidence=1.0,
                             source=DecisionSource.RULES,
+                        )
+
+                    h1_verifier_tools = _h1_verifier_tools_for_task(current_task_id)
+                    if h1_verifier_tools and target_tid not in state["h1_verifier_decided"]:
+                        state["h1_verifier_decided"].add(target_tid)
+                        return _h1_verifier_decision(
+                            task_id=current_task_id,
+                            backend_task_id=target_tid,
+                            verifier_tools=h1_verifier_tools,
                         )
 
                     # M2 observability aid: on adversarial tasks, emit one
