@@ -64,6 +64,54 @@ def test_h2_outcome_report_builds_evidence_linked_records(tmp_path: Path) -> Non
     assert record["iem_update_candidates"][0]["state"] == "Predicted"
 
 
+def test_h2_outcome_report_allows_missing_default_judge_report_with_verifier_evidence(tmp_path: Path) -> None:
+    run_root = _write_run_root(tmp_path)
+    _write_task(
+        run_root,
+        alias="alpha",
+        task_id="V04_h1_verifier_before_delivery_01",
+        raw_rows=[
+            _raw_row(1, "address_diff", reasoning="benchmark mode: H1 verifier-before-delivery bridge"),
+            _raw_row(2, "task_execute"),
+        ],
+        terminal_output={"answer": "verified"},
+    )
+
+    report = build_h2_outcome_report(
+        run_root=run_root,
+        judge_report_path=None,
+        agent_root=tmp_path,
+    )
+
+    assert report["passed"] is True
+    assert report["metrics"]["h1_evidence_ref_ratio"] == 1.0
+    assert report["records"][0]["h1_judge_ref"] == []
+    assert report["records"][0]["verifier_evidence_ref"][0]["action"] == "address_diff"
+
+
+def test_h2_outcome_report_requires_explicit_judge_report_path(tmp_path: Path) -> None:
+    run_root = _write_run_root(tmp_path)
+    _write_task(
+        run_root,
+        alias="alpha",
+        task_id="V04_h1_verifier_before_delivery_01",
+        raw_rows=[
+            _raw_row(1, "address_diff", reasoning="benchmark mode: H1 verifier-before-delivery bridge"),
+            _raw_row(2, "task_execute"),
+        ],
+        terminal_output={"answer": "verified"},
+    )
+
+    report = build_h2_outcome_report(
+        run_root=run_root,
+        judge_report_path=tmp_path / "missing_h1_judge_report.json",
+        agent_root=tmp_path,
+    )
+
+    assert report["passed"] is False
+    assert any("missing JSON artifact" in reason for reason in report["failure_reasons"])
+
+
 def test_h2_outcome_report_fails_when_h1_judge_ref_missing(tmp_path: Path) -> None:
     run_root = _write_run_root(tmp_path)
     _write_task(

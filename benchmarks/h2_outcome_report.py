@@ -85,13 +85,18 @@ def build_h2_outcome_report(
     min_delayed_verifier_coverage_ratio: float | None = None,
 ) -> dict[str, Any]:
     run_root = _resolve_path(run_root, agent_root)
+    judge_report_required = judge_report_path is not None
     judge_report_path = (
         run_root / "h1_llm_judge_report.json"
         if judge_report_path is None
         else _resolve_path(judge_report_path, agent_root)
     )
     failures: list[str] = []
-    judge_refs = _load_h1_judge_refs(judge_report_path, failures)
+    judge_refs = _load_h1_judge_refs(
+        judge_report_path,
+        failures,
+        required=judge_report_required,
+    )
     delayed_outcomes_path = (
         None if delayed_outcomes_path is None
         else _resolve_path(delayed_outcomes_path, agent_root)
@@ -261,7 +266,13 @@ def _make_record(
 def _load_h1_judge_refs(
     path: Path,
     failures: list[str],
+    *,
+    required: bool,
 ) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    if not path.is_file():
+        if required:
+            failures.append(f"missing JSON artifact: {path}")
+        return {}
     payload = _read_json(path, failures)
     refs: dict[tuple[str, str], list[dict[str, Any]]] = {}
     if not payload:
