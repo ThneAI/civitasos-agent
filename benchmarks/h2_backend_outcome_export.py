@@ -39,6 +39,9 @@ def export_backend_outcome_events(
     limit: int | None = DEFAULT_LIMIT,
     timeout_s: float = 20.0,
     allow_truncated: bool = False,
+    bearer_token: str | None = None,
+    api_key: str | None = None,
+    demo_login_agent_id: str | None = None,
 ) -> dict[str, Any]:
     payload = fetch_backend_outcome_events(
         backend_url=backend_url,
@@ -50,6 +53,9 @@ def export_backend_outcome_events(
         since=since,
         limit=limit,
         timeout_s=timeout_s,
+        bearer_token=bearer_token,
+        api_key=api_key,
+        demo_login_agent_id=demo_login_agent_id,
     )
     validate_backend_outcome_events_payload(payload, allow_truncated=allow_truncated)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +77,16 @@ def fetch_backend_outcome_events(
     since: str | None = None,
     limit: int | None = DEFAULT_LIMIT,
     timeout_s: float = 20.0,
+    bearer_token: str | None = None,
+    api_key: str | None = None,
+    demo_login_agent_id: str | None = None,
 ) -> dict[str, Any]:
+    if not bearer_token and not api_key:
+        bearer_token = _demo_login_token(
+            backend_url=backend_url,
+            agent_id=demo_login_agent_id,
+            timeout_s=timeout_s,
+        )
     url = build_outcome_events_url(
         backend_url=backend_url,
         agent_id=agent_id,
@@ -82,7 +97,11 @@ def fetch_backend_outcome_events(
         since=since,
         limit=limit,
     )
-    request = Request(url, headers={"Accept": "application/json"}, method="GET")
+    request = Request(
+        url,
+        headers=_request_headers(bearer_token=bearer_token, api_key=api_key),
+        method="GET",
+    )
     try:
         with urlopen(request, timeout=timeout_s) as response:
             raw = response.read().decode("utf-8")
@@ -110,6 +129,57 @@ def fetch_backend_outcome_events(
             f"backend outcome export payload must be a JSON object from {url}"
         )
     return payload
+
+
+def _demo_login_token(
+    *,
+    backend_url: str,
+    agent_id: str | None,
+    timeout_s: float,
+) -> str | None:
+    agent_id = str(agent_id or "").strip()
+    if not agent_id:
+        return None
+    url = f"{backend_url.strip().rstrip('/')}/api/v1/auth/demo-login"
+    request = Request(
+        url,
+        data=json.dumps({"agent_id": agent_id}).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout_s) as response:
+            raw = response.read().decode("utf-8")
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise BackendOutcomeExportError(
+            f"demo-login HTTP {exc.code} from {url}: {body}"
+        ) from exc
+    except URLError as exc:
+        raise BackendOutcomeExportError(
+            f"demo-login failed to reach {url}: {exc.reason}"
+        ) from exc
+    except OSError as exc:
+        raise BackendOutcomeExportError(f"demo-login failed to read {url}: {exc}") from exc
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BackendOutcomeExportError(f"demo-login returned invalid JSON from {url}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise BackendOutcomeExportError(f"demo-login payload must be a JSON object from {url}")
+    token = payload.get("token") or _dict(payload.get("data")).get("token")
+    if not token:
+        raise BackendOutcomeExportError(f"demo-login did not return token from {url}")
+    return str(token)
+
+
+def _request_headers(*, bearer_token: str | None, api_key: str | None) -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    if api_key:
+        headers["X-API-Key"] = api_key
+    return headers
 
 
 def build_outcome_events_url(
@@ -232,6 +302,18 @@ def _json_int(value: object, name: str, failures: list[str]) -> int | None:
     return value
 
 
+def _dict(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _env_first(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _resolve_path(path: Path, agent_root: Path) -> Path:
     return path if path.is_absolute() else agent_root / path
 
@@ -253,6 +335,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--timeout-s", type=float, default=20.0)
     parser.add_argument("--allow-truncated", action="store_true")
+    parser.add_argument(
+        "--bearer-token",
+        default=_env_first(
+            "H2_BACKEND_OUTCOME_EVENTS_BEARER_TOKEN",
+            "CIVITASOS_AUTH_TOKEN",
+            "CIVITASOS_BEARER_TOKEN",
+        ),
+    )
+    parser.add_argument(
+        "--api-key",
+        default=_env_first("H2_BACKEND_OUTCOME_EVENTS_API_KEY", "CIVITASOS_API_KEY"),
+    )
+    parser.add_argument(
+        "--demo-login-agent-id",
+        default=os.environ.get("H2_BACKEND_OUTCOME_EVENTS_DEMO_LOGIN_AGENT_ID", ""),
+    )
     args = parser.parse_args(argv)
     output = _resolve_path(Path(args.output), agent_root)
     try:
@@ -268,6 +366,9 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             timeout_s=args.timeout_s,
             allow_truncated=args.allow_truncated,
+            bearer_token=args.bearer_token or None,
+            api_key=args.api_key or None,
+            demo_login_agent_id=args.demo_login_agent_id or None,
         )
     except BackendOutcomeExportError as exc:
         print(f"H2 backend outcome export failed: {exc}", file=sys.stderr)

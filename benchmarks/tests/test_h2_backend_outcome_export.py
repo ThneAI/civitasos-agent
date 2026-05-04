@@ -63,6 +63,89 @@ def test_export_backend_outcome_events_writes_complete_artifact(
     assert seen["timeout"] == 7.5
 
 
+def test_export_backend_outcome_events_sends_explicit_auth(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload = _payload([])
+    seen: dict[str, object] = {}
+
+    def fake_urlopen(request: object, timeout: float) -> _Response:
+        seen["headers"] = _headers(request)
+        return _Response(payload)
+
+    monkeypatch.setattr(exporter, "urlopen", fake_urlopen)
+
+    exporter.export_backend_outcome_events(
+        backend_url="http://backend",
+        output_path=tmp_path / "events.json",
+        bearer_token="jwt-token",
+        api_key="api-key",
+    )
+
+    assert seen["headers"]["authorization"] == "Bearer jwt-token"
+    assert seen["headers"]["x-api-key"] == "api-key"
+
+
+def test_export_backend_outcome_events_bootstraps_demo_login(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload = _payload([])
+    calls: list[dict[str, object]] = []
+
+    def fake_urlopen(request: object, timeout: float) -> _Response:
+        call = {
+            "url": request.full_url,  # type: ignore[attr-defined]
+            "method": request.get_method(),  # type: ignore[attr-defined]
+            "headers": _headers(request),
+        }
+        if request.data is not None:  # type: ignore[attr-defined]
+            call["body"] = json.loads(request.data.decode("utf-8"))  # type: ignore[attr-defined]
+        calls.append(call)
+        if call["url"] == "http://backend/api/v1/auth/demo-login":
+            return _Response({"data": {"token": "demo-token"}})
+        return _Response(payload)
+
+    monkeypatch.setattr(exporter, "urlopen", fake_urlopen)
+
+    exporter.export_backend_outcome_events(
+        backend_url="http://backend",
+        output_path=tmp_path / "events.json",
+        demo_login_agent_id="h2-exporter",
+    )
+
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["body"] == {"agent_id": "h2-exporter"}
+    assert calls[1]["method"] == "GET"
+    assert calls[1]["headers"]["authorization"] == "Bearer demo-token"
+
+
+def test_export_backend_outcome_events_skips_demo_login_when_api_key_present(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload = _payload([])
+    calls: list[str] = []
+
+    def fake_urlopen(request: object, timeout: float) -> _Response:
+        calls.append(request.full_url)  # type: ignore[attr-defined]
+        assert request.get_method() == "GET"  # type: ignore[attr-defined]
+        assert _headers(request)["x-api-key"] == "api-key"
+        return _Response(payload)
+
+    monkeypatch.setattr(exporter, "urlopen", fake_urlopen)
+
+    exporter.export_backend_outcome_events(
+        backend_url="http://backend",
+        output_path=tmp_path / "events.json",
+        api_key="api-key",
+        demo_login_agent_id="should-not-be-used",
+    )
+
+    assert calls == ["http://backend/api/v1/a2a/outcomes/events?limit=500"]
+
+
 def test_export_backend_outcome_events_fails_closed_when_truncated(tmp_path: Path) -> None:
     payload = _payload([_event("task_backend_1")], total=2, returned=1)
 
@@ -124,4 +207,11 @@ def _event(task_id: str) -> dict:
         "verifier_or_settlement_read": True,
         "outcome_status": "disputed",
         "dispute_ref": f"task_failure:{task_id}",
+    }
+
+
+def _headers(request: object) -> dict[str, str]:
+    return {
+        str(name).lower(): str(value)
+        for name, value in request.header_items()  # type: ignore[attr-defined]
     }
