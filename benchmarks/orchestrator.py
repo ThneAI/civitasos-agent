@@ -55,7 +55,9 @@ SENTINEL_TO_EXIT = {
 
 _CLAIM_SPIN_GRACE_TICKS_DEFAULT = 10
 _CLAIM_SPIN_WINDOW_DEFAULT = 5
+_CLAIM_DELIVERY_GRACE_TICKS_DEFAULT = 4
 _IDENTITY_PROBE_GRACE_TICKS_DEFAULT = 2
+_VERIFIER_BRIDGE_GRACE_TICKS_DEFAULT = 4
 _ORCH_BOOTSTRAP_AUTH_AGENT_ID = "f1c_orchestrator_bootstrap"
 
 # F.1.b backend-mode flag values.
@@ -602,7 +604,6 @@ class Orchestrator:
         (task_dir / "backend_task_id.txt").write_text(backend_task_id, encoding="utf-8")
         session.backend_task_id_file.write_text(backend_task_id, encoding="utf-8")
 
-        wall_clock_budget_s = task.max_ticks * self._cfg.wall_clock_per_tick_s
         claim_spin_grace_ticks = _env_int(
             "BENCHMARK_CLAIM_SPIN_GRACE_TICKS",
             _CLAIM_SPIN_GRACE_TICKS_DEFAULT,
@@ -613,14 +614,27 @@ class Orchestrator:
             _CLAIM_SPIN_WINDOW_DEFAULT,
             min_value=2,
         )
+        claim_delivery_grace_ticks = _env_int(
+            "BENCHMARK_CLAIM_DELIVERY_GRACE_TICKS",
+            _CLAIM_DELIVERY_GRACE_TICKS_DEFAULT,
+            min_value=0,
+        )
         identity_probe_grace_ticks = _env_int(
             "BENCHMARK_IDENTITY_PROBE_GRACE_TICKS",
             _IDENTITY_PROBE_GRACE_TICKS_DEFAULT,
             min_value=0,
         )
+        verifier_bridge_grace_ticks = _env_int(
+            "BENCHMARK_VERIFIER_BRIDGE_GRACE_TICKS",
+            _VERIFIER_BRIDGE_GRACE_TICKS_DEFAULT,
+            min_value=0,
+        )
         tick_limit_budget = task.max_ticks + pre_target_ticks
+        wall_clock_budget_s = tick_limit_budget * self._cfg.wall_clock_per_tick_s
         claim_spin_grace_used = False
+        claim_delivery_grace_used = False
         identity_probe_grace_used = False
+        verifier_bridge_grace_used = False
         t0 = time.monotonic()
         sentinel_kind: str | None = None
         sentinel_reason = ""
@@ -664,6 +678,9 @@ class Orchestrator:
                         identity_probe_grace_used = True
                         prev = tick_limit_budget
                         tick_limit_budget += identity_probe_grace_ticks
+                        wall_clock_budget_s += (
+                            identity_probe_grace_ticks * self._cfg.wall_clock_per_tick_s
+                        )
                         logger.warning(
                             "[orch-identity-grace] task=%s extending tick limit %d -> %d (%s)",
                             task.id,
@@ -685,8 +702,58 @@ class Orchestrator:
                         claim_spin_grace_used = True
                         prev = tick_limit_budget
                         tick_limit_budget += claim_spin_grace_ticks
+                        wall_clock_budget_s += (
+                            claim_spin_grace_ticks * self._cfg.wall_clock_per_tick_s
+                        )
                         logger.warning(
                             "[orch-claim-grace] task=%s extending tick limit %d -> %d (%s)",
+                            task.id,
+                            prev,
+                            tick_limit_budget,
+                            reason,
+                        )
+                        continue
+                if (
+                    not claim_delivery_grace_used
+                    and claim_delivery_grace_ticks > 0
+                ):
+                    eligible, reason = self._can_grant_claim_delivery_grace(
+                        backend_task_id=backend_task_id,
+                        raw_csv=raw_csv,
+                    )
+                    if eligible:
+                        claim_delivery_grace_used = True
+                        prev = tick_limit_budget
+                        tick_limit_budget += claim_delivery_grace_ticks
+                        wall_clock_budget_s += (
+                            claim_delivery_grace_ticks * self._cfg.wall_clock_per_tick_s
+                        )
+                        logger.warning(
+                            "[orch-claim-delivery-grace] task=%s extending tick limit %d -> %d (%s)",
+                            task.id,
+                            prev,
+                            tick_limit_budget,
+                            reason,
+                        )
+                        continue
+                if (
+                    not verifier_bridge_grace_used
+                    and verifier_bridge_grace_ticks > 0
+                ):
+                    eligible, reason = self._can_grant_verifier_bridge_grace(
+                        task=task,
+                        backend_task_id=backend_task_id,
+                        raw_csv=raw_csv,
+                    )
+                    if eligible:
+                        verifier_bridge_grace_used = True
+                        prev = tick_limit_budget
+                        tick_limit_budget += verifier_bridge_grace_ticks
+                        wall_clock_budget_s += (
+                            verifier_bridge_grace_ticks * self._cfg.wall_clock_per_tick_s
+                        )
+                        logger.warning(
+                            "[orch-verifier-grace] task=%s extending tick limit %d -> %d (%s)",
                             task.id,
                             prev,
                             tick_limit_budget,
@@ -816,7 +883,6 @@ class Orchestrator:
             write_briefing(task, run_id=run_id, out_path=briefing_path)
             env["BENCHMARK_BRIEFING_FILE"] = str(briefing_path)
 
-        wall_clock_budget_s = task.max_ticks * self._cfg.wall_clock_per_tick_s
         claim_spin_grace_ticks = _env_int(
             "BENCHMARK_CLAIM_SPIN_GRACE_TICKS",
             _CLAIM_SPIN_GRACE_TICKS_DEFAULT,
@@ -827,14 +893,27 @@ class Orchestrator:
             _CLAIM_SPIN_WINDOW_DEFAULT,
             min_value=2,
         )
+        claim_delivery_grace_ticks = _env_int(
+            "BENCHMARK_CLAIM_DELIVERY_GRACE_TICKS",
+            _CLAIM_DELIVERY_GRACE_TICKS_DEFAULT,
+            min_value=0,
+        )
         identity_probe_grace_ticks = _env_int(
             "BENCHMARK_IDENTITY_PROBE_GRACE_TICKS",
             _IDENTITY_PROBE_GRACE_TICKS_DEFAULT,
             min_value=0,
         )
+        verifier_bridge_grace_ticks = _env_int(
+            "BENCHMARK_VERIFIER_BRIDGE_GRACE_TICKS",
+            _VERIFIER_BRIDGE_GRACE_TICKS_DEFAULT,
+            min_value=0,
+        )
         tick_limit_budget = task.max_ticks
+        wall_clock_budget_s = tick_limit_budget * self._cfg.wall_clock_per_tick_s
         claim_spin_grace_used = False
+        claim_delivery_grace_used = False
         identity_probe_grace_used = False
+        verifier_bridge_grace_used = False
 
         cmd = shlex.split(self._cfg.agent_command)
         t0 = time.monotonic()
@@ -898,6 +977,9 @@ class Orchestrator:
                             identity_probe_grace_used = True
                             prev = tick_limit_budget
                             tick_limit_budget += identity_probe_grace_ticks
+                            wall_clock_budget_s += (
+                                identity_probe_grace_ticks * self._cfg.wall_clock_per_tick_s
+                            )
                             logger.warning(
                                 "[orch-identity-grace] task=%s extending tick limit %d -> %d (%s)",
                                 task.id,
@@ -920,8 +1002,60 @@ class Orchestrator:
                             claim_spin_grace_used = True
                             prev = tick_limit_budget
                             tick_limit_budget += claim_spin_grace_ticks
+                            wall_clock_budget_s += (
+                                claim_spin_grace_ticks * self._cfg.wall_clock_per_tick_s
+                            )
                             logger.warning(
                                 "[orch-claim-grace] task=%s extending tick limit %d -> %d (%s)",
+                                task.id,
+                                prev,
+                                tick_limit_budget,
+                                reason,
+                            )
+                            continue
+                    if (
+                        not claim_delivery_grace_used
+                        and backend_task_id is not None
+                        and claim_delivery_grace_ticks > 0
+                    ):
+                        eligible, reason = self._can_grant_claim_delivery_grace(
+                            backend_task_id=backend_task_id,
+                            raw_csv=raw_csv,
+                        )
+                        if eligible:
+                            claim_delivery_grace_used = True
+                            prev = tick_limit_budget
+                            tick_limit_budget += claim_delivery_grace_ticks
+                            wall_clock_budget_s += (
+                                claim_delivery_grace_ticks * self._cfg.wall_clock_per_tick_s
+                            )
+                            logger.warning(
+                                "[orch-claim-delivery-grace] task=%s extending tick limit %d -> %d (%s)",
+                                task.id,
+                                prev,
+                                tick_limit_budget,
+                                reason,
+                            )
+                            continue
+                    if (
+                        not verifier_bridge_grace_used
+                        and backend_task_id is not None
+                        and verifier_bridge_grace_ticks > 0
+                    ):
+                        eligible, reason = self._can_grant_verifier_bridge_grace(
+                            task=task,
+                            backend_task_id=backend_task_id,
+                            raw_csv=raw_csv,
+                        )
+                        if eligible:
+                            verifier_bridge_grace_used = True
+                            prev = tick_limit_budget
+                            tick_limit_budget += verifier_bridge_grace_ticks
+                            wall_clock_budget_s += (
+                                verifier_bridge_grace_ticks * self._cfg.wall_clock_per_tick_s
+                            )
+                            logger.warning(
+                                "[orch-verifier-grace] task=%s extending tick limit %d -> %d (%s)",
                                 task.id,
                                 prev,
                                 tick_limit_budget,
@@ -1162,6 +1296,59 @@ class Orchestrator:
             return False, f"backend status={state.status}"
         return True, f"backend status=Claimed after {last_action}"
 
+    def _can_grant_claim_delivery_grace(
+        self,
+        *,
+        backend_task_id: str,
+        raw_csv: Path,
+    ) -> tuple[bool, str]:
+        last_action = _tail_last_action(raw_csv)
+        recent_claim_tick = _tail_recent_successful_action(
+            raw_csv,
+            action="pool_claim",
+            lookback=2,
+        )
+        if last_action != "pool_claim" and not (
+            last_action == "wait" and recent_claim_tick is not None
+        ):
+            return False, f"last action is {last_action or 'none'}"
+        client = self._cfg.backend_client
+        if client is None:
+            return False, "backend client unavailable"
+        try:
+            state = client.get_state(backend_task_id)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"cannot read backend state: {exc}"
+        if state.status != "Claimed":
+            return False, f"backend status={state.status}"
+        if last_action == "wait" and recent_claim_tick is not None:
+            return True, f"backend status=Claimed after recent pool_claim tick {recent_claim_tick}"
+        return True, "backend status=Claimed after pool_claim"
+
+    def _can_grant_verifier_bridge_grace(
+        self,
+        *,
+        task: TaskSpec,
+        backend_task_id: str,
+        raw_csv: Path,
+    ) -> tuple[bool, str]:
+        verifier_tools = {tool for tool in task.verifier_tools if tool}
+        if not verifier_tools:
+            return False, "task has no verifier tools"
+        last_action = _tail_last_action(raw_csv)
+        if last_action not in verifier_tools:
+            return False, f"last action is {last_action or 'none'}"
+        client = self._cfg.backend_client
+        if client is None:
+            return False, "backend client unavailable"
+        try:
+            state = client.get_state(backend_task_id)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"cannot read backend state: {exc}"
+        if state.status != "Claimed":
+            return False, f"backend status={state.status}"
+        return True, f"backend status=Claimed after verifier action {last_action}"
+
     @staticmethod
     def _materialise_sentinel(sentinel_dir: Path, kind: str, reason: str) -> None:
         path = sentinel_dir / kind
@@ -1369,6 +1556,36 @@ def _tail_last_action(csv_path: Path) -> str:
     except OSError:
         return ""
     return last_action
+
+
+def _tail_recent_successful_action(
+    csv_path: Path,
+    *,
+    action: str,
+    lookback: int,
+) -> int | None:
+    if lookback <= 0 or not csv_path.exists():
+        return None
+    rows: deque[dict[str, str]] = deque(maxlen=lookback)
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                rows.append(row)
+    except OSError:
+        return None
+
+    for row in reversed(rows):
+        if str(row.get("decision_action", "")).strip() != action:
+            continue
+        eval_success = str(row.get("eval_success", "")).strip().lower()
+        if eval_success not in {"true", "1"}:
+            continue
+        try:
+            return int(str(row.get("tick_seq") or "0").strip())
+        except ValueError:
+            return None
+    return None
 
 
 def _count_llm_mode_selected_after(csv_path: Path, *, start_seq: int) -> int:

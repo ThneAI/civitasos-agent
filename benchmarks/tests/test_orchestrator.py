@@ -15,6 +15,7 @@ from benchmarks.orchestrator import (
     Orchestrator, OrchestratorConfig, _build_backend_client, _load_cached_result,
     _count_llm_mode_selected_after, _load_backend_final_output,
     _h1_llm_criteria_json, _tail_actions_all_pool_claim, _tail_last_action,
+    _tail_recent_successful_action,
 )
 from benchmarks.task_loader import load_manifest
 
@@ -218,6 +219,110 @@ def test_identity_probe_grace_requires_claimed_backend_state(tmp_path: Path) -> 
     )
     assert eligible is True
     assert "Claimed" in reason
+
+
+def test_verifier_bridge_grace_requires_claimed_backend_state(tmp_path: Path) -> None:
+    raw_csv = tmp_path / "ticks.csv"
+    raw_csv.write_text(
+        (
+            "run_id,agent_id,task_id,tick_seq,tick_id,timestamp,phase_reached,"
+            "decision_action,decision_source,decision_reasoning,served_intent_layer,"
+            "conscience_allowed,conscience_reason,eval_success,eval_cost,eval_duration_ms,"
+            "aspect_gap,peer_trust_avg,balance,mode,is_wait,lessons_count,wait_references_telos\n"
+            "r,a,t,1,x,ts,reflect,pool_claim,rules,,,,true,0,1,0.1,0.5,1,active,false,0,false\n"
+            "r,a,t,2,x,ts,reflect,address_diff,rules,,,,true,1,3,0.1,0.5,1,active,false,0,false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def get_state(self, task_id: str) -> BackendTaskState:
+            return BackendTaskState(
+                task_id=task_id,
+                status="Claimed",
+                output=None,
+                raw={},
+            )
+
+    orch = object.__new__(Orchestrator)
+    orch._cfg = SimpleNamespace(backend_client=FakeClient())
+
+    eligible, reason = orch._can_grant_verifier_bridge_grace(
+        task=SimpleNamespace(verifier_tools=["address_diff"]),
+        backend_task_id="task-1",
+        raw_csv=raw_csv,
+    )
+    assert eligible is True
+    assert "address_diff" in reason
+
+
+def test_claim_delivery_grace_requires_claimed_backend_state(tmp_path: Path) -> None:
+    raw_csv = tmp_path / "ticks.csv"
+    raw_csv.write_text(
+        (
+            "run_id,agent_id,task_id,tick_seq,tick_id,timestamp,phase_reached,"
+            "decision_action,decision_source,decision_reasoning,served_intent_layer,"
+            "conscience_allowed,conscience_reason,eval_success,eval_cost,eval_duration_ms,"
+            "aspect_gap,peer_trust_avg,balance,mode,is_wait,lessons_count,wait_references_telos\n"
+            "r,a,t,1,x,ts,reflect,pool_claim,rules,,,,false,0,1,0.1,0.5,1,active,false,0,false\n"
+            "r,a,t,2,x,ts,reflect,pool_claim,rules,,,,true,1,3,0.1,0.5,1,active,false,0,false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def get_state(self, task_id: str) -> BackendTaskState:
+            return BackendTaskState(
+                task_id=task_id,
+                status="Claimed",
+                output=None,
+                raw={},
+            )
+
+    orch = object.__new__(Orchestrator)
+    orch._cfg = SimpleNamespace(backend_client=FakeClient())
+
+    eligible, reason = orch._can_grant_claim_delivery_grace(
+        backend_task_id="task-1",
+        raw_csv=raw_csv,
+    )
+    assert eligible is True
+    assert "pool_claim" in reason
+
+
+def test_claim_delivery_grace_allows_wait_after_successful_claim(tmp_path: Path) -> None:
+    raw_csv = tmp_path / "ticks.csv"
+    raw_csv.write_text(
+        (
+            "run_id,agent_id,task_id,tick_seq,tick_id,timestamp,phase_reached,"
+            "decision_action,decision_source,decision_reasoning,served_intent_layer,"
+            "conscience_allowed,conscience_reason,eval_success,eval_cost,eval_duration_ms,"
+            "aspect_gap,peer_trust_avg,balance,mode,is_wait,lessons_count,wait_references_telos\n"
+            "r,a,t,1,x,ts,reflect,pool_claim,rules,,,,true,1,3,0.1,0.5,1,active,false,0,false\n"
+            "r,a,t,2,x,ts,reflect,wait,llm,,,,,0,0,0.1,0.5,1,waiting,true,0,false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def get_state(self, task_id: str) -> BackendTaskState:
+            return BackendTaskState(
+                task_id=task_id,
+                status="Claimed",
+                output=None,
+                raw={},
+            )
+
+    orch = object.__new__(Orchestrator)
+    orch._cfg = SimpleNamespace(backend_client=FakeClient())
+
+    assert _tail_recent_successful_action(raw_csv, action="pool_claim", lookback=2) == 1
+    eligible, reason = orch._can_grant_claim_delivery_grace(
+        backend_task_id="task-1",
+        raw_csv=raw_csv,
+    )
+    assert eligible is True
+    assert "recent pool_claim" in reason
 
 
 def test_load_cached_result_drops_abnormal_without_sentinel(tmp_path: Path) -> None:

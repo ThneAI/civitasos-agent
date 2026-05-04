@@ -1333,6 +1333,8 @@ def _install_fast_intervals() -> None:
         idle = float(os.getenv("BENCHMARK_IDLE_INTERVAL_S", "1.0"))
         waiting = float(os.getenv("BENCHMARK_WAIT_INTERVAL_S", str(idle)))
         deep_think = float(os.getenv("BENCHMARK_DEEP_THINK_INTERVAL_S", str(idle)))
+        sleeping_raw = os.getenv("BENCHMARK_SLEEPING_INTERVAL_S")
+        sleeping = float(sleeping_raw) if sleeping_raw is not None else None
     except ValueError as exc:
         logger.warning("benchmark_mode: bad interval env: %s", exc)
         return
@@ -1341,14 +1343,16 @@ def _install_fast_intervals() -> None:
     _loop_mod._INTERVALS[LM.IDLE] = idle
     _loop_mod._INTERVALS[LM.WAITING] = waiting
     _loop_mod._INTERVALS[LM.DEEP_THINK] = deep_think
-    # Leave SLEEPING/EVENT untouched.
+    if sleeping is not None:
+        _loop_mod._INTERVALS[LM.SLEEPING] = sleeping
     logger.info(
         "benchmark_mode: loop intervals overridden "
-        "(ACTIVE=%.2fs, IDLE=%.2fs, WAITING=%.2fs, DEEP_THINK=%.2fs)",
+        "(ACTIVE=%.2fs, IDLE=%.2fs, WAITING=%.2fs, DEEP_THINK=%.2fs, SLEEPING=%s)",
         active,
         idle,
         waiting,
         deep_think,
+        f"{sleeping:.2f}s" if sleeping is not None else "default",
     )
 
 

@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from benchmarks import benchmark_mode
+from civitasos_runtime import loop as runtime_loop
 
 
 class FakeRuleEngine:
@@ -60,6 +61,27 @@ class FakeRunner:
             self._tools_registered[name] = fn
             return fn
         return decorator
+
+
+def test_fast_intervals_can_override_sleeping_interval(monkeypatch):
+    original_intervals = dict(runtime_loop._INTERVALS)
+    monkeypatch.setenv("BENCHMARK_TICK_INTERVAL_S", "0.11")
+    monkeypatch.setenv("BENCHMARK_IDLE_INTERVAL_S", "0.22")
+    monkeypatch.setenv("BENCHMARK_WAIT_INTERVAL_S", "0.33")
+    monkeypatch.setenv("BENCHMARK_DEEP_THINK_INTERVAL_S", "0.44")
+    monkeypatch.setenv("BENCHMARK_SLEEPING_INTERVAL_S", "0.55")
+
+    try:
+        benchmark_mode._install_fast_intervals()
+
+        assert runtime_loop._INTERVALS[runtime_loop.LoopMode.ACTIVE] == 0.11
+        assert runtime_loop._INTERVALS[runtime_loop.LoopMode.IDLE] == 0.22
+        assert runtime_loop._INTERVALS[runtime_loop.LoopMode.WAITING] == 0.33
+        assert runtime_loop._INTERVALS[runtime_loop.LoopMode.DEEP_THINK] == 0.44
+        assert runtime_loop._INTERVALS[runtime_loop.LoopMode.SLEEPING] == 0.55
+    finally:
+        runtime_loop._INTERVALS.clear()
+        runtime_loop._INTERVALS.update(original_intervals)
 
 
 class FakeBackendAgent:
