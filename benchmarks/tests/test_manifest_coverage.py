@@ -146,6 +146,6 @@ def test_no_duplicate_task_ids(manifest) -> None:
 
 def test_task_id_format(manifest) -> None:
     import re
-    pattern = re.compile(r"^[RVSAG]\d{2}_(happy|adversarial)_\d{2}$")
+    pattern = re.compile(r"^[RVSAG]\d{2}_(happy|adversarial|h1_[a-z0-9_]+)_\d{2}$")
     bad = [t.id for t in manifest.tasks if not pattern.match(t.id)]
-    assert not bad, f"task IDs violating [RVSAG]NN_(happy|adversarial)_NN: {bad}"
+    assert not bad, f"task IDs violating [RVSAG]NN_(happy|adversarial|h1_*)_NN: {bad}"

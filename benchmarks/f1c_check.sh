@@ -13,6 +13,11 @@ BACKEND_URL="${BACKEND_URL:-http://localhost:8099}"
 LLM_BASE_URL="${LLM_BASE_URL:-http://localhost:11434}"
 LLM_MODEL="${LLM_MODEL:-qwen3:latest}"
 RUNS_ROOT="${RUNS_ROOT:-runs/F1c}"
+OLLAMA_NATIVE_URL="${OLLAMA_NATIVE_URL:-$LLM_BASE_URL}"
+OLLAMA_NATIVE_URL="${OLLAMA_NATIVE_URL%/}"
+case "$OLLAMA_NATIVE_URL" in
+    */v1) OLLAMA_NATIVE_URL="${OLLAMA_NATIVE_URL%/v1}" ;;
+esac
 
 ok()    { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 fail()  { printf '  \033[31m✗\033[0m %s\n' "$*"; }
@@ -62,22 +67,22 @@ else
 fi
 
 # 5. ollama up + qwen3 pulled
-if curl -sf -m 3 "$LLM_BASE_URL/api/tags" 2>/dev/null | grep -q "$LLM_MODEL"; then
+if curl -sf -m 3 "$OLLAMA_NATIVE_URL/api/tags" 2>/dev/null | grep -q "$LLM_MODEL"; then
     ok "ollama serving $LLM_MODEL"
 else
-    fail "ollama not serving $LLM_MODEL at $LLM_BASE_URL"
+    fail "ollama not serving $LLM_MODEL at $OLLAMA_NATIVE_URL"
     hint "start ollama and: ollama pull $LLM_MODEL"
     failures=$((failures + 1))
 fi
 
 # 6. ollama warm (first inference is slow, do a tiny warmup)
-if curl -sf -m 60 -X POST "$LLM_BASE_URL/api/generate" \
+if curl -sf -m 60 -X POST "$OLLAMA_NATIVE_URL/api/generate" \
         -d "{\"model\":\"$LLM_MODEL\",\"prompt\":\"hi\",\"stream\":false}" \
         >/dev/null 2>&1; then
     ok "ollama responded to warmup prompt"
 else
     fail "ollama warmup failed"
-    hint "verify: curl -X POST $LLM_BASE_URL/api/generate -d '{\"model\":\"$LLM_MODEL\",\"prompt\":\"hi\",\"stream\":false}'"
+    hint "verify: curl -X POST $OLLAMA_NATIVE_URL/api/generate -d '{\"model\":\"$LLM_MODEL\",\"prompt\":\"hi\",\"stream\":false}'"
     failures=$((failures + 1))
 fi
 

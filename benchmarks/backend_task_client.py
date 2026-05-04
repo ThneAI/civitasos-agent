@@ -108,12 +108,18 @@ class BackendTaskClient:
         create_max_retries: int = 6,
         create_retry_base_s: float = 0.5,
         create_retry_max_s: float = 8.0,
+        state_max_retries: int = 4,
+        state_retry_base_s: float = 1.0,
+        state_retry_max_s: float = 8.0,
     ) -> None:
         self._sdk = sdk
         self._default_capability = default_capability
         self._create_max_retries = max(0, int(create_max_retries))
         self._create_retry_base_s = max(0.0, float(create_retry_base_s))
         self._create_retry_max_s = max(self._create_retry_base_s, float(create_retry_max_s))
+        self._state_max_retries = max(0, int(state_max_retries))
+        self._state_retry_base_s = max(0.0, float(state_retry_base_s))
+        self._state_retry_max_s = max(self._state_retry_base_s, float(state_retry_max_s))
 
     # -- create ---------------------------------------------------------
 
@@ -273,6 +279,29 @@ class BackendTaskClient:
         shows pressure under F.1.c (3 agents × 60 tasks) the G-stage backlog
         item ``pool_get_task(task_id)`` will replace this.
         """
+        for attempt in range(self._state_max_retries + 1):
+            try:
+                return self._get_state_once(task_id)
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= self._state_max_retries or not _is_rate_limited(exc):
+                    raise
+                backoff_s = min(
+                    self._state_retry_max_s,
+                    self._state_retry_base_s * (2 ** attempt),
+                )
+                logger.warning(
+                    "get_state(%s) rate-limited (attempt %d/%d), retry in %.1fs: %s",
+                    task_id,
+                    attempt + 1,
+                    self._state_max_retries + 1,
+                    backoff_s,
+                    exc,
+                )
+                time.sleep(backoff_s)
+
+        raise LookupError(f"backend task {task_id!r} not present in pool_list")
+
+    def _get_state_once(self, task_id: str) -> BackendTaskState:
         pool_get_task = getattr(self._sdk, "pool_get_task", None)
         if callable(pool_get_task):
             try:
@@ -282,6 +311,8 @@ class BackendTaskClient:
             except LookupError:
                 raise
             except Exception as exc:  # noqa: BLE001
+                if _is_rate_limited(exc):
+                    raise
                 logger.debug(
                     "pool_get_task(%s) failed; falling back to pool_list: %s",
                     task_id,

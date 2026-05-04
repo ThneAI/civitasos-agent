@@ -48,6 +48,15 @@ from observability.metrics.computers.m2_verification_miss import (
 from observability.metrics.computers.h1_telos_gate import (
     verifier_before_delivery_observed,
 )
+from .h1.llm_judge import build_judge_from_env
+from .h1.success_criteria import (
+    DEFAULT_MIN_LLM_JUDGE_PASS_RATE,
+    disabled_llm_judge_report,
+    evaluate_llm_judge_success_criteria,
+    failure_llm_judge_report,
+    write_llm_judge_report,
+)
+from .h2_outcome_report import build_h2_outcome_report
 from .task_loader import Manifest, load_manifest
 
 logger = logging.getLogger("f1c_merge")
@@ -330,6 +339,11 @@ def _parse_csv_bool(raw: str | None) -> bool | None:
     if s == "false":
         return False
     return None
+
+
+def _parse_csv_set(raw: str) -> set[str] | None:
+    values = {item.strip() for item in raw.split(",") if item.strip()}
+    return values or None
 
 
 def _count_g2_llm_mode_selected(run_dir: Path) -> dict[str, int]:
@@ -812,6 +826,7 @@ def _evaluate_h1_gate(
     require_active: bool = False,
     min_served_intent_layer_coverage_ratio: float = _DEFAULT_H1_SERVED_INTENT_COVERAGE_FLOOR,
     min_verifier_before_delivery_ratio: float = _DEFAULT_H1_VERIFIER_BEFORE_DELIVERY_FLOOR,
+    llm_judge_report: dict[str, object] | None = None,
 ) -> dict[str, object]:
     rows = _load_g2_final_metric_rows(final_metrics_csv)
     served_rows: list[tuple[dict[str, str], float]] = []
@@ -850,6 +865,7 @@ def _evaluate_h1_gate(
         served_rows
         or verifier_rows
         or int(raw_served["raw_h1_served_intent_rows"]) > 0
+        or (llm_judge_report is not None and not bool(llm_judge_report.get("skipped", True)))
     )
     if not active:
         if require_active:
@@ -863,6 +879,7 @@ def _evaluate_h1_gate(
             "final_metrics_verifier_rows": len(verifier_rows),
             **raw_served,
             **raw_verifier,
+            "llm_judge": llm_judge_report or disabled_llm_judge_report(),
             "g3_carry_through_passed": None,
             "h0_carry_through_passed": None,
         }
@@ -905,6 +922,14 @@ def _evaluate_h1_gate(
     if h0_gate is not None and not bool(h0_gate.get("passed", True)):
         failure_reasons.append("H0 carry-through failed under H1 gate")
 
+    if llm_judge_report is not None and not bool(llm_judge_report.get("passed", True)):
+        reasons = llm_judge_report.get("failure_reasons")
+        if isinstance(reasons, list) and reasons:
+            detail = "; ".join(str(reason) for reason in reasons)
+        else:
+            detail = "unknown llm_judge failure"
+        failure_reasons.append(f"H1 llm_judge success criteria failed: {detail}")
+
     return {
         "passed": not failure_reasons,
         "skipped": False,
@@ -916,8 +941,100 @@ def _evaluate_h1_gate(
         "final_metrics_verifier_rows": len(verifier_rows),
         **raw_served,
         **raw_verifier,
+        "llm_judge": llm_judge_report or disabled_llm_judge_report(),
         "g3_carry_through_passed": None if g3_gate is None else bool(g3_gate.get("passed")),
         "h0_carry_through_passed": None if h0_gate is None else bool(h0_gate.get("passed")),
+    }
+
+
+def _evaluate_h2_gate(
+    *,
+    runs_root: Path,
+    require_active: bool = False,
+    h2_outcome_report_path: Path | None = None,
+    judge_report_path: Path | None = None,
+    delayed_outcomes_path: Path | None = None,
+    backend_outcome_events_path: Path | None = None,
+    g3_gate: dict[str, object] | None = None,
+    h0_gate: dict[str, object] | None = None,
+    h1_gate: dict[str, object] | None = None,
+    min_outcome_ledger_coverage_ratio: float = 1.0,
+    min_h1_evidence_ref_ratio: float = 1.0,
+    min_normative_local_update_blocked_ratio: float = 1.0,
+    min_delayed_verifier_coverage_ratio: float | None = None,
+) -> dict[str, object]:
+    if not require_active:
+        return {
+            "passed": True,
+            "skipped": True,
+            "require_active": False,
+            "failure_reasons": [],
+        }
+
+    output_path = h2_outcome_report_path or (runs_root / "h2_outcome_report.json")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    failures: list[str] = []
+    try:
+        report = build_h2_outcome_report(
+            run_root=runs_root,
+            judge_report_path=judge_report_path,
+            delayed_outcomes_path=delayed_outcomes_path,
+            backend_outcome_events_path=backend_outcome_events_path,
+            agent_root=Path(__file__).resolve().parents[1],
+            min_outcome_ledger_coverage_ratio=min_outcome_ledger_coverage_ratio,
+            min_h1_evidence_ref_ratio=min_h1_evidence_ref_ratio,
+            min_normative_local_update_blocked_ratio=min_normative_local_update_blocked_ratio,
+            min_delayed_verifier_coverage_ratio=min_delayed_verifier_coverage_ratio,
+        )
+        output_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001 - opt-in H2 gate must fail closed
+        report = {
+            "schema_version": "h2-outcome-report:v1",
+            "passed": False,
+            "failure_reasons": [str(exc)],
+            "checks": {},
+            "metrics": {},
+        }
+
+    if not bool(report.get("passed")):
+        reasons = report.get("failure_reasons")
+        detail = "; ".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "unknown failure"
+        failures.append(f"H2 outcome report failed: {detail}")
+    if g3_gate is not None and not bool(g3_gate.get("passed", True)):
+        failures.append("G3 carry-through failed under H2 gate")
+    if h0_gate is not None and not bool(h0_gate.get("passed", True)):
+        failures.append("H0 carry-through failed under H2 gate")
+    if h1_gate is not None and not bool(h1_gate.get("passed", True)):
+        failures.append("H1 carry-through failed under H2 gate")
+
+    return {
+        "passed": not failures,
+        "skipped": False,
+        "require_active": True,
+        "failure_reasons": failures,
+        "report_path": str(output_path),
+        "outcome_report": _h2_report_gate_summary(report),
+        "g3_carry_through_passed": None if g3_gate is None else bool(g3_gate.get("passed")),
+        "h0_carry_through_passed": None if h0_gate is None else bool(h0_gate.get("passed")),
+        "h1_carry_through_passed": None if h1_gate is None else bool(h1_gate.get("passed")),
+    }
+
+
+def _h2_report_gate_summary(report: dict[str, object]) -> dict[str, object]:
+    return {
+        "schema_version": report.get("schema_version"),
+        "passed": bool(report.get("passed")),
+        "failure_reasons": report.get("failure_reasons", []),
+        "run_root": report.get("run_root"),
+        "judge_report_path": report.get("judge_report_path"),
+        "delayed_outcomes_path": report.get("delayed_outcomes_path"),
+        "backend_outcome_events_path": report.get("backend_outcome_events_path"),
+        "thresholds": report.get("thresholds", {}),
+        "checks": report.get("checks", {}),
+        "metrics": report.get("metrics", {}),
     }
 
 
@@ -2748,6 +2865,20 @@ def merge(
     enable_h1_gate: bool = False,
     h1_min_served_intent_layer_coverage_ratio: float = _DEFAULT_H1_SERVED_INTENT_COVERAGE_FLOOR,
     h1_min_verifier_before_delivery_ratio: float = _DEFAULT_H1_VERIFIER_BEFORE_DELIVERY_FLOOR,
+    enable_h1_llm_judge: bool = False,
+    h1_judge_calibration_report: Path | None = None,
+    h1_llm_judge_report_path: Path | None = None,
+    h1_min_llm_judge_pass_rate: float = DEFAULT_MIN_LLM_JUDGE_PASS_RATE,
+    h1_llm_judge_task_ids: set[str] | None = None,
+    h1_max_llm_judge_criteria: int | None = None,
+    enable_h2_gate: bool = False,
+    h2_outcome_report_path: Path | None = None,
+    h2_delayed_outcomes_path: Path | None = None,
+    h2_backend_outcome_events_path: Path | None = None,
+    h2_min_outcome_ledger_coverage_ratio: float = 1.0,
+    h2_min_h1_evidence_ref_ratio: float = 1.0,
+    h2_min_normative_local_update_blocked_ratio: float = 1.0,
+    h2_min_delayed_verifier_coverage_ratio: float | None = None,
 ) -> dict:
     runs = _discover_runs(runs_root)
     if not runs:
@@ -2842,6 +2973,24 @@ def merge(
         min_vote_refs_ratio=h0_min_vote_refs_ratio,
         min_authority_kind_count=h0_min_authority_kind_count,
     )
+    h1_llm_judge_report: dict[str, object] = disabled_llm_judge_report()
+    h1_llm_judge_report_json: str | None = None
+    if enable_h1_llm_judge:
+        try:
+            judge = build_judge_from_env()
+            h1_llm_judge_report = evaluate_llm_judge_success_criteria(
+                runs=runs,
+                manifest=manifest,
+                judge=judge,
+                calibration_report_path=h1_judge_calibration_report,
+                min_pass_rate=h1_min_llm_judge_pass_rate,
+                task_ids=h1_llm_judge_task_ids,
+                max_criteria=h1_max_llm_judge_criteria,
+            )
+        except Exception as exc:  # noqa: BLE001 - H1 opt-in must fail closed in summary
+            h1_llm_judge_report = failure_llm_judge_report(str(exc))
+        report_path = h1_llm_judge_report_path or (runs_root / "h1_llm_judge_report.json")
+        h1_llm_judge_report_json = str(write_llm_judge_report(h1_llm_judge_report, report_path))
     h1_gate = _evaluate_h1_gate(
         final_metrics_csv=out_csv,
         runs=runs,
@@ -2851,6 +3000,22 @@ def merge(
         require_active=enable_h1_gate,
         min_served_intent_layer_coverage_ratio=h1_min_served_intent_layer_coverage_ratio,
         min_verifier_before_delivery_ratio=h1_min_verifier_before_delivery_ratio,
+        llm_judge_report=h1_llm_judge_report,
+    )
+    h2_gate = _evaluate_h2_gate(
+        runs_root=runs_root,
+        require_active=enable_h2_gate,
+        h2_outcome_report_path=h2_outcome_report_path,
+        judge_report_path=Path(h1_llm_judge_report_json) if h1_llm_judge_report_json else None,
+        delayed_outcomes_path=h2_delayed_outcomes_path,
+        backend_outcome_events_path=h2_backend_outcome_events_path,
+        g3_gate=g3_gate,
+        h0_gate=h0_gate,
+        h1_gate=h1_gate,
+        min_outcome_ledger_coverage_ratio=h2_min_outcome_ledger_coverage_ratio,
+        min_h1_evidence_ref_ratio=h2_min_h1_evidence_ref_ratio,
+        min_normative_local_update_blocked_ratio=h2_min_normative_local_update_blocked_ratio,
+        min_delayed_verifier_coverage_ratio=h2_min_delayed_verifier_coverage_ratio,
     )
 
     summary = {
@@ -2885,6 +3050,8 @@ def merge(
         "g3_gate": g3_gate,
         "h0_gate": h0_gate,
         "h1_gate": h1_gate,
+        "h2_gate": h2_gate,
+        "h1_llm_judge_report_json": h1_llm_judge_report_json,
     }
     ii2_scorecard = _build_ii2_scorecard(
         runs=runs,
@@ -3092,6 +3259,82 @@ def main() -> int:
         default=_DEFAULT_H1_VERIFIER_BEFORE_DELIVERY_FLOOR,
         help="Require verifier-required H1 tasks to verify before delivery at this minimum ratio.",
     )
+    p.add_argument(
+        "--enable-h1-llm-judge",
+        action="store_true",
+        help="Run H1 llm_judge success criteria with the env-configured judge backend.",
+    )
+    p.add_argument(
+        "--h1-judge-calibration-report",
+        default="",
+        help="Path to a passed h1c-calibration-report:v1 required before llm_judge criteria run.",
+    )
+    p.add_argument(
+        "--h1-llm-judge-report",
+        default="",
+        help="Output path for the H1 llm_judge success-criteria report.",
+    )
+    p.add_argument(
+        "--h1-min-llm-judge-pass-rate",
+        type=float,
+        default=DEFAULT_MIN_LLM_JUDGE_PASS_RATE,
+        help="Require H1 llm_judge criteria to pass at this minimum rate.",
+    )
+    p.add_argument(
+        "--h1-llm-judge-task-ids",
+        default="",
+        help="Optional comma-separated task ids for a scoped H1 llm_judge replay; not release evidence.",
+    )
+    p.add_argument(
+        "--h1-max-llm-judge-criteria",
+        type=int,
+        default=0,
+        help="Optional maximum H1 llm_judge criteria to evaluate for low-cost timing replay.",
+    )
+    p.add_argument(
+        "--enable-h2-gate",
+        action="store_true",
+        help="Build and require H2 outcome-ledger evidence; defaults to skipped when absent.",
+    )
+    p.add_argument(
+        "--h2-outcome-report",
+        default="",
+        help="Output path for the H2 outcome report artifact. Defaults to runs_root/h2_outcome_report.json.",
+    )
+    p.add_argument(
+        "--h2-delayed-outcomes",
+        default="",
+        help="Optional H2 delayed outcome JSONL seed path.",
+    )
+    p.add_argument(
+        "--h2-backend-outcome-events",
+        default="",
+        help="Optional backend /api/v1/a2a/outcomes/events JSON artifact path.",
+    )
+    p.add_argument(
+        "--h2-min-outcome-ledger-coverage-ratio",
+        type=float,
+        default=1.0,
+        help="Require H2 outcome record coverage at this minimum ratio.",
+    )
+    p.add_argument(
+        "--h2-min-h1-evidence-ref-ratio",
+        type=float,
+        default=1.0,
+        help="Require H2 records to retain H1 judge/verifier evidence references at this minimum ratio.",
+    )
+    p.add_argument(
+        "--h2-min-normative-local-update-blocked-ratio",
+        type=float,
+        default=1.0,
+        help="Require Normative H2 candidates to remain blocked or governed at this minimum ratio.",
+    )
+    p.add_argument(
+        "--h2-min-delayed-verifier-coverage-ratio",
+        type=float,
+        default=None,
+        help="Optional delayed-event verifier/settlement coverage threshold for H2.",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
     logging.basicConfig(
@@ -3137,6 +3380,35 @@ def main() -> int:
         enable_h1_gate=args.enable_h1_gate,
         h1_min_served_intent_layer_coverage_ratio=args.h1_min_served_intent_layer_coverage_ratio,
         h1_min_verifier_before_delivery_ratio=args.h1_min_verifier_before_delivery_ratio,
+        enable_h1_llm_judge=args.enable_h1_llm_judge,
+        h1_judge_calibration_report=(
+            Path(args.h1_judge_calibration_report)
+            if args.h1_judge_calibration_report else None
+        ),
+        h1_llm_judge_report_path=(
+            Path(args.h1_llm_judge_report)
+            if args.h1_llm_judge_report else None
+        ),
+        h1_min_llm_judge_pass_rate=args.h1_min_llm_judge_pass_rate,
+        h1_llm_judge_task_ids=_parse_csv_set(args.h1_llm_judge_task_ids),
+        h1_max_llm_judge_criteria=(
+            args.h1_max_llm_judge_criteria
+            if args.h1_max_llm_judge_criteria > 0 else None
+        ),
+        enable_h2_gate=args.enable_h2_gate,
+        h2_outcome_report_path=(
+            Path(args.h2_outcome_report) if args.h2_outcome_report else None
+        ),
+        h2_delayed_outcomes_path=(
+            Path(args.h2_delayed_outcomes) if args.h2_delayed_outcomes else None
+        ),
+        h2_backend_outcome_events_path=(
+            Path(args.h2_backend_outcome_events) if args.h2_backend_outcome_events else None
+        ),
+        h2_min_outcome_ledger_coverage_ratio=args.h2_min_outcome_ledger_coverage_ratio,
+        h2_min_h1_evidence_ref_ratio=args.h2_min_h1_evidence_ref_ratio,
+        h2_min_normative_local_update_blocked_ratio=args.h2_min_normative_local_update_blocked_ratio,
+        h2_min_delayed_verifier_coverage_ratio=args.h2_min_delayed_verifier_coverage_ratio,
     )
     print(json.dumps(summary, indent=2))
     if not summary["integrity_gate"]["passed"]:
@@ -3181,8 +3453,14 @@ def main() -> int:
             "; ".join(summary["h1_gate"]["failure_reasons"]),
         )
         return 9
+    if not summary["h2_gate"]["passed"]:
+        logger.error(
+            "H.2 outcome feedback gate FAILED: %s",
+            "; ".join(summary["h2_gate"]["failure_reasons"]),
+        )
+        return 10
     logger.info(
-        "F.1.c integrity+sentinel, G.2, G.3, H.0, and H.1 gates PASSED: pair_ratio=%.4f task_ratio=%.4f",
+        "F.1.c integrity+sentinel, G.2, G.3, H.0, H.1, and H.2 gates PASSED: pair_ratio=%.4f task_ratio=%.4f",
         summary["jaccard_flagged_ratio"],
         summary["jaccard_flagged_task_ratio"],
     )

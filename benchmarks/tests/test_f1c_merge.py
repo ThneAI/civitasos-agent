@@ -12,6 +12,7 @@ from benchmarks.f1c_merge import (
     _evaluate_g3_gate,
     _evaluate_h0_gate,
     _evaluate_h1_gate,
+    _evaluate_h2_gate,
     _evaluate_integrity_gate,
     _evaluate_sentinel_gate,
     _inter_agent_jaccard,
@@ -469,6 +470,73 @@ def _write_g2_final_metrics(path: Path, rows: list[dict[str, str]]) -> None:
         w.writerows(rows)
 
 
+def _write_h2_run_root(tmp_path: Path) -> Path:
+    runs_root = tmp_path / "runs" / "H2"
+    run_dir = runs_root / "baseline-alpha-20260504T000000Z"
+    task_id = "A01_adversarial_01"
+    task_dir = run_dir / "tasks" / task_id
+    raw_dir = run_dir / "raw_ticks"
+    task_dir.mkdir(parents=True)
+    raw_dir.mkdir(parents=True)
+    (run_dir / "summary.json").write_text(
+        json.dumps({
+            "run_id": run_dir.name,
+            "finished_at": "2026-05-04T00:01:00+00:00",
+            "tasks": [
+                {
+                    "task_id": task_id,
+                    "agent_self_reported_success": True,
+                    "sentinel_kind": "done",
+                    "sentinel_reason": "backend status=Delivered",
+                    "final_output": "done",
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    (raw_dir / f"{task_id}.csv").write_text(
+        "run_id,agent_id,task_id,tick_seq,tick_id,timestamp,decision_action,decision_reasoning\n"
+        f"{run_dir.name},did:alpha,{task_id},1,tick-1,2026-05-04T00:00:01+00:00,task_execute,done\n",
+        encoding="utf-8",
+    )
+    (task_dir / "backend_terminal_state.json").write_text(
+        json.dumps({
+            "task_id": f"backend-{task_id}",
+            "status": "Delivered",
+            "output": {"answer": "done"},
+            "failure_reason": None,
+            "challenge_deadline_at": None,
+        }),
+        encoding="utf-8",
+    )
+    (task_dir / "backend_task_id.txt").write_text(f"backend-{task_id}\n", encoding="utf-8")
+    (runs_root / "h1_llm_judge_report.json").write_text(
+        json.dumps({
+            "schema_version": "h1-llm-criteria-report:v1",
+            "enabled": True,
+            "passed": True,
+            "total_criteria": 1,
+            "judged_criteria": 1,
+            "passed_criteria": 1,
+            "rows": [
+                {
+                    "agent_alias": "alpha",
+                    "task_id": task_id,
+                    "criterion_index": 0,
+                    "criterion_desc": "targeted action",
+                    "passed": True,
+                    "score": 1.0,
+                    "model": "judge-test",
+                    "prompt_version": "h1-judge-v1",
+                    "prompt_hash": "sha256:test",
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    return runs_root
+
+
 def test_inter_agent_jaccard_uses_weighted_bigrams_as_primary(tmp_path: Path) -> None:
     # Same action vocabulary but different multiplicities:
     # legacy set-Jaccard == 1.0, weighted bigram-Jaccard == 0.5.
@@ -814,6 +882,100 @@ def test_h1_gate_fails_on_missing_served_intent_and_late_verifier(
     assert any("h1_served_intent_layer_coverage_ratio" in r for r in reasons)
     assert any("h1_verifier_before_delivery_ratio" in r for r in reasons)
     assert any("G3 carry-through" in r for r in reasons)
+
+
+def test_h1_gate_fails_closed_on_llm_judge_report_failure(tmp_path: Path) -> None:
+    alpha = tmp_path / "baseline-alpha-20260101T000000Z"
+    _write_raw_ticks(
+        alpha,
+        "R01_happy_01",
+        ["task_execute"],
+        served_intent_layers=["short"],
+    )
+    final_metrics = tmp_path / "final_metrics.csv"
+    _write_g2_final_metrics(
+        final_metrics,
+        [
+            {
+                "agent_alias": "alpha",
+                "run_id": "rid-alpha",
+                "agent_id": "did:alpha",
+                "category_id": "R01",
+                "targets_disease": "R",
+                "task_count": "1",
+                "h1_served_intent_layer_coverage_ratio": "1.0",
+                "h1_verifier_before_delivery_ratio": "1.0",
+            },
+        ],
+    )
+
+    gate = _evaluate_h1_gate(
+        final_metrics_csv=final_metrics,
+        runs=[("alpha", alpha)],
+        g3_gate={"passed": True},
+        h0_gate={"passed": True},
+        require_active=True,
+        llm_judge_report={
+            "enabled": True,
+            "skipped": False,
+            "passed": False,
+            "failure_reasons": ["H1 llm_judge pass rate 0.0000 < 1.0000"],
+        },
+    )
+
+    assert gate["passed"] is False
+    assert gate["llm_judge"]["passed"] is False
+    assert any("llm_judge success criteria" in r for r in gate["failure_reasons"])
+
+
+def test_h2_gate_skips_by_default(tmp_path: Path) -> None:
+    gate = _evaluate_h2_gate(runs_root=tmp_path, require_active=False)
+
+    assert gate == {
+        "passed": True,
+        "skipped": True,
+        "require_active": False,
+        "failure_reasons": [],
+    }
+
+
+def test_h2_gate_builds_report_and_passes(tmp_path: Path) -> None:
+    runs_root = _write_h2_run_root(tmp_path)
+    report_path = tmp_path / "h2_outcome_report.json"
+
+    gate = _evaluate_h2_gate(
+        runs_root=runs_root,
+        require_active=True,
+        h2_outcome_report_path=report_path,
+        g3_gate={"passed": True},
+        h0_gate={"passed": True},
+        h1_gate={"passed": True},
+    )
+
+    assert gate["passed"] is True
+    assert gate["skipped"] is False
+    assert gate["report_path"] == str(report_path)
+    assert report_path.is_file()
+    assert gate["outcome_report"]["passed"] is True
+    assert gate["outcome_report"]["metrics"]["outcome_record_count"] == 1
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["records"][0]["record_id"] == "alpha:A01_adversarial_01"
+
+
+def test_h2_gate_fails_closed_on_h1_carry_through_failure(tmp_path: Path) -> None:
+    runs_root = _write_h2_run_root(tmp_path)
+
+    gate = _evaluate_h2_gate(
+        runs_root=runs_root,
+        require_active=True,
+        g3_gate={"passed": True},
+        h0_gate={"passed": True},
+        h1_gate={"passed": False, "failure_reasons": ["H1 failed"]},
+    )
+
+    assert gate["passed"] is False
+    assert gate["outcome_report"]["passed"] is True
+    assert any("H1 carry-through" in reason for reason in gate["failure_reasons"])
 
 
 def test_g3_gate_skips_when_no_relation_rows(tmp_path: Path) -> None:

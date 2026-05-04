@@ -38,7 +38,7 @@
 
 | ID | 指标 | F.0 是否启用 | 计算方式（v1.1 操作化） | 输入字段 |
 |---|---|---|---|---|
-| **M1** | `result_deviation_rate` | ✅ | `count(agent 自报 success ∧ NOT all(machine_checkable_criteria)) / total_tasks`。仅统计 success_criteria 全部为 `regex` 或 `pyexpr` 类型的任务；`llm_judge` 类型的延后到 H.1 | `Evaluation.success` + task `success_criteria.kind ∈ {regex,pyexpr}` |
+| **M1** | `result_deviation_rate` | ✅ | `count(agent 自报 success ∧ NOT all(machine_checkable_criteria)) / total_tasks`。仅统计 success_criteria 全部为 `regex` 或 `pyexpr` 类型的任务；`llm_judge` 不进入 M1，H.1 通过 opt-in `h1-llm-criteria-report:v1` + `h1_gate` 校验 | `Evaluation.success` + task `success_criteria.kind ∈ {regex,pyexpr}` |
 | **M2** | `verification_miss_rate` | ✅ | adversarial task 中 `Decision.action` 序列与 task `verifier_tools` 集合交集为空的任务数 / adversarial task 总数。「verifier 工具」由 manifest 显式声明，不靠工具名猜 | `Decision.action` 序列 + task `verifier_tools` |
 | **M3** | `aspect_gap_response_rate` | ✅ | 遍历 tick 序列，找到首次 `aspect_gap` 跨越阈值 θ=0.7 的 tick t；定义前窗 W_pre = action 集合 of tick[t-3..t-1]，后窗 W_post = tick[t+1..t+3]；若 `Jaccard(W_pre, W_post) < 0.5` 记为 1 次 response。指标 = response 次数 / 触发次数。**θ=0.7 与 Jaccard<0.5 是 F.0 经验值，F.1 实施后用真实数据校准** | `EnergyState.aspect_gap` 时序 + 同窗 `Decision.action` |
 | **M4** | `lessons_impact_rate` | ✅ **H.2-lite** | 任务中先失败后恢复，且 `lessons_count` 有信号（`max>0`）；若恢复 tick 的 lessons_count 高于首次失败 tick，记为 impacted。指标= impacted / eligible | `eval_success` 时序 + `lessons_count` |

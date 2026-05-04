@@ -393,6 +393,45 @@ def test_get_state_handles_dict_wrap():
     assert client.get_state(tid).status == "Open"
 
 
+def test_get_state_retries_when_rate_limited(monkeypatch):
+    calls = {"n": 0}
+
+    class RetrySDK(FakeSDK):
+        def pool_get_task(self, task_id: str) -> dict[str, Any]:  # type: ignore[override]
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RateLimitError()
+            return super().pool_get_task(task_id)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(float(s)))
+
+    sdk = RetrySDK()
+    tid = sdk.pool_post(required_capability="bench", allowed_agents=["a"], reward=1, deadline_secs=1)["task_id"]
+    client = BackendTaskClient(
+        sdk,
+        state_max_retries=4,
+        state_retry_base_s=0.01,
+        state_retry_max_s=0.02,
+    )
+
+    assert client.get_state(tid).status == "Open"
+    assert calls["n"] == 3
+    assert sleeps == [0.01, 0.02]
+
+
+def test_get_state_raises_after_rate_limit_retry_exhausted(monkeypatch):
+    class AlwaysRateLimitSDK(FakeSDK):
+        def pool_get_task(self, task_id: str) -> dict[str, Any]:  # type: ignore[override]
+            raise RateLimitError()
+
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    client = BackendTaskClient(AlwaysRateLimitSDK(), state_max_retries=2, state_retry_base_s=0.01)
+
+    with pytest.raises(RateLimitError):
+        client.get_state("task_1")
+
+
 def test_get_state_unwraps_backend_task_response():
     class WrappedTaskSDK(FakeSDK):
         def pool_get_task(self, task_id: str) -> dict[str, Any]:  # type: ignore[override]

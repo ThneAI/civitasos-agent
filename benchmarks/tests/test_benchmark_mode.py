@@ -1,6 +1,7 @@
 """Tests for benchmarks/benchmark_mode.py — install hook semantics."""
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 from typing import Any
@@ -120,6 +121,23 @@ class FakeBackendAgent:
         }
 
 
+class FakeTaskExecuteAgent(FakeBackendAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.task_execute_calls: list[dict[str, Any]] = []
+
+    def task_execute(
+        self,
+        *,
+        task_id: str,
+        output: dict[str, Any],
+        success: bool,
+    ) -> dict[str, Any]:
+        call = {"task_id": task_id, "output": output, "success": success}
+        self.task_execute_calls.append(call)
+        return {"ok": True, **call}
+
+
 class FakeRepairBackendAgent(FakeBackendAgent):
     def pool_get_task(self, task_id: str) -> dict[str, Any]:
         if task_id == "repair_1":
@@ -200,6 +218,7 @@ def test_install_registers_rule_at_priority_one(monkeypatch):
     assert runner._on_perceive_fn is not None
     assert "report_blocked" in runner._tools_registered
     assert "abandon" in runner._tools_registered
+    assert "llm_translate" in runner._tools_registered
     assert "address_diff" in runner._tools_registered
     assert "verifier_compare" in runner._tools_registered
 
@@ -598,6 +617,58 @@ def test_backend_g3_relation_context_enabled_for_expanded_v2_tasks(monkeypatch):
     assert briefing["time_window"]["id"] == "backend-window:G05_adversarial_01:challenge_deadline_at"
 
 
+def test_prefer_target_rule_yields_once_for_g3_relation_llm_witness(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G05_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_RATE", "0")
+    runner = FakeRunner()
+    runner._agent = FakeBackendAgent()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+
+    briefing = {"active_tasks": [{"task_id": "backend_42"}]}
+    d1 = rule_fn(briefing, {})
+    assert d1 is None
+    assert briefing["active_tasks"] == []
+    assert briefing["benchmark_g3_relation_witness"]["task_id"] == "G05_adversarial_01"
+    assert briefing["relation_context"]["memory_refs"]
+
+    d2 = rule_fn({"active_tasks": [{"task_id": "backend_42"}]}, {})
+    assert d2 is None
+
+
+def test_prefer_target_rule_respects_g3_relation_witness_max_per_agent(monkeypatch, tmp_path):
+    task_id_file = tmp_path / "current_task_id.txt"
+    backend_task_id_file = tmp_path / "current_backend_task_id.txt"
+    task_id_file.write_text("G05_adversarial_01", encoding="utf-8")
+    backend_task_id_file.write_text("backend_42", encoding="utf-8")
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "G05_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_TASK_ID_FILE", str(task_id_file))
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID_FILE", str(backend_task_id_file))
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_RATE", "0")
+    monkeypatch.setenv("BENCHMARK_G3_LLM_WITNESS_MAX_PER_AGENT", "1")
+    runner = FakeRunner()
+    runner._agent = FakeBackendAgent()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+
+    first_briefing = {"active_tasks": [{"task_id": "backend_42"}]}
+    d1 = rule_fn(first_briefing, {})
+    assert d1 is None
+    assert first_briefing["active_tasks"] == []
+    assert first_briefing["benchmark_g3_relation_witness"]["task_id"] == "G05_adversarial_01"
+
+    task_id_file.write_text("G04_adversarial_01", encoding="utf-8")
+    backend_task_id_file.write_text("backend_43", encoding="utf-8")
+    second_briefing = {"active_tasks": [{"task_id": "backend_43"}]}
+    d2 = rule_fn(second_briefing, {})
+    assert d2 is None
+    assert second_briefing["active_tasks"] == [{"task_id": "backend_43"}]
+    assert "benchmark_g3_relation_witness" not in second_briefing
+    assert second_briefing["relation_context"]["memory_refs"]
+
+
 def test_prefer_target_rule_claims_even_when_pool_snapshot_has_no_match(monkeypatch):
     monkeypatch.setenv("BENCHMARK_TASK_ID", "R01_test_01")
     monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
@@ -640,6 +711,54 @@ def test_prefer_target_rule_emits_h1_verifier_before_llm(monkeypatch):
     assert d1.params["benchmark_task_id"] == "V04_h1_verifier_before_delivery_01"
 
     d2 = rule_fn(briefing, {})
+    assert d2 is None
+
+
+def test_prefer_target_rule_emits_manifest_h1_verifier_before_llm(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "A04_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_H1_VERIFIER_TOOLS", "list_proposals,self_capability_check")
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_RATE", "0")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    assert "list_proposals" in runner._tools_registered
+    assert "self_capability_check" in runner._tools_registered
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    d1 = rule_fn(briefing, {})
+    assert d1 is not None
+    assert d1.action == "list_proposals"
+    assert d1.params["task_id"] == "backend_42"
+    assert d1.params["benchmark_task_id"] == "A04_adversarial_01"
+
+    d2 = rule_fn(briefing, {})
+    assert d2 is None
+
+
+def test_prefer_target_rule_reads_manifest_h1_verifier_file(monkeypatch, tmp_path):
+    tools_file = tmp_path / "current_h1_verifier_tools.txt"
+    tools_file.write_text("list_proposals,self_capability_check", encoding="utf-8")
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "A04_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_H1_VERIFIER_TOOLS_FILE", str(tools_file))
+    monkeypatch.setenv("BENCHMARK_H1_ALL_VERIFIER_TOOLS", "list_proposals,self_capability_check")
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_RATE", "0")
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    assert "list_proposals" in runner._tools_registered
+    assert "self_capability_check" in runner._tools_registered
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    d1 = rule_fn(briefing, {})
+    assert d1 is not None
+    assert d1.action == "list_proposals"
+    assert d1.params["task_id"] == "backend_42"
+    assert d1.params["benchmark_task_id"] == "A04_adversarial_01"
+
+    tools_file.write_text("", encoding="utf-8")
+    d2 = rule_fn({"active_tasks": [{"task_id": "backend_42"}]}, {})
     assert d2 is None
 
 
@@ -746,7 +865,65 @@ def test_prefer_target_rule_emits_identity_probe_when_enabled(monkeypatch):
     assert d1.params["benchmark_task_id"] == "R01_happy_01"
 
     d2 = rule_fn(briefing, {})
-    assert d2 is None
+    assert d2 is not None
+    assert d2.action == "llm_translate"
+    assert d2.params["task_id"] == "backend_42"
+    assert d2.params["benchmark_task_id"] == "R01_happy_01"
+
+
+def test_prefer_target_rule_bridges_r01_translation(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "R01_happy_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    runner = FakeRunner()
+    runner._agent = FakeTaskExecuteAgent()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    decision = rule_fn(briefing, {})
+    assert decision is not None
+    assert decision.action == "llm_translate"
+    assert decision.params["source_text"].startswith("The CivitasOS conscience module")
+
+    tool = runner._tools_registered["llm_translate"]
+    result = tool(**decision.params)
+    assert result["ok"] is True
+    output = runner._agent.task_execute_calls[0]["output"]
+    assert output["status"] == "translation_complete"
+    assert "10 条安全公理" in output["translated_text"]
+    assert "状态变更" in output["translated_text"]
+
+
+def test_prefer_target_rule_delivers_h1_llm_criteria_evidence(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_TASK_ID", "A01_adversarial_01")
+    monkeypatch.setenv("BENCHMARK_BACKEND_TASK_ID", "backend_42")
+    monkeypatch.setenv("BENCHMARK_VERIFICATION_PROBE_RATE", "0")
+    monkeypatch.setenv(
+        "BENCHMARK_H1_LLM_CRITERIA_JSON",
+        json.dumps([
+            {
+                "index": 2,
+                "body": "主动行为针对 reputation 问题",
+                "desc": "targeted_action",
+            }
+        ], ensure_ascii=False),
+    )
+    runner = FakeRunner()
+    benchmark_mode.install(runner)
+    rule_fn = _get_rule_fn(runner)
+    briefing = {"active_tasks": [{"task_id": "backend_42", "poster_id": "did:poster"}]}
+
+    decision = rule_fn(briefing, {})
+
+    assert decision is not None
+    assert decision.action == "task_execute"
+    assert decision.params["task_id"] == "backend_42"
+    output = decision.params["output"]
+    assert output["status"] == "h1_criteria_evidence_complete"
+    assert "get_reputation" in output["final_answer"]
+    assert output["task_output"]["answer"] == output["final_answer"]
+    assert output["criteria_evidence"][0]["criterion_body"] == "主动行为针对 reputation 问题"
+    assert output["criteria_evidence"][0]["passed"] is True
 
 
 def test_install_registers_identity_probe_bridge_tools(monkeypatch):

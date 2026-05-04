@@ -31,9 +31,9 @@ import hashlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-from .backend_task_client import BackendTaskClient, state_to_sentinel
+from .backend_task_client import BackendTaskClient, BackendTaskState, state_to_sentinel
 from .briefing_renderer import write_briefing
 from .task_loader import Manifest, TaskSpec, load_manifest
 
@@ -115,6 +115,7 @@ class TaskResult:
     agent_self_reported_success: bool | None
     sentinel_kind: str | None
     sentinel_reason: str
+    final_output: str | None = None
 
 
 @dataclass
@@ -122,6 +123,8 @@ class _PersistentAgentSession:
     proc: subprocess.Popen[Any]
     task_id_file: Path
     backend_task_id_file: Path
+    h1_verifier_tools_file: Path
+    h1_llm_criteria_file: Path
     h0f_runtime_iem_audit_path_file: Path
 
 
@@ -433,10 +436,20 @@ class Orchestrator:
 
         task_id_file = runtime_dir / "current_task_id.txt"
         backend_task_id_file = runtime_dir / "current_backend_task_id.txt"
+        h1_verifier_tools_file = runtime_dir / "current_h1_verifier_tools.txt"
+        h1_llm_criteria_file = runtime_dir / "current_h1_llm_criteria.json"
         h0f_runtime_iem_audit_path_file = runtime_dir / "current_h0f_runtime_iem_audit_path.txt"
         task_id_file.write_text(initial_task_id, encoding="utf-8")
         backend_task_id_file.write_text("", encoding="utf-8")
+        h1_verifier_tools_file.write_text("", encoding="utf-8")
+        h1_llm_criteria_file.write_text("[]", encoding="utf-8")
         h0f_runtime_iem_audit_path_file.write_text("", encoding="utf-8")
+
+        all_h1_verifier_tools = _join_unique(
+            tool
+            for task in self._manifest.tasks
+            for tool in task.verifier_tools
+        )
 
         env = {
             **os.environ,
@@ -449,6 +462,9 @@ class Orchestrator:
             "BENCHMARK_BACKEND_TASK_ID": "bootstrap-target",
             "BENCHMARK_TASK_ID_FILE": str(task_id_file),
             "BENCHMARK_BACKEND_TASK_ID_FILE": str(backend_task_id_file),
+            "BENCHMARK_H1_VERIFIER_TOOLS_FILE": str(h1_verifier_tools_file),
+            "BENCHMARK_H1_LLM_CRITERIA_FILE": str(h1_llm_criteria_file),
+            "BENCHMARK_H1_ALL_VERIFIER_TOOLS": all_h1_verifier_tools,
             "BENCHMARK_H0F_RUNTIME_IEM_AUDIT_PATH_FILE": str(h0f_runtime_iem_audit_path_file),
             # Keep legacy var for compatibility; collector rotates by *_DIR + *_FILE.
             "BENCHMARK_RAW_CSV": str(raw_dir / f"{initial_task_id}.csv"),
@@ -469,6 +485,8 @@ class Orchestrator:
             proc=proc,
             task_id_file=task_id_file,
             backend_task_id_file=backend_task_id_file,
+            h1_verifier_tools_file=h1_verifier_tools_file,
+            h1_llm_criteria_file=h1_llm_criteria_file,
             h0f_runtime_iem_audit_path_file=h0f_runtime_iem_audit_path_file,
         )
 
@@ -487,6 +505,16 @@ class Orchestrator:
         assert self._cfg.target_agent_id is not None
 
         # Publish current task ids for benchmark_mode rule/collector inside agent.py.
+        h1_verifier_tools = (
+            _join_unique(task.verifier_tools)
+            if _env_bool("CIVITASOS_H1_TELOS_ENABLED", default=False)
+            else ""
+        )
+        session.h1_verifier_tools_file.write_text(h1_verifier_tools, encoding="utf-8")
+        session.h1_llm_criteria_file.write_text(
+            _h1_llm_criteria_json(task),
+            encoding="utf-8",
+        )
         session.task_id_file.write_text(task.id, encoding="utf-8")
         session.h0f_runtime_iem_audit_path_file.write_text(
             str(task_dir / "h0f_runtime_iem_audit.json"),
@@ -701,6 +729,7 @@ class Orchestrator:
             agent_self_reported_success=self_reported,
             sentinel_kind=sentinel_kind,
             sentinel_reason=sentinel_reason,
+            final_output=_load_backend_final_output(task_dir),
         )
         (task_dir / "result.json").write_text(
             json.dumps(asdict(result), default=str), encoding="utf-8",
@@ -725,6 +754,9 @@ class Orchestrator:
                 task_dir / "h0f_runtime_iem_audit.json"
             ),
         }
+        if _env_bool("CIVITASOS_H1_TELOS_ENABLED", default=False) and task.verifier_tools:
+            env["BENCHMARK_H1_VERIFIER_TOOLS"] = ",".join(task.verifier_tools)
+        env["BENCHMARK_H1_LLM_CRITERIA_JSON"] = _h1_llm_criteria_json(task)
 
         # F.1.b: branch on backend_mode for briefing delivery.
         backend_task_id: str | None = None
@@ -938,6 +970,7 @@ class Orchestrator:
             agent_self_reported_success=self_reported,
             sentinel_kind=sentinel_kind,
             sentinel_reason=sentinel_reason,
+            final_output=_load_backend_final_output(task_dir) if backend_task_id is not None else None,
         )
         # Per-task checkpoint enables --resume.
         (task_dir / "result.json").write_text(
@@ -1080,6 +1113,7 @@ class Orchestrator:
         if not state.is_terminal:
             return None, ""
         kind, reason = state_to_sentinel(state)
+        _persist_backend_terminal_state(sentinel_dir.parent, state)
         self._materialise_sentinel(sentinel_dir, kind, reason)
         # D1 settlement cleanup on success path.
         if state.status in ("Delivered", "Completed"):
@@ -1203,6 +1237,7 @@ def _load_cached_result(run_dir: Path, task_id: str) -> "TaskResult | None":
         agent_self_reported_success=self_reported,
         sentinel_kind=kind,
         sentinel_reason=reason,
+        final_output=_load_backend_final_output(task_dir),
     )
     # Persist so future resumes use the fast path.
     try:
@@ -1222,6 +1257,69 @@ def _read_sentinel(sentinel_dir: Path) -> tuple[str | None, str]:
                 payload = {}
             return name, str(payload.get("reason", ""))
     return None, ""
+
+
+def _persist_backend_terminal_state(task_dir: Path, state: BackendTaskState) -> None:
+    path = task_dir / "backend_terminal_state.json"
+    if path.exists():
+        return
+    payload = {
+        "task_id": state.task_id,
+        "status": state.status,
+        "output": state.output,
+        "failure_reason": state.failure_reason,
+        "challenge_deadline_at": state.challenge_deadline_at,
+    }
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+
+def _load_backend_final_output(task_dir: Path) -> str | None:
+    path = task_dir / "backend_terminal_state.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _output_to_text(payload.get("output"))
+
+
+def _join_unique(values: Iterable[str]) -> str:
+    out: list[str] = []
+    for value in values:
+        item = str(value).strip()
+        if item and item not in out:
+            out.append(item)
+    return ",".join(out)
+
+
+def _h1_llm_criteria_json(task: TaskSpec) -> str:
+    criteria: list[dict[str, str | int]] = []
+    for index, criterion in enumerate(task.success_criteria):
+        if criterion.get("kind") != "llm_judge":
+            continue
+        phases = criterion.get("required_in_phase")
+        if isinstance(phases, list) and "H.1+" not in {str(phase) for phase in phases}:
+            continue
+        criteria.append({
+            "index": index,
+            "body": str(criterion.get("body") or ""),
+            "desc": str(criterion.get("desc") or ""),
+        })
+    return json.dumps(criteria, ensure_ascii=False, sort_keys=True)
+
+
+def _output_to_text(output: object) -> str | None:
+    if output is None or output == "":
+        return None
+    if isinstance(output, str):
+        return output
+    return json.dumps(output, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _tail_tick_seq(csv_path: Path) -> int:

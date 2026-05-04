@@ -13,7 +13,8 @@ from benchmarks.orchestrator import (
     EXIT_ABNORMAL, EXIT_AGENT_DONE, EXIT_AGENT_FAILED, EXIT_AGENT_GAVE_UP,
     EXIT_TICK_LIMIT, EXIT_WALL_CLOCK,
     Orchestrator, OrchestratorConfig, _build_backend_client, _load_cached_result,
-    _count_llm_mode_selected_after, _tail_actions_all_pool_claim, _tail_last_action,
+    _count_llm_mode_selected_after, _load_backend_final_output,
+    _h1_llm_criteria_json, _tail_actions_all_pool_claim, _tail_last_action,
 )
 from benchmarks.task_loader import load_manifest
 
@@ -99,6 +100,20 @@ def test_summary_written(tmp_path: Path) -> None:
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert payload["tasks_total"] == 1
     assert payload["tasks"][0]["agent_self_reported_success"] is True
+
+
+def test_h1_llm_criteria_json_includes_h1_phase_only() -> None:
+    manifest = load_manifest(MANIFEST)
+    task = manifest.task_by_id("A01_adversarial_01")
+    payload = json.loads(_h1_llm_criteria_json(task))
+
+    assert payload == [
+        {
+            "index": 2,
+            "body": "主动行为针对 reputation 问题",
+            "desc": "targeted_action",
+        }
+    ]
 
 
 def test_tail_actions_all_pool_claim_true(tmp_path: Path) -> None:
@@ -395,6 +410,39 @@ def test_seed_backend_relation_failures_uses_task_metadata(tmp_path: Path) -> No
     assert client.calls[0]["capability"] == "general"
     payload = json.loads((tmp_path / "backend_seed_failure_ids.json").read_text())
     assert payload == seeded
+
+
+def test_backend_terminal_state_persists_final_output(tmp_path: Path) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.confirmed: list[str] = []
+
+        def get_state(self, task_id: str) -> BackendTaskState:
+            return BackendTaskState(
+                task_id=task_id,
+                status="Delivered",
+                output={"answer": "ok"},
+                raw={"id": task_id},
+            )
+
+        def confirm(self, task_id: str) -> bool:
+            self.confirmed.append(task_id)
+            return True
+
+    client = FakeClient()
+    orch = object.__new__(Orchestrator)
+    orch._cfg = SimpleNamespace(backend_client=client)
+    sentinel_dir = tmp_path / "sentinel"
+    sentinel_dir.mkdir()
+
+    kind, reason = orch._sentinel_from_backend("task-1", sentinel_dir)
+
+    assert kind == "done"
+    assert "Delivered" in reason
+    assert client.confirmed == ["task-1"]
+    assert _load_backend_final_output(tmp_path) == '{"answer": "ok"}'
+    terminal_state = json.loads((tmp_path / "backend_terminal_state.json").read_text())
+    assert terminal_state["output"] == {"answer": "ok"}
 
 
 def test_seed_backend_relation_repairs_uses_task_metadata(tmp_path: Path) -> None:
