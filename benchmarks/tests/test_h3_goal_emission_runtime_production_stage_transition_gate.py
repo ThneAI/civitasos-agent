@@ -21,11 +21,30 @@ def test_stage_transition_reports_not_ready_at_round_two_without_runtime(tmp_pat
     assert report["metrics"]["production_runtime_receipt_write_ready_count"] == 0
     open_nodes = {item["node"] for item in report["runtime_production_stage_transition_surface"]["open_requirements"]}
     assert "production_evidence_submission_manifest" in open_nodes
+    assert "production_evidence_bundle_review" in open_nodes
     assert "production_runtime_receipt" in open_nodes
 
 
-def test_stage_transition_reviews_complete_chain_without_starting_runtime(tmp_path: Path) -> None:
+def test_stage_transition_blocks_complete_chain_without_bundle_review(tmp_path: Path) -> None:
     paths = _write_transition_chain(tmp_path, complete=True)
+
+    report = build_h3_goal_emission_runtime_production_stage_transition_gate(agent_root=tmp_path, **paths)
+
+    assert report["passed"] is True
+    assert report["readiness"]["decision"] == "not_ready_for_next_stage"
+    assert report["readiness"]["next_stage_ready"] is False
+    assert report["readiness"]["next_blocking_round"] == 2
+    assert report["metrics"]["stage_transition_open_requirement_count"] == 1
+    node = report["runtime_production_stage_transition_surface"]["stage_nodes"]["production_evidence_bundle_review"]
+    assert node["complete"] is False
+    assert node["decision"] == "h3_production_evidence_bundle_blocked_pending_review"
+    assert report["runtime_production_stage_transition_boundary"]["production_runtime_execution_allowed"] is False
+    assert report["runtime_production_stage_transition_boundary"]["production_runtime_receipt_write_allowed"] is False
+
+
+def test_stage_transition_reviews_complete_chain_with_bundle_review_without_starting_runtime(tmp_path: Path) -> None:
+    paths = _write_transition_chain(tmp_path, complete=True)
+    paths["production_evidence_bundle_review_path"] = _write_bundle_review(tmp_path)
 
     report = build_h3_goal_emission_runtime_production_stage_transition_gate(agent_root=tmp_path, **paths)
 
@@ -37,6 +56,32 @@ def test_stage_transition_reviews_complete_chain_without_starting_runtime(tmp_pa
     assert report["runtime_production_stage_transition_boundary"]["production_runtime_execution_allowed"] is False
     assert report["runtime_production_stage_transition_boundary"]["production_runtime_receipt_write_allowed"] is False
     assert report["metrics"]["agent_loop_start_ready_count"] == 0
+
+
+def test_stage_transition_accepts_pending_bundle_report_as_round_two_gap(tmp_path: Path) -> None:
+    paths = _write_transition_chain(tmp_path, complete=True)
+    paths["production_evidence_bundle_review_path"] = _write_bundle_review(tmp_path, complete=False)
+
+    report = build_h3_goal_emission_runtime_production_stage_transition_gate(agent_root=tmp_path, **paths)
+
+    assert report["passed"] is True
+    assert report["readiness"]["decision"] == "not_ready_for_next_stage"
+    assert report["readiness"]["next_blocking_round"] == 2
+    node = report["runtime_production_stage_transition_surface"]["stage_nodes"]["production_evidence_bundle_review"]
+    assert node["passed"] is True
+    assert node["complete"] is False
+    assert node["gap_count"] >= 1
+
+
+def test_stage_transition_fails_closed_on_invalid_bundle_report(tmp_path: Path) -> None:
+    paths = _write_transition_chain(tmp_path, complete=True)
+    paths["production_evidence_bundle_review_path"] = _write_bundle_review(tmp_path, passed=False, complete=False)
+
+    report = build_h3_goal_emission_runtime_production_stage_transition_gate(agent_root=tmp_path, **paths)
+
+    assert report["passed"] is False
+    assert report["checks"]["production_evidence_bundle_review_passed"] is False
+    assert report["readiness"]["decision"] == "blocked_before_production_stage_transition_review"
 
 
 def test_stage_transition_fails_closed_on_runtime_flag_regression(tmp_path: Path) -> None:
@@ -147,6 +192,44 @@ def _write_transition_chain(tmp_path: Path, *, complete: bool = False) -> dict[s
         "production_runtime_actuation_gate_path": actuation,
         "production_runtime_receipt_gate_path": receipt,
     }
+
+
+def _write_bundle_review(
+    tmp_path: Path,
+    *,
+    passed: bool = True,
+    complete: bool = True,
+) -> Path:
+    path = tmp_path / "h3_production_bundle_review.json"
+    decision = (
+        "h3_production_evidence_bundle_review_complete_no_runtime_execution"
+        if complete
+        else "h3_production_evidence_bundle_blocked_pending_review"
+    )
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "h3-production-evidence-bundle-review-runner:v1",
+                "passed": passed,
+                "review_state": "bundle_validation_passed" if complete else "blocked_pending_production_evidence_bundle",
+                "failure_reasons": [] if passed else ["bundle validation failed"],
+                "readiness": {
+                    "decision": decision,
+                    "production_evidence_bundle_review_complete": complete,
+                    "production_runtime_execution_allowed": False,
+                    "production_runtime_receipt_allowed": False,
+                },
+                "bundle_report": {"passed": complete} if complete else None,
+                "non_claims": [
+                    "does_not_start_runtime_or_agent_loop",
+                    "does_not_authorize_production_runtime_execution",
+                    "bundle_validation_does_not_replace_governance_acceptance",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _write_report(

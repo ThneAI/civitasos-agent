@@ -43,6 +43,7 @@ from benchmarks.h3_goal_emission_runtime_production_runtime_receipt_gate import 
 
 
 SCHEMA_VERSION = "h3-goal-emission-runtime-production-stage-transition-gate:v1"
+PRODUCTION_EVIDENCE_BUNDLE_REVIEW_SCHEMA_VERSION = "h3-production-evidence-bundle-review-runner:v1"
 
 EXPECTED_NODES: dict[str, dict[str, Any]] = {
     "production_evidence_submission_manifest": {
@@ -50,6 +51,13 @@ EXPECTED_NODES: dict[str, dict[str, Any]] = {
         "complete_field": "production_evidence_submission_manifest_complete",
         "ready_decision": "production_evidence_submission_manifest_reviewed_no_runtime_execution",
         "round": 2,
+    },
+    "production_evidence_bundle_review": {
+        "schema": PRODUCTION_EVIDENCE_BUNDLE_REVIEW_SCHEMA_VERSION,
+        "complete_field": "production_evidence_bundle_review_complete",
+        "ready_decision": "h3_production_evidence_bundle_review_complete_no_runtime_execution",
+        "round": 2,
+        "optional_input": True,
     },
     "production_execution_authorization": {
         "schema": PRODUCTION_EXECUTION_AUTHORIZATION_GATE_SCHEMA_VERSION,
@@ -105,7 +113,7 @@ ROUND_PLAN = [
     {
         "round": 2,
         "name": "real_production_evidence_submission",
-        "exit_condition": "production evidence submission manifest is complete and contains real non-local production evidence records",
+        "exit_condition": "production evidence submission manifest is complete and hash-bound to an L2 external anchor plus independent verification bundle review",
         "requires_external_evidence": True,
     },
     {
@@ -139,6 +147,7 @@ def build_h3_goal_emission_runtime_production_stage_transition_gate(
     production_runtime_execution_gate_path: Path,
     production_runtime_actuation_gate_path: Path,
     production_runtime_receipt_gate_path: Path,
+    production_evidence_bundle_review_path: Path | None = None,
     agent_root: Path,
 ) -> dict[str, Any]:
     node_paths = {
@@ -151,6 +160,8 @@ def build_h3_goal_emission_runtime_production_stage_transition_gate(
         "production_runtime_actuation": production_runtime_actuation_gate_path,
         "production_runtime_receipt": production_runtime_receipt_gate_path,
     }
+    if production_evidence_bundle_review_path is not None:
+        node_paths["production_evidence_bundle_review"] = production_evidence_bundle_review_path
     resolved_paths = {name: _resolve_path(path, agent_root) for name, path in node_paths.items()}
     checks: dict[str, bool] = {}
     failures: list[str] = []
@@ -170,6 +181,8 @@ def build_h3_goal_emission_runtime_production_stage_transition_gate(
         decision = str(readiness.get("decision") or "")
         complete = bool(readiness.get(str(expected["complete_field"]))) and decision == expected["ready_decision"]
         node_gaps = _collect_gaps(report)
+        if node_name == "production_evidence_bundle_review" and not complete:
+            node_gaps.extend(_bundle_review_gaps(report))
         nodes[node_name] = {
             "node": node_name,
             "path": str(node_path),
@@ -183,10 +196,15 @@ def build_h3_goal_emission_runtime_production_stage_transition_gate(
             "gap_count": len(node_gaps),
             "gaps": node_gaps,
             "runtime_flags_safe": _runtime_flags_safe(report),
-            "non_claims_preserved": _non_claims_preserved(report),
+            "non_claims_preserved": _non_claims_preserved(node_name, report),
         }
         _require_bool(f"{node_name}_runtime_flags_safe", nodes[node_name]["runtime_flags_safe"], checks=checks, failures=failures)
         _require_bool(f"{node_name}_non_claims_preserved", nodes[node_name]["non_claims_preserved"], checks=checks, failures=failures)
+
+    if "production_evidence_bundle_review" not in nodes:
+        expected = EXPECTED_NODES["production_evidence_bundle_review"]
+        checks["production_evidence_bundle_review_optional_present_or_pending"] = True
+        nodes["production_evidence_bundle_review"] = _pending_bundle_review_node(expected)
 
     completed_rounds = _completed_rounds(nodes)
     next_blocking_round = _next_blocking_round(nodes)
@@ -311,6 +329,29 @@ def _missing_node(node_name: str, node_path: Path, expected: dict[str, Any]) -> 
     }
 
 
+def _pending_bundle_review_node(expected: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "node": "production_evidence_bundle_review",
+        "path": None,
+        "schema_version": None,
+        "passed": True,
+        "decision": "h3_production_evidence_bundle_blocked_pending_review",
+        "required_decision": expected["ready_decision"],
+        "complete_field": expected["complete_field"],
+        "complete": False,
+        "round": expected["round"],
+        "gap_count": 1,
+        "gaps": [
+            {
+                "state": "h3_production_evidence_bundle_blocked_pending_review",
+                "gap_reason": "missing optional production evidence bundle review report; next stage readiness remains blocked at round 2",
+            }
+        ],
+        "runtime_flags_safe": True,
+        "non_claims_preserved": True,
+    }
+
+
 def _completed_rounds(nodes: dict[str, dict[str, Any]]) -> list[int]:
     completed = [1]
     for round_number in (2, 3, 4, 5):
@@ -400,12 +441,30 @@ def _runtime_flags_safe(value: Any) -> bool:
     return True
 
 
-def _non_claims_preserved(report: dict[str, Any]) -> bool:
+def _non_claims_preserved(node_name: str, report: dict[str, Any]) -> bool:
     non_claims = set(_record_text_list(report.get("non_claims")))
+    if node_name == "production_evidence_bundle_review":
+        return {
+            "does_not_start_runtime_or_agent_loop",
+            "does_not_authorize_production_runtime_execution",
+            "bundle_validation_does_not_replace_governance_acceptance",
+        }.issubset(non_claims)
     return {
         "does_not_start_runtime_or_agent_loop",
         "does_not_mutate_iem_or_normative_state",
     }.issubset(non_claims)
+
+
+def _bundle_review_gaps(report: dict[str, Any]) -> list[dict[str, Any]]:
+    review_state = str(report.get("review_state") or "")
+    if not review_state:
+        return []
+    return [
+        {
+            "state": review_state,
+            "gap_reason": "production evidence bundle review is not complete",
+        }
+    ]
 
 
 def _collect_gaps(value: Any) -> list[dict[str, Any]]:
@@ -474,6 +533,7 @@ def _require_equal(key: str, actual: Any, expected: Any, *, checks: dict[str, bo
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build H3 production runtime stage transition closure gate")
     parser.add_argument("--production-evidence-submission-manifest", type=Path, required=True)
+    parser.add_argument("--production-evidence-bundle-review", type=Path)
     parser.add_argument("--production-execution-authorization-gate", type=Path, required=True)
     parser.add_argument("--production-goal-alignment-gate", type=Path, required=True)
     parser.add_argument("--production-executor-permission-gate", type=Path, required=True)
@@ -490,6 +550,7 @@ def main() -> int:
     agent_root = Path(__file__).resolve().parents[1]
     report = build_h3_goal_emission_runtime_production_stage_transition_gate(
         production_evidence_submission_manifest_path=args.production_evidence_submission_manifest,
+        production_evidence_bundle_review_path=args.production_evidence_bundle_review,
         production_execution_authorization_gate_path=args.production_execution_authorization_gate,
         production_goal_alignment_gate_path=args.production_goal_alignment_gate,
         production_executor_permission_gate_path=args.production_executor_permission_gate,
