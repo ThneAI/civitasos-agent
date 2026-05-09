@@ -44,6 +44,7 @@ from benchmarks.h3_goal_emission_runtime_production_runtime_receipt_gate import 
 
 SCHEMA_VERSION = "h3-goal-emission-runtime-production-stage-transition-gate:v1"
 PRODUCTION_EVIDENCE_BUNDLE_REVIEW_SCHEMA_VERSION = "h3-production-evidence-bundle-review-runner:v1"
+PRODUCTION_EVIDENCE_BUNDLE_VALIDATION_SCHEMA_VERSION = "h3-production-evidence-bundle-validation-report:v1"
 
 EXPECTED_NODES: dict[str, dict[str, Any]] = {
     "production_evidence_submission_manifest": {
@@ -183,6 +184,13 @@ def build_h3_goal_emission_runtime_production_stage_transition_gate(
         node_gaps = _collect_gaps(report)
         if node_name == "production_evidence_bundle_review" and not complete:
             node_gaps.extend(_bundle_review_gaps(report))
+        if node_name == "production_evidence_bundle_review" and complete:
+            _require_bool(
+                "production_evidence_bundle_review_complete_report_valid",
+                _complete_bundle_review_report_valid(report),
+                checks=checks,
+                failures=failures,
+            )
         nodes[node_name] = {
             "node": node_name,
             "path": str(node_path),
@@ -465,6 +473,25 @@ def _bundle_review_gaps(report: dict[str, Any]) -> list[dict[str, Any]]:
             "gap_reason": "production evidence bundle review is not complete",
         }
     ]
+
+
+def _complete_bundle_review_report_valid(report: dict[str, Any]) -> bool:
+    bundle_report = _object(report.get("bundle_report"))
+    bundle_readiness = _object(bundle_report.get("readiness"))
+    inputs = _object(report.get("inputs"))
+    return all(
+        (
+            report.get("review_state") == "bundle_validation_passed",
+            report.get("require_bundle") is True,
+            report.get("bundle_inputs_present") is True,
+            all(bool(inputs.get(name)) for name in ("round2_submission", "anchor", "verification")),
+            bundle_report.get("schema_version") == PRODUCTION_EVIDENCE_BUNDLE_VALIDATION_SCHEMA_VERSION,
+            bundle_report.get("passed") is True,
+            bundle_readiness.get("production_evidence_bundle_hash_chain_complete") is True,
+            bundle_readiness.get("production_runtime_execution_allowed") is False,
+            bundle_readiness.get("production_runtime_receipt_allowed") is False,
+        )
+    )
 
 
 def _collect_gaps(value: Any) -> list[dict[str, Any]]:

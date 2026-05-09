@@ -84,6 +84,17 @@ def test_stage_transition_fails_closed_on_invalid_bundle_report(tmp_path: Path) 
     assert report["readiness"]["decision"] == "blocked_before_production_stage_transition_review"
 
 
+def test_stage_transition_fails_closed_on_forged_complete_bundle_review(tmp_path: Path) -> None:
+    paths = _write_transition_chain(tmp_path, complete=True)
+    paths["production_evidence_bundle_review_path"] = _write_bundle_review(tmp_path, require_bundle=False)
+
+    report = build_h3_goal_emission_runtime_production_stage_transition_gate(agent_root=tmp_path, **paths)
+
+    assert report["passed"] is False
+    assert report["checks"]["production_evidence_bundle_review_complete_report_valid"] is False
+    assert report["readiness"]["decision"] == "blocked_before_production_stage_transition_review"
+
+
 def test_stage_transition_fails_closed_on_runtime_flag_regression(tmp_path: Path) -> None:
     paths = _write_transition_chain(tmp_path)
     receipt_gate_path = paths["production_runtime_receipt_gate_path"]
@@ -199,6 +210,7 @@ def _write_bundle_review(
     *,
     passed: bool = True,
     complete: bool = True,
+    require_bundle: bool = True,
 ) -> Path:
     path = tmp_path / "h3_production_bundle_review.json"
     decision = (
@@ -213,13 +225,20 @@ def _write_bundle_review(
                 "passed": passed,
                 "review_state": "bundle_validation_passed" if complete else "blocked_pending_production_evidence_bundle",
                 "failure_reasons": [] if passed else ["bundle validation failed"],
+                "require_bundle": require_bundle,
+                "bundle_inputs_present": complete,
+                "inputs": {
+                    "round2_submission": str(tmp_path / "production_evidence_submission.json") if complete else None,
+                    "anchor": str(tmp_path / "l2_external_anchor.json") if complete else None,
+                    "verification": str(tmp_path / "l2_external_anchor_verification.json") if complete else None,
+                },
                 "readiness": {
                     "decision": decision,
                     "production_evidence_bundle_review_complete": complete,
                     "production_runtime_execution_allowed": False,
                     "production_runtime_receipt_allowed": False,
                 },
-                "bundle_report": {"passed": complete} if complete else None,
+                "bundle_report": _bundle_validation_report(tmp_path) if complete else None,
                 "non_claims": [
                     "does_not_start_runtime_or_agent_loop",
                     "does_not_authorize_production_runtime_execution",
@@ -230,6 +249,39 @@ def _write_bundle_review(
         encoding="utf-8",
     )
     return path
+
+
+def _bundle_validation_report(tmp_path: Path) -> dict:
+    return {
+        "schema_version": "h3-production-evidence-bundle-validation-report:v1",
+        "passed": True,
+        "failure_reasons": [],
+        "checks": {
+            "round2_submission_passed": True,
+            "round2_readiness_complete": True,
+            "l2_anchor_passed": True,
+            "l2_anchor_verification_passed": True,
+            "round2_single_goal_present": True,
+            "anchor_goal_matches_round2_goal": True,
+            "goal_id_matches_requested": True,
+            "anchor_artifact_type_supported": True,
+            "artifact_hash_bound_to_round2_submission": True,
+            "verification_artifact_hash_bound_to_round2_submission": True,
+            "verification_anchor_hash_bound_to_anchor_record": True,
+            "runtime_execution_not_authorized": True,
+        },
+        "inputs": {
+            "round2_submission_path": str(tmp_path / "production_evidence_submission.json"),
+            "anchor_path": str(tmp_path / "l2_external_anchor.json"),
+            "verification_path": str(tmp_path / "l2_external_anchor_verification.json"),
+        },
+        "readiness": {
+            "decision": "h3_production_evidence_bundle_review_no_runtime_execution",
+            "production_evidence_bundle_hash_chain_complete": True,
+            "production_runtime_execution_allowed": False,
+            "production_runtime_receipt_allowed": False,
+        },
+    }
 
 
 def _write_report(
