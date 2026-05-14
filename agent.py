@@ -66,15 +66,25 @@ def build_runner() -> AgentRunner:
     @runner.rule(priority=30, name="auto_claim_matching")
     def auto_claim_matching(briefing: dict, _memories: dict) -> Decision | None:
         cap_set = set(capabilities)
-        for task in briefing.get("pool_tasks", []):
-            required = set(task.get("required_capabilities", []))
+        candidates = []
+        candidates.extend(briefing.get("pool_tasks", []) or [])
+        candidates.extend(briefing.get("opportunities", []) or [])
+        for task in candidates:
+            required = set(task.get("required_capabilities", []) or [])
+            if not required and task.get("required_capability"):
+                required = {task["required_capability"]}
+            if not required and task.get("capability"):
+                required = {task["capability"]}
             if required and required.issubset(cap_set):
+                task_id = task.get("task_id") or task.get("id")
+                if not task_id:
+                    continue
                 return Decision(
                     action="pool_claim",
-                    params={"task_id": task["task_id"]},
+                    params={"task_id": task_id},
                     reasoning=f"Capabilities match: {required}",
                     confidence=0.9,
-                    source=DecisionSource.RULE,
+                    source=DecisionSource.RULES,
                 )
         return None
 
