@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -11,6 +12,41 @@ assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
+
+
+class _Response:
+    def __init__(self, payload: object) -> None:
+        self._payload = payload
+
+    def __enter__(self) -> "_Response":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
+
+
+def test_http_client_bootstraps_demo_login_token(monkeypatch) -> None:
+    requests = []
+
+    def fake_urlopen(request, timeout=0):  # noqa: ANN001
+        requests.append(request)
+        if request.full_url == "http://backend/api/v1/auth/demo-login":
+            return _Response({"data": {"token": "demo-token"}})
+        assert dict(request.header_items()).get("Authorization") == "Bearer demo-token"
+        return _Response([])
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    client = module.HttpJsonClient("http://backend", demo_login_agent_id="tasks")
+
+    assert client.get("/api/v1/a2a/agents") == []
+    assert [request.full_url for request in requests] == [
+        "http://backend/api/v1/auth/demo-login",
+        "http://backend/api/v1/a2a/agents",
+    ]
 
 
 def test_alpha_payload_has_h3_delivery_contract() -> None:
@@ -56,4 +92,4 @@ def test_gamma_payload_requires_review_issue_list_and_h3_boundary() -> None:
     assert payload["allowed_agents"] == ["did:gamma"]
     assert payload["input"]["delivery_contract"]["review_must_have_issue_list"] is True
     assert payload["input"]["delivery_contract"]["h3_must_remain_blocked"] is True
-    assert "通过/不通过" in payload["input"]["delivery_contract"]["required_sections"]
+    assert "verdict" in payload["input"]["delivery_contract"]["required_sections"]

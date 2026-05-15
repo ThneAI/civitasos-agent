@@ -23,6 +23,7 @@ from typing import Any
 
 DEFAULT_BASE_URL = "http://localhost:8099"
 DEFAULT_ROOT = "runs/l1_pilot_001_contract_tasks"
+DEFAULT_DEMO_LOGIN_AGENT_ID = "l1_pilot_contract_tasks"
 DEFAULT_REWARD = 25
 DEFAULT_DEADLINE_SECS = 3600
 ROLE_DEFAULTS = {
@@ -42,11 +43,26 @@ class AgentRef:
 
 
 class HttpJsonClient:
-    def __init__(self, base_url: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        bearer_token: str | None = None,
+        api_key: str | None = None,
+        demo_login_agent_id: str | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._bearer_token = bearer_token or os.getenv("CIVITASOS_BEARER_TOKEN") or None
+        self._api_key = api_key or os.getenv("CIVITASOS_API_KEY") or None
+        self._demo_login_agent_id = (
+            demo_login_agent_id
+            if demo_login_agent_id is not None
+            else os.getenv("L1_DEMO_LOGIN_AGENT_ID", DEFAULT_DEMO_LOGIN_AGENT_ID)
+        )
+        self._demo_login_attempted = False
 
     def get(self, path: str) -> Any:
-        request = urllib.request.Request(self._url(path), method="GET")
+        request = urllib.request.Request(self._url(path), headers=self._headers(), method="GET")
         return self._open_json(request)
 
     def post(self, path: str, payload: dict[str, Any]) -> Any:
@@ -54,13 +70,51 @@ class HttpJsonClient:
         request = urllib.request.Request(
             self._url(path),
             data=body,
-            headers={"content-type": "application/json"},
+            headers=self._headers(content_type=True),
             method="POST",
         )
         return self._open_json(request)
 
     def _url(self, path: str) -> str:
         return f"{self._base_url}{path if path.startswith('/') else '/' + path}"
+
+    def _headers(self, *, content_type: bool = False) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if content_type:
+            headers["Content-Type"] = "application/json"
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        token = self._auth_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def _auth_token(self) -> str | None:
+        if self._bearer_token or self._api_key or self._demo_login_attempted:
+            return self._bearer_token
+        agent_id = str(self._demo_login_agent_id or "").strip()
+        if not agent_id:
+            self._demo_login_attempted = True
+            return None
+        self._demo_login_attempted = True
+        payload = self._open_json(
+            urllib.request.Request(
+                self._url("/api/v1/auth/demo-login"),
+                data=json.dumps({"agent_id": agent_id}).encode("utf-8"),
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                method="POST",
+            )
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"demo-login response must be an object: {payload}")
+        token = payload.get("token")
+        data = payload.get("data")
+        if not token and isinstance(data, dict):
+            token = data.get("token")
+        if not token:
+            raise RuntimeError(f"demo-login response missing token: {payload}")
+        self._bearer_token = str(token)
+        return self._bearer_token
 
     @staticmethod
     def _open_json(request: urllib.request.Request) -> Any:
@@ -85,7 +139,13 @@ def build_alpha_payload(
     instruction = (
         "Create the L1 Pilot 001 execution plan update. Scope: controlled pilot "
         "only. H.3 must remain blocked. Output must separate task boundary, "
-        "execution plan, and H.3 non-readiness."
+        "execution plan, and H.3 non-readiness. Use these exact headings: "
+        "任务边界, 执行计划, H3. The H3 section must contain only blocked-state "
+        "claims: H.3 remains blocked; no production readiness; no production "
+        "runtime execution; no production receipt writes. Do not use ready, "
+        "passed, approved, authorized, allowed, unblocked, 通过, 就绪, 授权, 允许, "
+        "or 解锁 on any line that also mentions H3, H.3, production, or 生产. "
+        "Use 采用 instead of 通过 when you mean 'by means of'."
     )
     return _pool_post_payload(
         requester=requester,
@@ -119,7 +179,13 @@ def build_beta_payload(
     instruction = (
         "Implement a repair/delta artifact based on alpha's plan. Do not replay "
         "alpha. Output must identify concrete changes, differences from alpha, "
-        "and H.3 blocked boundary preservation."
+        "and H.3 blocked boundary preservation. Use these exact headings: "
+        "变更摘要, 与上游不同之处, H3. The H3 section must contain only blocked-state "
+        "claims: H.3 remains blocked; no production readiness; no production "
+        "runtime execution; no production receipt writes. Do not use ready, "
+        "passed, approved, authorized, allowed, unblocked, 通过, 就绪, 授权, 允许, "
+        "or 解锁 on any line that also mentions H3, H.3, production, or 生产. "
+        "Use 采用 instead of 通过 when you mean 'by means of'."
     )
     return _pool_post_payload(
         requester=requester,
@@ -158,7 +224,14 @@ def build_gamma_payload(
         "Review beta's L1 Pilot 001 delta against alpha's plan. Give an explicit "
         "L1 verdict, list issues, and preserve the H.3 blocked boundary. Do not "
         "claim production readiness, production runtime execution, or production "
-        "receipt write permission."
+        "receipt write permission. Use these exact headings: verdict, 问题清单, "
+        "H3. In the verdict section say whether the L1 controlled pilot delta is "
+        "accepted or blocked. In the H3 section state only blocked-state claims: "
+        "H.3 remains blocked; no production readiness; no production runtime "
+        "execution; no production receipt writes. Do not use ready, passed, "
+        "approved, authorized, allowed, unblocked, 通过, 就绪, 授权, 允许, or 解锁 "
+        "on any line that also mentions H3, H.3, production, or 生产. Use 采用 "
+        "instead of 通过 when you mean 'by means of'."
     )
     return _pool_post_payload(
         requester=requester,
@@ -176,7 +249,7 @@ def build_gamma_payload(
             "beta_output": _stable_text(beta_output),
             "boundary": _h3_blocked_boundary(),
             "delivery_contract": {
-                "required_sections": ["通过/不通过", "问题清单", "H3"],
+                "required_sections": ["verdict", "问题清单", "H3"],
                 "forbid_upstream_replay": True,
                 "h3_must_remain_blocked": True,
                 "review_must_have_issue_list": True,

@@ -16,6 +16,9 @@ AGENT_LLM_VALUE="${AGENT_LLM:-ollama:qwen3:latest}"
 LLM_BASE_URL_VALUE="${LLM_BASE_URL:-http://localhost:11434/v1}"
 LOG_LEVEL_VALUE="${LOG_LEVEL:-INFO}"
 BIRTH_SPONSOR_VALUE="${CIVITASOS_BIRTH_SPONSOR:-pilot_guardian}"
+EVENT_WAKE_VALUE="${L1_ENABLE_EVENT_WAKE:-1}"
+GATEWAY_BASE_PORT_VALUE="${L1_GATEWAY_BASE_PORT:-18710}"
+AGENT_HOST_VALUE="${L1_AGENT_HOST:-127.0.0.1}"
 
 roles=(alpha_planner beta_implementer gamma_reviewer)
 capabilities=(
@@ -26,7 +29,7 @@ capabilities=(
 
 usage() {
   cat <<USAGE
-Usage: $0 [check|print|start|status|stop|resolve-agents|post-alpha|post-beta|post-gamma|post-next|task-status]
+Usage: $0 [check|print|start|status|stop|resolve-agents|post-alpha|post-beta|post-gamma|post-next|task-status|run-chain]
 
 Environment overrides:
   L1_PILOT_ROOT=$ROOT
@@ -34,6 +37,9 @@ Environment overrides:
   AGENT_LLM=$AGENT_LLM_VALUE
   LLM_BASE_URL=$LLM_BASE_URL_VALUE
   CIVITASOS_BIRTH_SPONSOR=$BIRTH_SPONSOR_VALUE
+  L1_ENABLE_EVENT_WAKE=$EVENT_WAKE_VALUE
+  L1_GATEWAY_BASE_PORT=$GATEWAY_BASE_PORT_VALUE
+  L1_AGENT_HOST=$AGENT_HOST_VALUE
   PYTHON=$PYTHON_BIN
 
 Commands:
@@ -48,6 +54,7 @@ Commands:
   post-gamma      Post gamma reviewer task after beta is Delivered/Completed.
   post-next       Post the next missing task in the alpha→beta→gamma chain.
   task-status     Show posted contract task state.
+  run-chain       Run the full alpha→beta→gamma controlled pilot chain.
 USAGE
 }
 
@@ -85,12 +92,16 @@ print_commands() {
   for i in "${!roles[@]}"; do
     local role="${roles[$i]}"
     local caps="${capabilities[$i]}"
+    local gateway_port
+    gateway_port="$(role_gateway_port "$i")"
     cat <<CMD
 CIVITASOS_URL=$CIVITASOS_URL \\
 CIVITASOS_BIRTH_SPONSOR=$BIRTH_SPONSOR_VALUE \\
 BENCHMARK_BIRTH_SPONSOR=$BIRTH_SPONSOR_VALUE \\
 AGENT_NAME=$role \\
 AGENT_CAPABILITIES=$caps \\
+GATEWAY_PORT=$gateway_port \\
+AGENT_ENDPOINT=http://$AGENT_HOST_VALUE:$gateway_port \\
 AGENT_LLM=$AGENT_LLM_VALUE \\
 LLM_BASE_URL=$LLM_BASE_URL_VALUE \\
 AGENT_IDENTITY=$ROOT/identity/$role.key \\
@@ -102,12 +113,23 @@ CMD
   done
 }
 
+role_gateway_port() {
+  local role_index="$1"
+  echo $((GATEWAY_BASE_PORT_VALUE + role_index + 1))
+}
+
 start_agents() {
   check
   mkdir -p "$ROOT/identity" "$ROOT/data" "$ROOT/logs" "$ROOT/pids"
   for i in "${!roles[@]}"; do
     local role="${roles[$i]}"
     local caps="${capabilities[$i]}"
+    local gateway_port="0"
+    local agent_endpoint=""
+    if [ "$EVENT_WAKE_VALUE" = "1" ]; then
+      gateway_port="$(role_gateway_port "$i")"
+      agent_endpoint="http://$AGENT_HOST_VALUE:$gateway_port"
+    fi
     local pid_file="$ROOT/pids/$role.pid"
     if [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
       echo "[skip] $role already running pid=$(cat "$pid_file")"
@@ -118,12 +140,14 @@ start_agents() {
     BENCHMARK_BIRTH_SPONSOR="$BIRTH_SPONSOR_VALUE" \
     AGENT_NAME="$role" \
     AGENT_CAPABILITIES="$caps" \
+    GATEWAY_PORT="$gateway_port" \
+    AGENT_ENDPOINT="$agent_endpoint" \
     AGENT_LLM="$AGENT_LLM_VALUE" \
     LLM_BASE_URL="$LLM_BASE_URL_VALUE" \
     AGENT_IDENTITY="$ROOT/identity/$role.key" \
     AGENT_DATA_DIR="$ROOT/data/$role" \
     LOG_LEVEL="$LOG_LEVEL_VALUE" \
-    nohup "$PYTHON_BIN" agent.py > "$ROOT/logs/$role.log" 2>&1 &
+    nohup setsid "$PYTHON_BIN" agent.py > "$ROOT/logs/$role.log" 2>&1 < /dev/null &
     echo "$!" > "$pid_file"
     echo "[started] $role pid=$! log=$ROOT/logs/$role.log"
   done
@@ -144,8 +168,19 @@ stop_agents() {
   for role in "${roles[@]}"; do
     local pid_file="$ROOT/pids/$role.pid"
     if [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-      kill "$(cat "$pid_file")"
-      echo "[stopped] $role pid=$(cat "$pid_file")"
+      local pid
+      pid="$(cat "$pid_file")"
+      kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+      for _ in $(seq 1 120); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+          break
+        fi
+        sleep 0.25
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      fi
+      echo "[stopped] $role pid=$pid"
     else
       echo "[skip] $role not running"
     fi
@@ -157,6 +192,14 @@ contract_tasks() {
   "$PYTHON_BIN" scripts/l1_pilot_001_contract_tasks.py \
     --base-url "$CIVITASOS_URL" \
     --root "$ROOT" \
+    "$@"
+}
+
+contract_runner() {
+  "$PYTHON_BIN" scripts/l1_pilot_001_contract_runner.py \
+    --base-url "$CIVITASOS_URL" \
+    --root "$ROOT" \
+    --python "$PYTHON_BIN" \
     "$@"
 }
 
@@ -172,6 +215,7 @@ case "$CMD" in
   post-gamma) contract_tasks post-gamma "$@" ;;
   post-next) contract_tasks post-next "$@" ;;
   task-status) contract_tasks status "$@" ;;
+  run-chain) contract_runner "$@" ;;
   -h|--help|help) usage ;;
   *) usage; exit 2 ;;
 esac
