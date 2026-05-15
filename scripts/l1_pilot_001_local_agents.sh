@@ -6,6 +6,9 @@ set -euo pipefail
 # production readiness, external independence, actuation, or production receipt.
 
 CMD="${1:-check}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
 ROOT="${L1_PILOT_ROOT:-runs/l1_pilot_001}"
 PYTHON_BIN="${PYTHON:-./.venv/bin/python}"
 CIVITASOS_URL="${CIVITASOS_URL:-http://localhost:8099}"
@@ -23,7 +26,7 @@ capabilities=(
 
 usage() {
   cat <<USAGE
-Usage: $0 [check|print|start|status|stop]
+Usage: $0 [check|print|start|status|stop|resolve-agents|post-alpha|post-beta|post-gamma|post-next|task-status]
 
 Environment overrides:
   L1_PILOT_ROOT=$ROOT
@@ -39,6 +42,12 @@ Commands:
   start   Start alpha_planner, beta_implementer, gamma_reviewer in background.
   status  Show recorded background process status.
   stop    Stop recorded background processes.
+  resolve-agents  Resolve pilot requester/alpha/beta/gamma DIDs for contract tasks.
+  post-alpha      Post alpha planner task with structured delivery_contract.
+  post-beta       Post beta implementer task after alpha is Delivered/Completed.
+  post-gamma      Post gamma reviewer task after beta is Delivered/Completed.
+  post-next       Post the next missing task in the alpha→beta→gamma chain.
+  task-status     Show posted contract task state.
 USAGE
 }
 
@@ -144,12 +153,25 @@ stop_agents() {
   done
 }
 
+contract_tasks() {
+  "$PYTHON_BIN" scripts/l1_pilot_001_contract_tasks.py \
+    --base-url "$CIVITASOS_URL" \
+    --root "$ROOT" \
+    "$@"
+}
+
 case "$CMD" in
   check) check ;;
   print) print_commands ;;
   start) start_agents ;;
   status) status_agents ;;
   stop) stop_agents ;;
+  resolve-agents) contract_tasks resolve-agents "$@" ;;
+  post-alpha) contract_tasks post-alpha "$@" ;;
+  post-beta) contract_tasks post-beta "$@" ;;
+  post-gamma) contract_tasks post-gamma "$@" ;;
+  post-next) contract_tasks post-next "$@" ;;
+  task-status) contract_tasks status "$@" ;;
   -h|--help|help) usage ;;
   *) usage; exit 2 ;;
 esac
