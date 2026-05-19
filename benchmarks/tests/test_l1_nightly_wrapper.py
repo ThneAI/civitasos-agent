@@ -30,6 +30,8 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'L1_SERVICE_TOKEN_SCOPES="$L1_PILOT_001_SERVICE_SCOPES"' in text
     assert '--require-signed-wake' in text
     assert 'L1_ENABLE_EVENT_WAKE="$L1_PILOT_001_ENABLE_EVENT_WAKE"' in text
+    assert "wake_action_bias_pool_claim_count" in text
+    assert "L1 nightly event wake hard gate requires wake action bias pool_claim" in text
 
 
 def test_l1_contract_smoke_is_strict_service_token_signed_wake() -> None:
@@ -78,6 +80,7 @@ def test_l1_contract_smoke_scheduled_indexes_evidence() -> None:
     assert "wake_event_counts" in text
     assert "rule_pool_claim_count" in text
     assert "wake_action_bias_pool_claim_count" in text
+    assert "cannot index L1 event wake smoke without wake action bias evidence" in text
     assert "service_token_bootstrap_count" in text
     assert "did_auth_bootstrap_count" in text
     assert "scheduled_smoke_does_not_claim_h3_production_readiness" in text

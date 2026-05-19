@@ -1172,6 +1172,33 @@ if [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
     $(if [ "$L1_PILOT_001_REQUIRE_SIGNED_WAKE" = "1" ]; then printf '%s\n' "--require-signed-wake"; fi) \
     --stage-timeout "$L1_PILOT_001_STAGE_TIMEOUT" \
     --poll-interval "$L1_PILOT_001_POLL_INTERVAL"
+  "$PYTHON" - "$L1_PILOT_001_CONTRACT_ROOT/contract_runner_evidence.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+report = json.load(open(path, encoding="utf-8"))
+stage_count = len(report.get("stage_reports", []))
+wake = report.get("wake_security") or {}
+event_wake = report.get("event_wake_evidence") or {}
+if wake.get("wake_mode") == "event":
+    count = int(event_wake.get("wake_action_bias_pool_claim_count") or 0)
+    if count < stage_count:
+        raise SystemExit(
+            "L1 nightly event wake hard gate requires wake action bias pool_claim "
+            f"evidence for every stage; found {count}/{stage_count}"
+        )
+    missing = [
+        stage.get("role")
+        for stage in event_wake.get("stage_evidence", [])
+        if stage.get("wake_action_bias_pool_claim_observed") is not True
+    ]
+    if missing:
+        raise SystemExit(
+            "L1 nightly event wake hard gate missing per-stage wake action bias evidence: "
+            + ", ".join(str(role) for role in missing)
+        )
+PY
 fi
 
 if [ -n "$BASELINE_RUNS_ROOT" ]; then

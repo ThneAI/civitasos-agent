@@ -121,5 +121,24 @@ if did_bootstrap_count < 3:
         "L1 contract smoke requires DID challenge bootstrap evidence after registration; "
         f"found {did_bootstrap_count}"
     )
+stage_count = len(report.get("stage_reports", []))
+event_wake = report.get("event_wake_evidence") or {}
+if wake.get("wake_mode") == "event":
+    wake_bias_count = int(event_wake.get("wake_action_bias_pool_claim_count") or 0)
+    if wake_bias_count < stage_count:
+        raise SystemExit(
+            "L1 event wake hard gate requires wake action bias pool_claim evidence "
+            f"for every stage; found {wake_bias_count}/{stage_count}"
+        )
+    missing = [
+        stage.get("role")
+        for stage in event_wake.get("stage_evidence", [])
+        if stage.get("wake_action_bias_pool_claim_observed") is not True
+    ]
+    if missing:
+        raise SystemExit(
+            "L1 event wake hard gate missing per-stage wake action bias evidence: "
+            + ", ".join(str(role) for role in missing)
+        )
 print(f"L1 contract smoke passed: {path}")
 PY
