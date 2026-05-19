@@ -77,11 +77,12 @@ entry = {
         for stage in report.get("stage_reports", [])
     ],
     "wake_event_counts": {
-        "task_posted": logs.count("WAKE received: event=task.posted"),
-        "task_claimed": logs.count("WAKE received: event=task.claimed"),
-        "task_delivered": logs.count("WAKE received: event=task.delivered"),
+      "task_posted": logs.count("WAKE received: event=task.posted"),
+      "task_claimed": logs.count("WAKE received: event=task.claimed"),
+      "task_delivered": logs.count("WAKE received: event=task.delivered"),
     },
     "rule_pool_claim_count": logs.count("Rule 'auto_claim_matching' fired: pool_claim"),
+    "wake_action_bias_pool_claim_count": logs.count("Wake action bias accepted: action=pool_claim"),
     "service_token_bootstrap_count": logs.count("Service-token bootstrap token acquired"),
     "did_auth_bootstrap_count": logs.count("DID auth token bootstrapped"),
     "non_claims": [

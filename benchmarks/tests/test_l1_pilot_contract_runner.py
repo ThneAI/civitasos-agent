@@ -151,6 +151,7 @@ def test_evidence_includes_auth_context(tmp_path) -> None:
     assert evidence["auth_context"]["evidence_allowed"] is False
     assert evidence["wake_security"]["require_signed_wake"] is True
     assert evidence["wake_security"]["callback_secret_configured"] is True
+    assert evidence["event_wake_evidence"]["schema_version"] == "l1-event-wake-evidence:v1"
 
 
 def test_wake_security_context_records_signed_wake_requirements(monkeypatch) -> None:
@@ -165,6 +166,51 @@ def test_wake_security_context_records_signed_wake_requirements(monkeypatch) -> 
     assert context["compatibility_mode"] is False
     assert context["signature_scheme"] == "hmac-sha256(issuer.timestamp.raw_body)"
     assert context["expected_issuer"] == "civitasos-backend"
+
+
+def test_event_wake_evidence_summarises_role_logs(tmp_path) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "alpha_planner.log").write_text(
+        "\n".join([
+            "Service-token bootstrap token acquired",
+            "DID auth token bootstrapped",
+            "WAKE received: event=task.posted task_id=t-alpha issuer=civitasos-backend",
+            "Wake action bias accepted: action=pool_claim task_id=t-alpha source_event=task.posted",
+            "Rule 'auto_claim_matching' fired: pool_claim",
+            "WAKE received: event=task.claimed task_id=t-alpha issuer=civitasos-backend",
+            "WAKE received: event=task.delivered task_id=t-alpha issuer=civitasos-backend",
+        ]),
+        encoding="utf-8",
+    )
+
+    evidence = module._event_wake_evidence(
+        tmp_path,
+        [{
+            "role": "alpha",
+            "task_id": "t-alpha",
+            "terminal_status": "Delivered",
+            "claimed_by": "did:alpha",
+            "wake": {"fallback_used": False},
+        }],
+    )
+
+    assert evidence["wake_event_counts"] == {
+        "task_posted": 1,
+        "task_claimed": 1,
+        "task_delivered": 1,
+    }
+    assert evidence["rule_pool_claim_count"] == 1
+    assert evidence["wake_action_bias_pool_claim_count"] == 1
+    assert evidence["service_token_bootstrap_count"] == 1
+    assert evidence["did_auth_bootstrap_count"] == 1
+    stage = evidence["stage_evidence"][0]
+    assert stage["task_posted_wake_observed"] is True
+    assert stage["task_claimed_wake_observed"] is True
+    assert stage["task_delivered_wake_observed"] is True
+    assert stage["rule_pool_claim_observed"] is True
+    assert stage["wake_action_bias_pool_claim_observed"] is True
+    assert stage["fallback_used"] is False
 
 
 def test_task_collection_accepts_wrapped_and_legacy_list_shapes() -> None:

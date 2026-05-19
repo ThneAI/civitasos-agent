@@ -77,6 +77,7 @@ def test_l1_contract_smoke_scheduled_indexes_evidence() -> None:
     assert "l1_contract_smoke_latest.json" in text
     assert "wake_event_counts" in text
     assert "rule_pool_claim_count" in text
+    assert "wake_action_bias_pool_claim_count" in text
     assert "service_token_bootstrap_count" in text
     assert "did_auth_bootstrap_count" in text
     assert "scheduled_smoke_does_not_claim_h3_production_readiness" in text

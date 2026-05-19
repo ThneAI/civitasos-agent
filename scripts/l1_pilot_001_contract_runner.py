@@ -694,6 +694,7 @@ def _collect_evidence(
     chain_failed_tasks, historical_failed_tasks = _split_failed_tasks(pool_tasks, chain_task_ids)
     delivered_tasks = [_summarise_task(task) for task in pool_tasks if task.get("status") == "Delivered"]
     contract_log_hits = _contract_log_hits(root)
+    event_wake_evidence = _event_wake_evidence(root, stage_reports)
     return {
         "schema_version": "l1-pilot-001-contract-runner-evidence:v1",
         "generated_at": _now(),
@@ -703,6 +704,7 @@ def _collect_evidence(
         "wake_security": wake_security or {},
         "agents": _agents_as_dict(agents),
         "stage_reports": stage_reports,
+        "event_wake_evidence": event_wake_evidence,
         "task_chain": state,
         "tasks": tasks,
         "pool_summary": {
@@ -723,6 +725,65 @@ def _collect_evidence(
             "no_production_receipt_write",
         ],
     }
+
+
+def _event_wake_evidence(root: Path, stage_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    logs_by_role = {
+        role: _read_text_if_exists(root / "logs" / f"{ROLE_NAMES[role]}.log")
+        for role in ROLE_NAMES
+    }
+    all_logs = "\n".join(logs_by_role.values())
+    per_stage = []
+    for stage in stage_reports:
+        role = str(stage.get("role") or "")
+        task_id = str(stage.get("task_id") or "")
+        role_log = logs_by_role.get(role, "")
+        per_stage.append({
+            "role": role,
+            "task_id": task_id,
+            "fallback_used": bool((stage.get("wake") or {}).get("fallback_used")),
+            "terminal_status": stage.get("terminal_status"),
+            "claimed_by": stage.get("claimed_by"),
+            "task_posted_wake_observed": _log_has_event(role_log, "task.posted", task_id),
+            "task_claimed_wake_observed": _log_has_event(role_log, "task.claimed", task_id),
+            "task_delivered_wake_observed": _log_has_event(role_log, "task.delivered", task_id),
+            "rule_pool_claim_observed": "Rule 'auto_claim_matching' fired: pool_claim" in role_log,
+            "wake_action_bias_pool_claim_observed": (
+                "Wake action bias accepted: action=pool_claim" in role_log
+                and (not task_id or task_id in role_log)
+            ),
+        })
+    return {
+        "schema_version": "l1-event-wake-evidence:v1",
+        "wake_event_counts": {
+            "task_posted": all_logs.count("WAKE received: event=task.posted"),
+            "task_claimed": all_logs.count("WAKE received: event=task.claimed"),
+            "task_delivered": all_logs.count("WAKE received: event=task.delivered"),
+        },
+        "rule_pool_claim_count": all_logs.count("Rule 'auto_claim_matching' fired: pool_claim"),
+        "wake_action_bias_pool_claim_count": all_logs.count(
+            "Wake action bias accepted: action=pool_claim"
+        ),
+        "service_token_bootstrap_count": all_logs.count("Service-token bootstrap token acquired"),
+        "did_auth_bootstrap_count": all_logs.count("DID auth token bootstrapped"),
+        "stage_evidence": per_stage,
+        "non_claims": [
+            "log_evidence_is_local_controlled_pilot_observability",
+            "wake_action_bias_does_not_bypass_scope_or_backend_claim_checks",
+            "event_wake_evidence_does_not_claim_h3_production_readiness",
+        ],
+    }
+
+
+def _log_has_event(log_text: str, event: str, task_id: str) -> bool:
+    marker = f"WAKE received: event={event}"
+    return marker in log_text and (not task_id or task_id in log_text)
+
+
+def _read_text_if_exists(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def _task_collection(pool_response: Any) -> list[dict[str, Any]]:

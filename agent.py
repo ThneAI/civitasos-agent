@@ -18,6 +18,9 @@ from civitasos_runtime import AgentRunner
 from civitasos_runtime.models import Decision, DecisionSource
 
 
+log = logging.getLogger(__name__)
+
+
 def build_runner() -> AgentRunner:
     """从环境变量构建 AgentRunner。"""
     backend = os.getenv("CIVITASOS_URL", "http://localhost:8099")
@@ -69,6 +72,11 @@ def build_runner() -> AgentRunner:
         if isinstance(wake_bias, dict) and wake_bias.get("action") == "pool_claim":
             task_id = str(wake_bias.get("task_id") or "").strip()
             if task_id:
+                log.info(
+                    "Wake action bias accepted: action=pool_claim task_id=%s source_event=%s",
+                    task_id,
+                    wake_bias.get("source_event") or "",
+                )
                 return Decision(
                     action="pool_claim",
                     params={
