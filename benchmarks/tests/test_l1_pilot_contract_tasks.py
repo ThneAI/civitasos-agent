@@ -140,3 +140,57 @@ def test_gamma_payload_requires_review_issue_list_and_h3_boundary() -> None:
     assert payload["input"]["delivery_contract"]["review_must_have_issue_list"] is True
     assert payload["input"]["delivery_contract"]["h3_must_remain_blocked"] is True
     assert "verdict" in payload["input"]["delivery_contract"]["required_sections"]
+
+
+def test_repair_payload_requires_operator_approval_metadata() -> None:
+    payload = module.build_repair_payload(
+        requester="did:req",
+        repair_did="did:repair",
+        failed_task_id="task-failed",
+        failed_task={
+            "status": "Failed",
+            "failure_reason": "delivery_contract_violation",
+            "input": {
+                "delivery_contract": {
+                    "required_sections": ["H3"],
+                    "h3_must_remain_blocked": True,
+                }
+            },
+            "delivery_contract_verification": {
+                "repair_suggestions": ["Add missing H3 section"],
+            },
+        },
+        operator_id="operator-1",
+    )
+
+    assert payload["requester"] == "did:req"
+    assert payload["required_capability"] == "repair"
+    assert payload["allowed_agents"] == ["did:repair"]
+    assert payload["input"]["source_failed_task_id"] == "task-failed"
+    assert payload["input"]["repair_suggestions"] == ["Add missing H3 section"]
+    assert payload["input"]["operator_approval"]["approved"] is True
+    assert payload["input"]["operator_approval"]["approved_by"] == "operator-1"
+    assert payload["input"]["delivery_contract"]["forbid_upstream_replay"] is True
+    assert payload["input"]["delivery_contract"]["h3_must_remain_blocked"] is True
+
+
+def test_post_repair_fails_closed_without_operator_approval() -> None:
+    args = module.argparse.Namespace(operator_approved_repair=False)
+    agents = {
+        "requester": module.AgentRef(role="requester", did="did:req", alias=None, name="requester"),
+        "beta": module.AgentRef(role="beta", did="did:beta", alias=None, name="beta"),
+    }
+
+    with pytest.raises(SystemExit, match="failed tasks are not auto-retried"):
+        module._post_repair(object(), args, {}, agents, "task-failed")
+
+
+def test_extract_repair_suggestions_falls_back_to_failure_reason() -> None:
+    suggestions = module._extract_repair_suggestions({
+        "status": "Failed",
+        "failure_reason": "missing_required_section",
+    })
+
+    assert suggestions == [
+        "Inspect failure_reason=missing_required_section and produce a contract-shaped repair artifact."
+    ]

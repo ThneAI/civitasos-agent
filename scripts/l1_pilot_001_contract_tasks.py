@@ -318,6 +318,69 @@ def build_gamma_payload(
     )
 
 
+def build_repair_payload(
+    *,
+    requester: str,
+    repair_did: str,
+    failed_task_id: str,
+    failed_task: dict[str, Any],
+    operator_id: str,
+    repair_suggestions: list[str] | None = None,
+    reward: int = DEFAULT_REWARD,
+    deadline_secs: int = DEFAULT_DEADLINE_SECS,
+) -> dict[str, Any]:
+    """Build an explicit operator-approved repair task.
+
+    This is deliberately not used by post-next/run-chain. A failed task may only
+    enter this path after an operator records an approval.
+    """
+    suggestions = repair_suggestions or _extract_repair_suggestions(failed_task)
+    instruction = (
+        "Create an explicit repair artifact for the failed L1 controlled pilot "
+        "task. Do not retry automatically and do not replay the failed output. "
+        "Use these exact headings: 失败原因, 修复计划, 验证步骤, H3. The H3 section "
+        "must contain only blocked-state claims: H.3 remains blocked; no "
+        "production readiness; no production runtime execution; no production "
+        "receipt writes."
+    )
+    return _pool_post_payload(
+        requester=requester,
+        required_capability="repair",
+        allowed_agent=repair_did,
+        reward=reward,
+        deadline_secs=deadline_secs,
+        input_data={
+            "description": instruction,
+            "instruction": instruction,
+            "expected_artifact_name": "l1_operator_approved_repair.md",
+            "source_failed_task_id": failed_task_id,
+            "source_failure_reason": failed_task.get("failure_reason"),
+            "source_task_status": failed_task.get("status"),
+            "source_task_contract": (failed_task.get("input") or {}).get("delivery_contract")
+            if isinstance(failed_task.get("input"), dict) else None,
+            "repair_suggestions": suggestions,
+            "operator_approval": {
+                "schema_version": "l1-operator-approved-repair:v1",
+                "approved": True,
+                "approved_by": operator_id,
+                "approved_at": _now(),
+                "source_failed_task_id": failed_task_id,
+                "non_claims": [
+                    "operator_approval_does_not_authorize_production_runtime_execution",
+                    "operator_approval_does_not_write_production_receipts",
+                    "repair_task_is_not_an_automatic_retry",
+                ],
+            },
+            "boundary": _h3_blocked_boundary(),
+            "delivery_contract": {
+                "required_sections": ["失败原因", "修复计划", "验证步骤", "H3"],
+                "forbid_upstream_replay": True,
+                "h3_must_remain_blocked": True,
+            },
+        },
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -333,6 +396,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Print payload without posting")
     parser.add_argument("--reward", type=int, default=DEFAULT_REWARD)
     parser.add_argument("--deadline-secs", type=int, default=DEFAULT_DEADLINE_SECS)
+    parser.add_argument(
+        "--operator-approved-repair",
+        action="store_true",
+        default=_env_flag("L1_OPERATOR_APPROVED_REPAIR"),
+        help="Required for post-repair; also accepted through L1_OPERATOR_APPROVED_REPAIR=1.",
+    )
+    parser.add_argument(
+        "--operator-id",
+        default=os.getenv("L1_OPERATOR_ID", "l1-controlled-pilot-operator"),
+        help="Operator id written into repair task approval metadata.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("resolve-agents")
     sub.add_parser("post-alpha")
@@ -341,6 +415,13 @@ def main(argv: list[str] | None = None) -> int:
     gamma = sub.add_parser("post-gamma")
     gamma.add_argument("--alpha-task-id")
     gamma.add_argument("--beta-task-id")
+    repair = sub.add_parser("post-repair")
+    repair.add_argument("--failed-task-id", required=True)
+    repair.add_argument(
+        "--repair-agent",
+        default=os.getenv("L1_REPAIR_AGENT"),
+        help="Repair agent DID/alias/name. Defaults to the beta implementer.",
+    )
     sub.add_parser("post-next")
     sub.add_parser("status")
     args = parser.parse_args(argv)
@@ -379,6 +460,8 @@ def main(argv: list[str] | None = None) -> int:
             str(alpha_task_id),
             str(beta_task_id),
         )
+    elif args.command == "post-repair":
+        task_id = _post_repair(client, args, state, agents, str(args.failed_task_id))
     else:
         task_id = _post_next(client, args, state, agents)
 
@@ -489,6 +572,43 @@ def _post_gamma(
     return task_id
 
 
+def _post_repair(
+    client: HttpJsonClient,
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    agents: dict[str, AgentRef],
+    failed_task_id: str,
+) -> str:
+    if not args.operator_approved_repair:
+        raise SystemExit(
+            "post-repair requires --operator-approved-repair or "
+            "L1_OPERATOR_APPROVED_REPAIR=1; failed tasks are not auto-retried"
+        )
+    failed_task = _require_failed_task(client, failed_task_id)
+    repair_agent = _resolve_repair_agent(client, args, agents)
+    payload = build_repair_payload(
+        requester=agents["requester"].did,
+        repair_did=repair_agent.did,
+        failed_task_id=failed_task_id,
+        failed_task=failed_task,
+        operator_id=str(args.operator_id),
+        reward=args.reward,
+        deadline_secs=args.deadline_secs,
+    )
+    task_id = _post_or_print(client, args, payload)
+    if not args.dry_run:
+        state["agents"] = _agents_as_dict({**agents, "repair": repair_agent})
+        state.setdefault("repair_tasks", []).append({
+            "source_failed_task_id": failed_task_id,
+            "repair_task_id": task_id,
+            "operator_approved": True,
+            "operator_id": str(args.operator_id),
+            "updated_at": _now(),
+        })
+        state["updated_at"] = _now()
+    return task_id
+
+
 def _post_next(client: HttpJsonClient, args: argparse.Namespace, state: dict[str, Any], agents: dict[str, AgentRef]) -> str:
     if not state.get("alpha_task_id"):
         return _post_alpha(client, args, state, agents)
@@ -527,11 +647,46 @@ def _require_delivered_task(client: HttpJsonClient, task_id: str, label: str) ->
     return task
 
 
+def _require_failed_task(client: HttpJsonClient, task_id: str) -> dict[str, Any]:
+    task = _get_task(client, task_id)
+    status = task.get("status")
+    if status not in {"Failed", "Disputed", "Cancelled"}:
+        raise SystemExit(f"task {task_id} is {status}; repair requires Failed/Disputed/Cancelled")
+    return task
+
+
 def _get_task(client: HttpJsonClient, task_id: str) -> dict[str, Any]:
     response = client.get(f"/api/v1/a2a/pool/tasks/{task_id}")
     if isinstance(response, dict) and isinstance(response.get("task"), dict):
         return response["task"]
     raise RuntimeError(f"unexpected task response for {task_id}: {response}")
+
+
+def _extract_repair_suggestions(task: dict[str, Any]) -> list[str]:
+    candidates = [
+        (task.get("delivery_contract_verification") or {}).get("repair_suggestions")
+        if isinstance(task.get("delivery_contract_verification"), dict) else None,
+        (task.get("input") or {}).get("repair_suggestions") if isinstance(task.get("input"), dict) else None,
+        (task.get("metadata") or {}).get("repair_suggestions") if isinstance(task.get("metadata"), dict) else None,
+    ]
+    for value in candidates:
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+    reason = str(task.get("failure_reason") or "").strip()
+    if reason:
+        return [f"Inspect failure_reason={reason} and produce a contract-shaped repair artifact."]
+    return ["Inspect failed task evidence and produce a contract-shaped repair artifact."]
+
+
+def _resolve_repair_agent(
+    client: HttpJsonClient,
+    args: argparse.Namespace,
+    agents: dict[str, AgentRef],
+) -> AgentRef:
+    if not args.repair_agent:
+        beta = agents["beta"]
+        return AgentRef(role="repair", did=beta.did, alias=beta.alias, name=beta.name)
+    return _resolve_agent(_list_agent_cards(client), "repair", str(args.repair_agent))
 
 
 def _status(client: HttpJsonClient, state_path: Path) -> dict[str, Any]:

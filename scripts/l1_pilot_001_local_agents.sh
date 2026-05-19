@@ -30,7 +30,7 @@ capabilities=(
 
 usage() {
   cat <<USAGE
-Usage: $0 [check|print|start|status|stop|resolve-agents|post-alpha|post-beta|post-gamma|post-next|task-status|run-chain]
+Usage: $0 [check|print|start|status|stop|resolve-agents|post-alpha|post-beta|post-gamma|post-next|post-repair|task-status|export-audit-refs|run-chain]
 
 Environment overrides:
   L1_PILOT_ROOT=$ROOT
@@ -56,7 +56,9 @@ Commands:
   post-beta       Post beta implementer task after alpha is Delivered/Completed.
   post-gamma      Post gamma reviewer task after beta is Delivered/Completed.
   post-next       Post the next missing task in the alpha→beta→gamma chain.
+  post-repair     Post an explicit operator-approved repair task for a failed task.
   task-status     Show posted contract task state.
+  export-audit-refs  Export repair suggestions as L1 packet audit-events JSONL.
   run-chain       Run the full alpha→beta→gamma controlled pilot chain.
 USAGE
 }
@@ -206,6 +208,18 @@ contract_runner() {
     "$@"
 }
 
+export_audit_refs() {
+  local output="$ROOT/packet_input/sinks/audit-events.jsonl"
+  if [ "$#" -gt 0 ] && [[ "$1" != --* ]]; then
+    output="$1"
+    shift
+  fi
+  "$PYTHON_BIN" scripts/l1_export_contract_audit_refs.py \
+    --evidence "$ROOT/contract_runner_evidence.json" \
+    --output "$output" \
+    "$@"
+}
+
 case "$CMD" in
   check) check ;;
   print) print_commands ;;
@@ -217,7 +231,9 @@ case "$CMD" in
   post-beta) contract_tasks post-beta "$@" ;;
   post-gamma) contract_tasks post-gamma "$@" ;;
   post-next) contract_tasks post-next "$@" ;;
+  post-repair) contract_tasks post-repair "$@" ;;
   task-status) contract_tasks status "$@" ;;
+  export-audit-refs) export_audit_refs "$@" ;;
   run-chain) contract_runner "$@" ;;
   -h|--help|help) usage ;;
   *) usage; exit 2 ;;

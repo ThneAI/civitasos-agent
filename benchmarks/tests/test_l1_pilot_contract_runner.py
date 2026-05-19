@@ -222,6 +222,26 @@ def test_task_collection_accepts_wrapped_and_legacy_list_shapes() -> None:
     assert module._task_collection({"unexpected": []}) == []
 
 
+def test_repair_suggestion_audit_refs_collects_failed_task_hints() -> None:
+    refs = module._repair_suggestion_audit_refs(
+        {
+            "beta_task_id": {
+                "id": "task-beta",
+                "failure_reason": "delivery_contract_violation",
+                "repair_suggestions": ["Add missing H3 section"],
+            }
+        },
+        [],
+        [],
+    )
+
+    assert refs["schema_version"] == "l1-repair-suggestion-audit-refs:v1"
+    assert refs["record_count"] == 1
+    assert refs["records"][0]["task_id"] == "task-beta"
+    assert refs["records"][0]["repair_suggestions"] == ["Add missing H3 section"]
+    assert refs["records"][0]["audit_ref_kind"] == "delivery_contract_repair_suggestions"
+
+
 def test_latest_matching_agent_requires_synced_capabilities() -> None:
     cards = [
         {

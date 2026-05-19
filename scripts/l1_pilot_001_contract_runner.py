@@ -695,6 +695,11 @@ def _collect_evidence(
     delivered_tasks = [_summarise_task(task) for task in pool_tasks if task.get("status") == "Delivered"]
     contract_log_hits = _contract_log_hits(root)
     event_wake_evidence = _event_wake_evidence(root, stage_reports)
+    repair_suggestion_audit_refs = _repair_suggestion_audit_refs(
+        tasks,
+        chain_failed_tasks,
+        contract_log_hits,
+    )
     return {
         "schema_version": "l1-pilot-001-contract-runner-evidence:v1",
         "generated_at": _now(),
@@ -718,6 +723,7 @@ def _collect_evidence(
         "failed_tasks": chain_failed_tasks,
         "historical_pool_failed_tasks": historical_failed_tasks,
         "contract_log_hits": contract_log_hits,
+        "repair_suggestion_audit_refs": repair_suggestion_audit_refs,
         "non_claims": [
             "l1_controlled_pilot_only",
             "h3_remains_blocked",
@@ -821,9 +827,63 @@ def _summarise_task(task: dict[str, Any]) -> dict[str, Any]:
         "claimed_by": task.get("claimed_by"),
         "failure_reason": task.get("failure_reason"),
         "delivery_contract": (task.get("input") or {}).get("delivery_contract") if isinstance(task.get("input"), dict) else None,
+        "repair_suggestions": _task_repair_suggestions(task),
         "has_output": output not in (None, "", {}, []),
         "output_chars": len(output_text),
         "output_preview": output_text[:500],
+    }
+
+
+def _task_repair_suggestions(task: dict[str, Any]) -> list[str]:
+    candidates = [
+        (task.get("delivery_contract_verification") or {}).get("repair_suggestions")
+        if isinstance(task.get("delivery_contract_verification"), dict) else None,
+        (task.get("input") or {}).get("repair_suggestions") if isinstance(task.get("input"), dict) else None,
+        (task.get("metadata") or {}).get("repair_suggestions") if isinstance(task.get("metadata"), dict) else None,
+    ]
+    for value in candidates:
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _repair_suggestion_audit_refs(
+    tasks: dict[str, Any],
+    failed_tasks: list[dict[str, Any]],
+    contract_log_hits: list[dict[str, str]],
+) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    for source, task in [*tasks.items(), *[(f"failed_{index}", task) for index, task in enumerate(failed_tasks, start=1)]]:
+        suggestions = task.get("repair_suggestions") if isinstance(task, dict) else None
+        if not isinstance(suggestions, list) or not suggestions:
+            continue
+        records.append({
+            "source": source,
+            "task_id": task.get("id"),
+            "failure_reason": task.get("failure_reason"),
+            "repair_suggestions": suggestions,
+            "audit_ref_kind": "delivery_contract_repair_suggestions",
+        })
+    for index, hit in enumerate(contract_log_hits, start=1):
+        records.append({
+            "source": f"contract_log_hit_{index}",
+            "task_id": None,
+            "failure_reason": "delivery_contract_blocked",
+            "repair_suggestions": [
+                "Inspect delivery contract violation and create an operator-approved repair task when needed."
+            ],
+            "audit_ref_kind": "delivery_contract_block_log",
+            "log": hit.get("log"),
+            "line": hit.get("line"),
+        })
+    return {
+        "schema_version": "l1-repair-suggestion-audit-refs:v1",
+        "record_count": len(records),
+        "records": records,
+        "non_claims": [
+            "repair_suggestion_audit_refs_do_not_auto_retry_failed_tasks",
+            "repair_suggestion_audit_refs_do_not_authorize_h3_production_readiness",
+        ],
     }
 
 
