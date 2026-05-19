@@ -68,6 +68,56 @@ def test_export_contract_audit_refs_writes_packet_compatible_jsonl(tmp_path) -> 
     }]
 
 
+def test_export_contract_audit_refs_appends_and_backfills_legacy_evidence(tmp_path) -> None:
+    evidence = tmp_path / "legacy_contract_runner_evidence.json"
+    evidence.write_text(
+        json.dumps({
+            "tasks": {
+                "beta_task_id": {
+                    "id": "task-beta",
+                    "status": "Failed",
+                    "failure_reason": "worker_failed",
+                }
+            },
+            "contract_log_hits": [{
+                "log": "runs/example/logs/beta.log",
+                "line": "Delivery contract blocked task_execute for task-beta: output makes a positive H3/production authorization claim",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    output = tmp_path / "sinks" / "audit-events.jsonl"
+    output.parent.mkdir(parents=True)
+    output.write_text(
+        json.dumps({
+            "type": "audit_event_recorded",
+            "actor_id": "audit-owner",
+            "status": "recorded",
+            "audit_event_ref": "existing:001",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    report = module.export_contract_audit_refs(
+        evidence_path=evidence,
+        output_path=output,
+        actor_id="audit-owner",
+        audit_ref_prefix="legacy-audit-ref",
+        append=True,
+    )
+
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert report["record_count"] == 2
+    assert report["append"] is True
+    assert len(rows) == 3
+    assert rows[1]["audit_event_ref"] == "legacy-audit-ref:001"
+    assert rows[1]["task_id"] == "task-beta"
+    assert rows[1]["repair_suggestions"] == [
+        "Inspect task task-beta failure_reason=worker_failed and create an operator-approved repair task if needed."
+    ]
+    assert rows[2]["audit_ref_kind"] == "legacy_delivery_contract_block_log"
+
+
 def test_export_contract_audit_refs_fails_closed_when_empty(tmp_path) -> None:
     evidence = tmp_path / "contract_runner_evidence.json"
     evidence.write_text('{"repair_suggestion_audit_refs":{"records":[]}}', encoding="utf-8")
