@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import argparse
 import sys
 from pathlib import Path
+
+import pytest
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "l1_pilot_001_contract_runner.py"
@@ -29,6 +32,8 @@ class _Response:
 
 
 def test_http_client_bootstraps_demo_login_token(monkeypatch) -> None:
+    monkeypatch.delenv("CIVITASOS_SERVICE_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("L1_SERVICE_TOKEN_SECRET", raising=False)
     requests = []
 
     def fake_urlopen(request, timeout=0):  # noqa: ANN001
@@ -43,10 +48,123 @@ def test_http_client_bootstraps_demo_login_token(monkeypatch) -> None:
     client = module.HttpJsonClient("http://backend", demo_login_agent_id="runner")
 
     assert client.get("/api/v1/a2a/agents") == []
+    assert client.auth_context()["auth_method"] == "demo_login"
+    assert client.auth_context()["production_allowed"] is False
+    assert client.auth_context()["evidence_allowed"] is False
     assert [request.full_url for request in requests] == [
         "http://backend/api/v1/auth/demo-login",
         "http://backend/api/v1/a2a/agents",
     ]
+
+
+def test_http_client_requires_service_token_without_demo_login_fallback(monkeypatch) -> None:
+    monkeypatch.delenv("CIVITASOS_SERVICE_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("L1_SERVICE_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("L1_REQUIRE_SERVICE_TOKEN", "1")
+
+    def fake_urlopen(_request, timeout=0):  # noqa: ANN001
+        raise AssertionError("strict service-token mode must not call demo-login")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    client = module.HttpJsonClient("http://backend", demo_login_agent_id="runner")
+
+    with pytest.raises(RuntimeError, match="L1_REQUIRE_SERVICE_TOKEN=1"):
+        client.get("/api/v1/a2a/agents")
+    assert client.auth_context()["auth_method"] == "missing_required_service_token"
+    assert client.auth_context()["require_service_token"] is True
+
+
+def test_http_client_prefers_scoped_service_token(monkeypatch) -> None:
+    requests = []
+    monkeypatch.setenv("L1_SERVICE_TOKEN_SECRET", "service-secret")
+    monkeypatch.setenv("L1_SERVICE_ID", "l1-runner")
+
+    def fake_urlopen(request, timeout=0):  # noqa: ANN001
+        requests.append(request)
+        if request.full_url == "http://backend/api/v1/auth/service-token":
+            body = json.loads(request.data.decode("utf-8"))
+            assert body["service_id"] == "l1-runner"
+            assert body["secret"] == "service-secret"
+            assert body["scopes"] == ["agents:read", "agents:write", "pool:post", "pool:read", "pool:claim", "pool:write", "webhooks:write"]
+            return _Response({
+                "data": {
+                    "token": "service-token",
+                    "auth_method": "service_token",
+                    "service_id": "l1-runner",
+                    "scopes": body["scopes"],
+                    "production_allowed": False,
+                    "evidence_allowed": False,
+                }
+            })
+        assert dict(request.header_items()).get("Authorization") == "Bearer service-token"
+        return _Response([])
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    client = module.HttpJsonClient("http://backend", demo_login_agent_id="runner")
+
+    assert client.get("/api/v1/a2a/agents") == []
+    assert client.auth_context()["auth_method"] == "service_token"
+    assert client.auth_context()["service_id"] == "l1-runner"
+    assert client.auth_context()["scopes"] == ["agents:read", "agents:write", "pool:post", "pool:read", "pool:claim", "pool:write", "webhooks:write"]
+    assert [request.full_url for request in requests] == [
+        "http://backend/api/v1/auth/service-token",
+        "http://backend/api/v1/a2a/agents",
+    ]
+
+
+def test_evidence_includes_auth_context(tmp_path) -> None:
+    class Client:
+        def auth_context(self) -> dict:
+            return {
+                "auth_method": "demo_login",
+                "production_allowed": False,
+                "evidence_allowed": False,
+            }
+
+        def get(self, path: str) -> dict:
+            if path == "/api/v1/a2a/pool/tasks":
+                return {"tasks": []}
+            return {"task": {"id": path.rsplit("/", 1)[-1], "status": "Delivered", "output": "ok"}}
+
+    (tmp_path / "task_chain.json").write_text(
+        '{"alpha_task_id":"a","beta_task_id":"b","gamma_task_id":"c"}',
+        encoding="utf-8",
+    )
+    agents = {
+        "requester": module.AgentRef(did="did:req", alias=None, name="requester"),
+        "alpha": module.AgentRef(did="did:a", alias=None, name="alpha"),
+        "beta": module.AgentRef(did="did:b", alias=None, name="beta"),
+        "gamma": module.AgentRef(did="did:g", alias=None, name="gamma"),
+    }
+
+    wake_security = {
+        "require_signed_wake": True,
+        "callback_secret_configured": True,
+    }
+
+    evidence = module._collect_evidence(Client(), tmp_path, agents, [], wake_security)
+
+    assert evidence["auth_context"]["auth_method"] == "demo_login"
+    assert evidence["auth_context"]["production_allowed"] is False
+    assert evidence["auth_context"]["evidence_allowed"] is False
+    assert evidence["wake_security"]["require_signed_wake"] is True
+    assert evidence["wake_security"]["callback_secret_configured"] is True
+
+
+def test_wake_security_context_records_signed_wake_requirements(monkeypatch) -> None:
+    args = argparse.Namespace(wake_mode="event", require_signed_wake=True)
+    monkeypatch.setenv("CIVITASOS_WAKE_CALLBACK_SECRET", "secret")
+
+    context = module._wake_security_context(args)
+
+    assert context["wake_mode"] == "event"
+    assert context["require_signed_wake"] is True
+    assert context["callback_secret_configured"] is True
+    assert context["compatibility_mode"] is False
+    assert context["signature_scheme"] == "hmac-sha256(issuer.timestamp.raw_body)"
+    assert context["expected_issuer"] == "civitasos-backend"
 
 
 def test_task_collection_accepts_wrapped_and_legacy_list_shapes() -> None:

@@ -1,0 +1,71 @@
+name: L1 Contract Smoke
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "benchmarks/run_l1_contract_smoke*.sh"
+      - "benchmarks/run_nightly_regression.sh"
+      - "benchmarks/tests/test_l1_nightly_wrapper.py"
+      - "benchmarks/tests/test_l1_pilot_contract_runner.py"
+      - "benchmarks/tests/test_l1_pilot_contract_tasks.py"
+      - "scripts/l1_pilot_001_contract_runner.py"
+      - "scripts/l1_pilot_001_contract_tasks.py"
+      - "scripts/l1_pilot_001_local_agents.sh"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "benchmarks/run_l1_contract_smoke*.sh"
+      - "benchmarks/run_nightly_regression.sh"
+      - "benchmarks/tests/test_l1_nightly_wrapper.py"
+      - "benchmarks/tests/test_l1_pilot_contract_runner.py"
+      - "benchmarks/tests/test_l1_pilot_contract_tasks.py"
+      - "scripts/l1_pilot_001_contract_runner.py"
+      - "scripts/l1_pilot_001_contract_tasks.py"
+      - "scripts/l1_pilot_001_local_agents.sh"
+  schedule:
+    - cron: "17 19 * * *"
+  workflow_dispatch:
+    inputs:
+      run_full_smoke:
+        description: "Run backend/LLM/GPU strict smoke on a self-hosted civitasos-l1 runner"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  l1-contract-smoke-ci:
+    name: L1 Contract Smoke CI Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependency
+        run: python -m pip install pytest
+      - name: Run lightweight L1 smoke checks
+        run: bash benchmarks/run_l1_contract_smoke_ci_check.sh
+
+  l1-contract-smoke-full:
+    name: L1 Contract Smoke Full
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_full_smoke)
+    runs-on: [self-hosted, civitasos-l1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run strict backend/LLM/GPU smoke
+        env:
+          CIVITASOS_SERVICE_TOKEN_SECRET: ${{ secrets.CIVITASOS_SERVICE_TOKEN_SECRET }}
+          CIVITASOS_SERVICE_TOKEN_SCOPES: agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write,webhooks:write
+          CIVITASOS_WAKE_CALLBACK_SECRET: ${{ secrets.CIVITASOS_WAKE_CALLBACK_SECRET }}
+          L1_PILOT_001_SERVICE_TOKEN_SECRET: ${{ secrets.CIVITASOS_SERVICE_TOKEN_SECRET }}
+          L1_PILOT_001_SERVICE_SCOPES: agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write,webhooks:write
+          L1_PILOT_001_WAKE_CALLBACK_SECRET: ${{ secrets.CIVITASOS_WAKE_CALLBACK_SECRET }}
+        run: bash benchmarks/run_l1_contract_smoke_scheduled.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l1-contract-smoke-latest
+          path: |
+            runs/l1_contract_smoke_latest.json
+            runs/l1_contract_smoke_index.jsonl

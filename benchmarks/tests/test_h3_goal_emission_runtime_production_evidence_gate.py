@@ -103,6 +103,34 @@ def test_production_evidence_gate_rejects_local_or_fixture_evidence(tmp_path: Pa
     assert report["runtime_production_evidence_boundary"]["production_runtime_execution_allowed"] is False
 
 
+def test_production_evidence_gate_rejects_demo_or_non_evidence_auth_context(tmp_path: Path) -> None:
+    packet = _production_blocked_packet("auth_boundary")
+    executor_report = _write_executor_report(
+        tmp_path,
+        blocked_packets=[packet],
+        decision="runtime_execution_blocked_requires_production_executor_evidence",
+    )
+    production_evidence = _write_production_evidence(
+        tmp_path,
+        packet["goal_id"],
+        auth_context={
+            "auth_method": "demo_login",
+            "production_allowed": False,
+            "evidence_allowed": False,
+        },
+    )
+
+    report = build_h3_goal_emission_runtime_production_evidence_gate(
+        runtime_executor_path=executor_report,
+        agent_root=tmp_path,
+        production_evidence_path=production_evidence,
+    )
+
+    assert report["passed"] is False
+    assert report["checks"]["production_evidence_auth_context_evidence_grade"] is False
+    assert report["runtime_production_evidence_boundary"]["production_runtime_execution_allowed"] is False
+
+
 def test_production_evidence_gate_fails_closed_on_executor_boundary_regression(tmp_path: Path) -> None:
     executor_report = _write_executor_report(
         tmp_path,
@@ -207,7 +235,13 @@ def _production_blocked_packet(event_kind: str) -> dict:
     }
 
 
-def _write_production_evidence(tmp_path: Path, goal_id: str, *, source: str = "h3_production_control_registry") -> Path:
+def _write_production_evidence(
+    tmp_path: Path,
+    goal_id: str,
+    *,
+    source: str = "h3_production_control_registry",
+    auth_context: dict | None = None,
+) -> Path:
     records = []
     for kind in REQUIRED_PRODUCTION_EVIDENCE_KINDS:
         ref_field = PRODUCTION_EVIDENCE_KIND_REF_FIELDS[kind]
@@ -224,14 +258,15 @@ def _write_production_evidence(tmp_path: Path, goal_id: str, *, source: str = "h
                 ref_field: f"{kind}:{goal_id}",
             }
         )
+    payload = {
+        "schema_version": "h3-goal-emission-runtime-production-evidence:v1",
+        "production_evidence_records": records,
+    }
+    if auth_context is not None:
+        payload["auth_context"] = auth_context
     path = tmp_path / "h3_goal_emission_runtime_production_evidence.json"
     path.write_text(
-        json.dumps(
-            {
-                "schema_version": "h3-goal-emission-runtime-production-evidence:v1",
-                "production_evidence_records": records,
-            }
-        ),
+        json.dumps(payload),
         encoding="utf-8",
     )
     return path

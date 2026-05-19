@@ -128,6 +128,12 @@ def build_h3_goal_emission_runtime_production_evidence_gate(
             _require_bool("production_evidence_records_present", bool(production_records), checks=checks, failures=failures)
             _require_bool("production_evidence_not_fixture_or_local", not non_production_payload, checks=checks, failures=failures)
             _require_production_record_shape(production_records, checks=checks, failures=failures)
+            _require_bool(
+                "production_evidence_auth_context_evidence_grade",
+                _auth_contexts_evidence_grade(production_payload, production_records),
+                checks=checks,
+                failures=failures,
+            )
     else:
         checks["production_evidence_optional_absent"] = True
 
@@ -205,6 +211,10 @@ def build_h3_goal_emission_runtime_production_evidence_gate(
             "requires_real_production_evidence": True,
             "required_production_evidence_kinds": REQUIRED_PRODUCTION_EVIDENCE_KINDS,
             "forbidden_evidence_sources": list(NON_PRODUCTION_SOURCE_TOKENS),
+            "forbidden_auth_contexts": [
+                "auth_method=demo_login",
+                "evidence_allowed=false",
+            ],
             "blocked_after_evidence_review": [
                 "production_evidence_reviewed -> production_runtime_execution_allowed",
                 "production_evidence_reviewed -> production_runtime_receipt_written",
@@ -431,6 +441,26 @@ def _non_production_source(record: dict[str, Any]) -> bool:
         return True
     source = str(record.get("source") or "").lower()
     return any(token in source for token in NON_PRODUCTION_SOURCE_TOKENS)
+
+
+def _auth_contexts_evidence_grade(payload: dict[str, Any], records: list[dict[str, Any]]) -> bool:
+    contexts = [
+        _object(payload.get("auth_context")),
+        _object(payload.get("runtime_auth_context")),
+    ]
+    for record in records:
+        contexts.append(_object(record.get("auth_context")))
+        contexts.append(_object(record.get("runtime_auth_context")))
+    return all(_auth_context_evidence_grade(context) for context in contexts if context)
+
+
+def _auth_context_evidence_grade(context: dict[str, Any]) -> bool:
+    auth_method = str(context.get("auth_method") or "").strip().lower()
+    if auth_method == "demo_login":
+        return False
+    if context.get("evidence_allowed") is False:
+        return False
+    return True
 
 
 def _ordered_goal_ids(records: list[dict[str, Any]]) -> list[str]:

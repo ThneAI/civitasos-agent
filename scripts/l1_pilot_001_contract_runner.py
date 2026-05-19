@@ -46,6 +46,17 @@ class AgentRef:
     name: str
 
 
+def _scope_list(raw: str) -> list[str]:
+    return [scope.strip() for scope in raw.split(",") if scope.strip()]
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class HttpJsonClient:
     def __init__(
         self,
@@ -58,12 +69,24 @@ class HttpJsonClient:
         self._base_url = base_url.rstrip("/")
         self._bearer_token = bearer_token or os.getenv("CIVITASOS_BEARER_TOKEN") or None
         self._api_key = api_key or os.getenv("CIVITASOS_API_KEY") or None
+        self._service_token_secret = (
+            os.getenv("L1_SERVICE_TOKEN_SECRET")
+            or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
+            or None
+        )
+        self._service_id = os.getenv("L1_SERVICE_ID", "l1_contract_runner")
+        self._service_scopes = _scope_list(
+            os.getenv("L1_SERVICE_TOKEN_SCOPES", "agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write,webhooks:write")
+        )
+        self._require_service_token = _env_flag("L1_REQUIRE_SERVICE_TOKEN")
         self._demo_login_agent_id = (
             demo_login_agent_id
             if demo_login_agent_id is not None
             else os.getenv("L1_DEMO_LOGIN_AGENT_ID", DEFAULT_DEMO_LOGIN_AGENT_ID)
         )
+        self._service_token_attempted = False
         self._demo_login_attempted = False
+        self._auth_context: dict[str, Any] = self._initial_auth_context()
 
     def get(self, path: str) -> Any:
         request = urllib.request.Request(self._url(path), headers=self._headers(), method="GET")
@@ -94,7 +117,20 @@ class HttpJsonClient:
         return headers
 
     def _auth_token(self) -> str | None:
-        if self._bearer_token or self._api_key or self._demo_login_attempted:
+        if self._require_service_token:
+            if not self._service_token_secret:
+                raise RuntimeError(
+                    "L1_REQUIRE_SERVICE_TOKEN=1 requires L1_SERVICE_TOKEN_SECRET "
+                    "or CIVITASOS_SERVICE_TOKEN_SECRET"
+                )
+            if not self._service_token_attempted:
+                return self._service_token()
+            return self._bearer_token
+        if self._bearer_token or self._api_key:
+            return self._bearer_token
+        if self._service_token_secret and not self._service_token_attempted:
+            return self._service_token()
+        if self._demo_login_attempted:
             return self._bearer_token
         agent_id = str(self._demo_login_agent_id or "").strip()
         if not agent_id:
@@ -118,7 +154,101 @@ class HttpJsonClient:
         if not token:
             raise RuntimeError(f"demo-login response missing token: {payload}")
         self._bearer_token = str(token)
+        data = data if isinstance(data, dict) else payload
+        self._auth_context = {
+            "auth_method": str(data.get("auth_method") or "demo_login"),
+            "production_allowed": bool(data.get("production_allowed", False)),
+            "evidence_allowed": bool(data.get("evidence_allowed", False)),
+            "non_claims": data.get("non_claims", [
+                "demo_login_is_dev_test_only",
+                "demo_login_must_not_be_used_as_production_evidence",
+            ]),
+        }
         return self._bearer_token
+
+    def _service_token(self) -> str | None:
+        self._service_token_attempted = True
+        payload = self._open_json(
+            urllib.request.Request(
+                self._url("/api/v1/auth/service-token"),
+                data=json.dumps({
+                    "service_id": self._service_id,
+                    "secret": self._service_token_secret,
+                    "scopes": self._service_scopes,
+                }).encode("utf-8"),
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                method="POST",
+            )
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"service-token response must be an object: {payload}")
+        token = payload.get("token")
+        data = payload.get("data")
+        if not token and isinstance(data, dict):
+            token = data.get("token")
+        if not token:
+            raise RuntimeError(f"service-token response missing token: {payload}")
+        self._bearer_token = str(token)
+        data = data if isinstance(data, dict) else payload
+        self._auth_context = {
+            "auth_method": str(data.get("auth_method") or "service_token"),
+            "service_id": str(data.get("service_id") or self._service_id),
+            "scopes": data.get("scopes", self._service_scopes),
+            "production_allowed": bool(data.get("production_allowed", False)),
+            "evidence_allowed": bool(data.get("evidence_allowed", False)),
+            "non_claims": data.get("non_claims", [
+                "service_token_is_controlled_operator_automation_only",
+                "service_token_must_not_be_used_as_production_evidence",
+            ]),
+        }
+        return self._bearer_token
+
+    def auth_context(self) -> dict[str, Any]:
+        return dict(self._auth_context)
+
+    def _initial_auth_context(self) -> dict[str, Any]:
+        if self._require_service_token:
+            if self._service_token_secret:
+                return {
+                    "auth_method": "pending_service_token",
+                    "service_id": self._service_id,
+                    "scopes": self._service_scopes,
+                    "production_allowed": False,
+                    "evidence_allowed": False,
+                    "require_service_token": True,
+                }
+            return {
+                "auth_method": "missing_required_service_token",
+                "production_allowed": False,
+                "evidence_allowed": False,
+                "require_service_token": True,
+            }
+        if self._api_key:
+            return {
+                "auth_method": "api_key",
+                "production_allowed": False,
+                "evidence_allowed": False,
+                "scopes": _scope_list(os.getenv("CIVITASOS_API_KEY_SCOPES", "")),
+            }
+        if self._bearer_token:
+            return {
+                "auth_method": "provided_bearer_token",
+                "production_allowed": None,
+                "evidence_allowed": None,
+            }
+        if self._service_token_secret:
+            return {
+                "auth_method": "pending_service_token",
+                "service_id": self._service_id,
+                "scopes": self._service_scopes,
+                "production_allowed": False,
+                "evidence_allowed": False,
+            }
+        return {
+            "auth_method": "pending_demo_login" if self._demo_login_agent_id else "none",
+            "production_allowed": False,
+            "evidence_allowed": False,
+        }
 
     @staticmethod
     def _open_json(request: urllib.request.Request) -> Any:
@@ -153,12 +283,24 @@ def main(argv: list[str] | None = None) -> int:
         default=float(os.getenv("L1_EVENT_WAKE_GRACE", "25")),
         help="Seconds to wait before auto wake fallback restarts local agents.",
     )
+    parser.add_argument(
+        "--require-signed-wake",
+        action="store_true",
+        default=os.getenv("L1_REQUIRE_SIGNED_WAKE", "0").strip().lower()
+        in {"1", "true", "yes", "on"},
+        help="Fail closed unless CIVITASOS_WAKE_CALLBACK_SECRET is configured for signed wake callbacks.",
+    )
     parser.add_argument("--no-stop-agents", action="store_true")
     args = parser.parse_args(argv)
 
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
     client = HttpJsonClient(args.base_url)
+    wake_security = _wake_security_context(args)
+    if args.require_signed_wake and not wake_security["callback_secret_configured"]:
+        raise SystemExit(
+            "signed wake required but CIVITASOS_WAKE_CALLBACK_SECRET is not configured"
+        )
 
     _write_json(root / "runner_start.json", {
         "started_at": _now(),
@@ -166,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         "root": str(root),
         "wake_mode": args.wake_mode,
         "event_wake_grace": args.event_wake_grace,
+        "wake_security": wake_security,
         "non_claims": [
             "l1_controlled_pilot_only",
             "does_not_claim_h3_readiness",
@@ -219,13 +362,14 @@ def main(argv: list[str] | None = None) -> int:
                 "claimed_by": terminal.get("claimed_by"),
                 "has_output": terminal.get("output") not in (None, "", {}, []),
                 "wake": wake_report,
+                "wake_security": wake_security,
             }
             stage_reports.append(stage_report)
             _write_json(root / f"{role}_stage_report.json", stage_report)
             if terminal.get("status") not in {"Delivered", "Completed"}:
                 break
 
-        evidence = _collect_evidence(client, root, agents, stage_reports)
+        evidence = _collect_evidence(client, root, agents, stage_reports, wake_security)
         _write_json(root / "contract_runner_evidence.json", evidence)
         return 0 if evidence["chain_passed"] else 1
     finally:
@@ -461,7 +605,26 @@ def _base_env(args: argparse.Namespace, root: Path) -> dict[str, str]:
         "CIVITASOS_URL": args.base_url,
         "PYTHON": args.python,
     })
+    if _env_flag("L1_REQUIRE_SERVICE_TOKEN"):
+        env.setdefault("CIVITASOS_RUNTIME_REQUIRE_SERVICE_TOKEN_BOOTSTRAP", "1")
     return env
+
+
+def _wake_security_context(args: argparse.Namespace) -> dict[str, Any]:
+    secret = os.getenv("CIVITASOS_WAKE_CALLBACK_SECRET", "").strip()
+    return {
+        "schema_version": "l1-wake-security-context:v1",
+        "wake_mode": args.wake_mode,
+        "require_signed_wake": bool(args.require_signed_wake),
+        "callback_secret_configured": bool(secret),
+        "signature_scheme": "hmac-sha256(issuer.timestamp.raw_body)" if secret else None,
+        "expected_issuer": "civitasos-backend" if secret else None,
+        "compatibility_mode": not bool(secret),
+        "non_claims": [
+            "secret_presence_does_not_prove_backend_was_started_with_same_secret",
+            "signed_wake_does_not_authorize_production_runtime_execution",
+        ],
+    }
 
 
 def _wait_for_task(
@@ -515,6 +678,7 @@ def _collect_evidence(
     root: Path,
     agents: dict[str, AgentRef],
     stage_reports: list[dict[str, Any]],
+    wake_security: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state_path = root / "task_chain.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
@@ -535,6 +699,8 @@ def _collect_evidence(
         "generated_at": _now(),
         "chain_passed": all(tasks.get(key, {}).get("status") == "Delivered" for key in ("alpha_task_id", "beta_task_id", "gamma_task_id")),
         "root": str(root),
+        "auth_context": client.auth_context(),
+        "wake_security": wake_security or {},
         "agents": _agents_as_dict(agents),
         "stage_reports": stage_reports,
         "task_chain": state,

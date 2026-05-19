@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "l1_pilot_001_contract_tasks.py"
 spec = importlib.util.spec_from_file_location("l1_pilot_001_contract_tasks", SCRIPT)
@@ -29,6 +31,8 @@ class _Response:
 
 
 def test_http_client_bootstraps_demo_login_token(monkeypatch) -> None:
+    monkeypatch.delenv("CIVITASOS_SERVICE_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("L1_SERVICE_TOKEN_SECRET", raising=False)
     requests = []
 
     def fake_urlopen(request, timeout=0):  # noqa: ANN001
@@ -45,6 +49,49 @@ def test_http_client_bootstraps_demo_login_token(monkeypatch) -> None:
     assert client.get("/api/v1/a2a/agents") == []
     assert [request.full_url for request in requests] == [
         "http://backend/api/v1/auth/demo-login",
+        "http://backend/api/v1/a2a/agents",
+    ]
+
+
+def test_http_client_requires_service_token_without_demo_login_fallback(monkeypatch) -> None:
+    monkeypatch.delenv("CIVITASOS_SERVICE_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("L1_SERVICE_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("L1_REQUIRE_SERVICE_TOKEN", "1")
+
+    def fake_urlopen(_request, timeout=0):  # noqa: ANN001
+        raise AssertionError("strict service-token mode must not call demo-login")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    client = module.HttpJsonClient("http://backend", demo_login_agent_id="tasks")
+
+    with pytest.raises(RuntimeError, match="L1_REQUIRE_SERVICE_TOKEN=1"):
+        client.get("/api/v1/a2a/agents")
+
+
+def test_http_client_prefers_scoped_service_token(monkeypatch) -> None:
+    requests = []
+    monkeypatch.setenv("L1_SERVICE_TOKEN_SECRET", "service-secret")
+    monkeypatch.setenv("L1_SERVICE_ID", "l1-tasks")
+
+    def fake_urlopen(request, timeout=0):  # noqa: ANN001
+        requests.append(request)
+        if request.full_url == "http://backend/api/v1/auth/service-token":
+            body = json.loads(request.data.decode("utf-8"))
+            assert body["service_id"] == "l1-tasks"
+            assert body["secret"] == "service-secret"
+            assert body["scopes"] == ["agents:read", "agents:write", "pool:post", "pool:read", "pool:claim", "pool:write", "webhooks:write"]
+            return _Response({"data": {"token": "service-token"}})
+        assert dict(request.header_items()).get("Authorization") == "Bearer service-token"
+        return _Response([])
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    client = module.HttpJsonClient("http://backend", demo_login_agent_id="tasks")
+
+    assert client.get("/api/v1/a2a/agents") == []
+    assert [request.full_url for request in requests] == [
+        "http://backend/api/v1/auth/service-token",
         "http://backend/api/v1/a2a/agents",
     ]
 

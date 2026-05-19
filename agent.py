@@ -65,6 +65,25 @@ def build_runner() -> AgentRunner:
     # 示例: 自动认领匹配 capabilities 的任务
     @runner.rule(priority=30, name="auto_claim_matching")
     def auto_claim_matching(briefing: dict, _memories: dict) -> Decision | None:
+        wake_bias = briefing.get("backend_wake_action_bias")
+        if isinstance(wake_bias, dict) and wake_bias.get("action") == "pool_claim":
+            task_id = str(wake_bias.get("task_id") or "").strip()
+            if task_id:
+                return Decision(
+                    action="pool_claim",
+                    params={
+                        "task_id": task_id,
+                        "poster_id": wake_bias.get("requester") or "",
+                        "_wake_event_driven": True,
+                        "_wake_source_event": wake_bias.get("source_event") or "",
+                    },
+                    reasoning=str(
+                        wake_bias.get("reason")
+                        or "backend wake action bias matched this agent"
+                    ),
+                    confidence=float(wake_bias.get("confidence") or 0.9),
+                    source=DecisionSource.RULES,
+                )
         cap_set = set(capabilities)
         candidates = []
         candidates.extend(briefing.get("pool_tasks", []) or [])

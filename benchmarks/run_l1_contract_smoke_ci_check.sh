@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# CI-friendly structural checks for the strict L1 contract smoke path.
+#
+# This intentionally does not start backend, agents, or an LLM. It verifies the
+# fail-fast safety surface and focused unit tests that protect the real smoke
+# runner from silently falling back to demo-login.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+PYTHON="${PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+  if [ -x "./.venv/bin/python" ]; then
+    PYTHON="./.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="python3"
+  else
+    PYTHON="python"
+  fi
+fi
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+bash -n \
+  benchmarks/run_l1_contract_smoke.sh \
+  benchmarks/run_l1_contract_smoke_scheduled.sh \
+  benchmarks/run_nightly_regression.sh
+
+set +e
+env \
+  -u L1_PILOT_001_WAKE_CALLBACK_SECRET \
+  -u CIVITASOS_WAKE_CALLBACK_SECRET \
+  -u L1_PILOT_001_SERVICE_TOKEN_SECRET \
+  -u CIVITASOS_SERVICE_TOKEN_SECRET \
+  bash benchmarks/run_l1_contract_smoke.sh >"$TMP_DIR/missing_secret.out" 2>&1
+missing_secret_status=$?
+set -e
+if [ "$missing_secret_status" -eq 0 ]; then
+  echo "strict L1 smoke must fail when signed-wake/service-token secrets are absent" >&2
+  cat "$TMP_DIR/missing_secret.out" >&2
+  exit 1
+fi
+grep -q "requires signed wake" "$TMP_DIR/missing_secret.out"
+
+set +e
+env \
+  -u CIVITASOS_WAKE_CALLBACK_SECRET \
+  -u CIVITASOS_SERVICE_TOKEN_SECRET \
+  L1_PILOT_001_WAKE_CALLBACK_SECRET=ci-wake-secret \
+  L1_PILOT_001_SERVICE_TOKEN_SECRET=ci-service-secret \
+  L1_PILOT_001_SERVICE_SCOPES=pool:read \
+  bash benchmarks/run_l1_contract_smoke.sh >"$TMP_DIR/missing_scope.out" 2>&1
+missing_scope_status=$?
+set -e
+if [ "$missing_scope_status" -eq 0 ]; then
+  echo "strict L1 smoke must fail when required service-token scopes are absent" >&2
+  cat "$TMP_DIR/missing_scope.out" >&2
+  exit 1
+fi
+grep -q "missing required scope: agents:read" "$TMP_DIR/missing_scope.out"
+
+"$PYTHON" -m pytest -q \
+  benchmarks/tests/test_l1_nightly_wrapper.py \
+  benchmarks/tests/test_l1_pilot_contract_runner.py \
+  benchmarks/tests/test_l1_pilot_contract_tasks.py
+
+echo "L1 contract smoke CI check passed"

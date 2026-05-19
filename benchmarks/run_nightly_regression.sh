@@ -29,13 +29,57 @@ RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 RUNS_ROOT="${RUNS_ROOT:-runs/nightly_${RUN_TS}}"
 RUN_L1_PILOT_001_CONTRACT_CHAIN="${RUN_L1_PILOT_001_CONTRACT_CHAIN:-0}"
 L1_PILOT_001_CONTRACT_ROOT="${L1_PILOT_001_CONTRACT_ROOT:-$RUNS_ROOT/l1_pilot_001_contract_runner}"
-L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"
+if [ -z "${L1_PILOT_001_WAKE_MODE+x}" ] && [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
+  L1_PILOT_001_WAKE_MODE="event"
+else
+  L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"
+fi
 L1_PILOT_001_EVENT_WAKE_GRACE="${L1_PILOT_001_EVENT_WAKE_GRACE:-25}"
 L1_PILOT_001_STAGE_TIMEOUT="${L1_PILOT_001_STAGE_TIMEOUT:-240}"
 L1_PILOT_001_POLL_INTERVAL="${L1_PILOT_001_POLL_INTERVAL:-5}"
 L1_PILOT_001_ENABLE_EVENT_WAKE="${L1_PILOT_001_ENABLE_EVENT_WAKE:-1}"
 L1_PILOT_001_GATEWAY_BASE_PORT="${L1_PILOT_001_GATEWAY_BASE_PORT:-18710}"
 L1_PILOT_001_AGENT_HOST="${L1_PILOT_001_AGENT_HOST:-127.0.0.1}"
+L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"
+L1_PILOT_001_REQUIRE_SERVICE_TOKEN="${L1_PILOT_001_REQUIRE_SERVICE_TOKEN:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"
+L1_PILOT_001_WAKE_CALLBACK_SECRET="${L1_PILOT_001_WAKE_CALLBACK_SECRET:-${CIVITASOS_WAKE_CALLBACK_SECRET:-}}"
+L1_PILOT_001_SERVICE_TOKEN_SECRET="${L1_PILOT_001_SERVICE_TOKEN_SECRET:-${CIVITASOS_SERVICE_TOKEN_SECRET:-}}"
+L1_PILOT_001_SERVICE_ID="${L1_PILOT_001_SERVICE_ID:-l1_contract_runner}"
+L1_PILOT_001_SERVICE_SCOPES="${L1_PILOT_001_SERVICE_SCOPES:-agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write,webhooks:write}"
+
+l1_service_scope_present() {
+  local required="$1"
+  local scope_domain="${required%%:*}"
+  local compact_scopes="${L1_PILOT_001_SERVICE_SCOPES//[[:space:]]/}"
+  case ",$compact_scopes," in
+    *,"$required",*|*,"$scope_domain:*",*|*,\*,*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_l1_contract_chain_preflight() {
+  if [ "$L1_PILOT_001_REQUIRE_SIGNED_WAKE" = "1" ] && [ -z "$L1_PILOT_001_WAKE_CALLBACK_SECRET" ]; then
+    echo "L1 Pilot 001 contract chain requires signed wake; set L1_PILOT_001_WAKE_CALLBACK_SECRET or CIVITASOS_WAKE_CALLBACK_SECRET" >&2
+    exit 1
+  fi
+  if [ "$L1_PILOT_001_REQUIRE_SERVICE_TOKEN" = "1" ]; then
+    if [ -z "$L1_PILOT_001_SERVICE_TOKEN_SECRET" ]; then
+      echo "L1 Pilot 001 contract chain requires service token auth; set L1_PILOT_001_SERVICE_TOKEN_SECRET or CIVITASOS_SERVICE_TOKEN_SECRET" >&2
+      exit 1
+    fi
+    for required_scope in agents:read agents:write pool:post pool:read pool:claim pool:write webhooks:write; do
+      if ! l1_service_scope_present "$required_scope"; then
+        echo "L1 Pilot 001 service token scopes missing required scope: $required_scope" >&2
+        echo "Configured scopes: $L1_PILOT_001_SERVICE_SCOPES" >&2
+        exit 1
+      fi
+    done
+  fi
+}
+
+if [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
+  validate_l1_contract_chain_preflight
+fi
 MANIFEST="${MANIFEST:-benchmarks/v1/manifest.yaml}"
 AGENTS="${AGENTS:-alpha beta gamma}"
 TASKS="${TASKS:-}"
@@ -1113,12 +1157,19 @@ if [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
   L1_ENABLE_EVENT_WAKE="$L1_PILOT_001_ENABLE_EVENT_WAKE" \
   L1_GATEWAY_BASE_PORT="$L1_PILOT_001_GATEWAY_BASE_PORT" \
   L1_AGENT_HOST="$L1_PILOT_001_AGENT_HOST" \
+  L1_REQUIRE_SIGNED_WAKE="$L1_PILOT_001_REQUIRE_SIGNED_WAKE" \
+  L1_REQUIRE_SERVICE_TOKEN="$L1_PILOT_001_REQUIRE_SERVICE_TOKEN" \
+  CIVITASOS_WAKE_CALLBACK_SECRET="$L1_PILOT_001_WAKE_CALLBACK_SECRET" \
+  L1_SERVICE_TOKEN_SECRET="$L1_PILOT_001_SERVICE_TOKEN_SECRET" \
+  L1_SERVICE_ID="$L1_PILOT_001_SERVICE_ID" \
+  L1_SERVICE_TOKEN_SCOPES="$L1_PILOT_001_SERVICE_SCOPES" \
   "$PYTHON" scripts/l1_pilot_001_contract_runner.py \
     --base-url "$BACKEND_URL" \
     --root "$L1_PILOT_001_CONTRACT_ROOT" \
     --python "$PYTHON" \
     --wake-mode "$L1_PILOT_001_WAKE_MODE" \
     --event-wake-grace "$L1_PILOT_001_EVENT_WAKE_GRACE" \
+    $(if [ "$L1_PILOT_001_REQUIRE_SIGNED_WAKE" = "1" ]; then printf '%s\n' "--require-signed-wake"; fi) \
     --stage-timeout "$L1_PILOT_001_STAGE_TIMEOUT" \
     --poll-interval "$L1_PILOT_001_POLL_INTERVAL"
 fi

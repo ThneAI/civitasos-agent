@@ -42,6 +42,17 @@ class AgentRef:
     name: str
 
 
+def _scope_list(raw: str) -> list[str]:
+    return [scope.strip() for scope in raw.split(",") if scope.strip()]
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class HttpJsonClient:
     def __init__(
         self,
@@ -54,11 +65,22 @@ class HttpJsonClient:
         self._base_url = base_url.rstrip("/")
         self._bearer_token = bearer_token or os.getenv("CIVITASOS_BEARER_TOKEN") or None
         self._api_key = api_key or os.getenv("CIVITASOS_API_KEY") or None
+        self._service_token_secret = (
+            os.getenv("L1_SERVICE_TOKEN_SECRET")
+            or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
+            or None
+        )
+        self._service_id = os.getenv("L1_SERVICE_ID", "l1_contract_tasks")
+        self._service_scopes = _scope_list(
+            os.getenv("L1_SERVICE_TOKEN_SCOPES", "agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write,webhooks:write")
+        )
+        self._require_service_token = _env_flag("L1_REQUIRE_SERVICE_TOKEN")
         self._demo_login_agent_id = (
             demo_login_agent_id
             if demo_login_agent_id is not None
             else os.getenv("L1_DEMO_LOGIN_AGENT_ID", DEFAULT_DEMO_LOGIN_AGENT_ID)
         )
+        self._service_token_attempted = False
         self._demo_login_attempted = False
 
     def get(self, path: str) -> Any:
@@ -90,7 +112,20 @@ class HttpJsonClient:
         return headers
 
     def _auth_token(self) -> str | None:
-        if self._bearer_token or self._api_key or self._demo_login_attempted:
+        if self._require_service_token:
+            if not self._service_token_secret:
+                raise RuntimeError(
+                    "L1_REQUIRE_SERVICE_TOKEN=1 requires L1_SERVICE_TOKEN_SECRET "
+                    "or CIVITASOS_SERVICE_TOKEN_SECRET"
+                )
+            if not self._service_token_attempted:
+                return self._service_token()
+            return self._bearer_token
+        if self._bearer_token or self._api_key:
+            return self._bearer_token
+        if self._service_token_secret and not self._service_token_attempted:
+            return self._service_token()
+        if self._demo_login_attempted:
             return self._bearer_token
         agent_id = str(self._demo_login_agent_id or "").strip()
         if not agent_id:
@@ -113,6 +148,31 @@ class HttpJsonClient:
             token = data.get("token")
         if not token:
             raise RuntimeError(f"demo-login response missing token: {payload}")
+        self._bearer_token = str(token)
+        return self._bearer_token
+
+    def _service_token(self) -> str | None:
+        self._service_token_attempted = True
+        payload = self._open_json(
+            urllib.request.Request(
+                self._url("/api/v1/auth/service-token"),
+                data=json.dumps({
+                    "service_id": self._service_id,
+                    "secret": self._service_token_secret,
+                    "scopes": self._service_scopes,
+                }).encode("utf-8"),
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                method="POST",
+            )
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"service-token response must be an object: {payload}")
+        token = payload.get("token")
+        data = payload.get("data")
+        if not token and isinstance(data, dict):
+            token = data.get("token")
+        if not token:
+            raise RuntimeError(f"service-token response missing token: {payload}")
         self._bearer_token = str(token)
         return self._bearer_token
 
