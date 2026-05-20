@@ -64,6 +64,7 @@ grep -q "missing required scope: agents:read" "$TMP_DIR/missing_scope.out"
 "$PYTHON" -m pytest -q \
   benchmarks/tests/test_l1_nightly_wrapper.py \
   benchmarks/tests/test_l1_export_contract_audit_refs.py \
+  benchmarks/tests/test_l1_export_operator_repair_probe_byproducts.py \
   benchmarks/tests/test_l1_pilot_contract_runner.py \
   benchmarks/tests/test_l1_pilot_contract_tasks.py
 

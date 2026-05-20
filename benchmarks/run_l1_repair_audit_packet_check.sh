@@ -26,6 +26,8 @@ PACKET_ROOT="$CHECK_ROOT/packet"
 RUN_ROOT="$CHECK_ROOT/imported_run"
 REPORT_ROOT="$CHECK_ROOT/reports"
 CONTRACT_EVIDENCE="$CHECK_ROOT/source/contract_runner_evidence.json"
+GENERATED_OPERATOR_REPAIR_PROBE_ROOT="$CHECK_ROOT/source/operator_repair_probe"
+OPERATOR_REPAIR_PROBE_ROOT="${L1_OPERATOR_REPAIR_PROBE_ROOT:-$GENERATED_OPERATOR_REPAIR_PROBE_ROOT}"
 LEDGER_ROOT="${CIVITASOS_EVIDENCE_LEDGER_ROOT:-../civitasos-evidence-ledger}"
 GOAL_ID="${L1_REPAIR_AUDIT_PACKET_GOAL_ID:-h3-draft-goal:post_delivery_failure:l1-repair-audit-packet-check}"
 
@@ -43,9 +45,9 @@ run_ledger() {
 }
 
 rm -rf "$CHECK_ROOT"
-mkdir -p "$PACKET_ROOT/identities" "$PACKET_ROOT/monitoring" "$PACKET_ROOT/sinks" "$REPORT_ROOT" "$(dirname "$CONTRACT_EVIDENCE")"
+mkdir -p "$PACKET_ROOT/identities" "$PACKET_ROOT/monitoring" "$PACKET_ROOT/sinks" "$REPORT_ROOT" "$(dirname "$CONTRACT_EVIDENCE")" "$GENERATED_OPERATOR_REPAIR_PROBE_ROOT/reports"
 
-"$PYTHON" - "$PACKET_ROOT" "$CONTRACT_EVIDENCE" <<'PY'
+"$PYTHON" - "$PACKET_ROOT" "$CONTRACT_EVIDENCE" "$GENERATED_OPERATOR_REPAIR_PROBE_ROOT" <<'PY'
 from __future__ import annotations
 
 import json
@@ -55,6 +57,8 @@ from pathlib import Path
 
 packet_root = Path(sys.argv[1])
 evidence_path = Path(sys.argv[2])
+probe_root = Path(sys.argv[3])
+probe_reports = probe_root / "reports"
 now = datetime.now(timezone.utc)
 ts = now.isoformat()
 
@@ -203,6 +207,97 @@ evidence = {
 }
 evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+failed_task_id = "task-failed-operator-repair-probe"
+repair_task_id = "task-repair-operator-approved"
+operator_approval = {
+    "schema_version": "l1-operator-approved-repair:v1",
+    "approved": True,
+    "approved_at": ts,
+    "approved_by": "l1-controlled-pilot-operator",
+    "source_failed_task_id": failed_task_id,
+    "non_claims": [
+        "operator_approval_does_not_authorize_production_runtime_execution",
+        "operator_approval_does_not_write_production_receipts",
+        "repair_task_is_not_an_automatic_retry",
+    ],
+}
+(probe_root / "summary.json").write_text(
+    json.dumps(
+        {
+            "schema_version": "l1-operator-approved-repair-probe-summary:v1",
+            "contract_rejection_status": 422,
+            "contract_rejection_error": "delivery contract violation",
+            "failed_task_id": failed_task_id,
+            "repair_task_id": repair_task_id,
+            "repair_task_status": "Open",
+            "repair_source_failed_task_id": failed_task_id,
+            "repair_operator_approval": operator_approval,
+            "non_claims": [
+                "operator_approved_repair_probe_is_l1_controlled_pilot_only",
+                "operator_approval_does_not_authorize_production_runtime_execution",
+            ],
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+(probe_reports / "contract_rejection_422.json").write_text(
+    json.dumps(
+        {
+            "status": 422,
+            "body": {
+                "success": False,
+                "error": "delivery contract violation",
+                "task_id": failed_task_id,
+                "delivery_contract_verification": {
+                    "passed": False,
+                    "contract": {
+                        "active": True,
+                        "h3_must_remain_blocked": True,
+                        "required_sections": ["变更摘要", "与上游不同之处", "H3"],
+                    },
+                    "failure_reasons": [
+                        "missing required section: 与上游不同之处",
+                        "output makes a positive H3/production authorization claim",
+                    ],
+                    "repair_suggestions": [
+                        "Add a dedicated section named `与上游不同之处` with task-specific content.",
+                        "Replace positive H.3/production claims with an explicit blocked/no-authorization boundary.",
+                    ],
+                },
+            },
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+(probe_reports / "post_repair.json").write_text(
+    json.dumps({"posted_task_id": repair_task_id}, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+(probe_reports / "repair_task_read_model.json").write_text(
+    json.dumps(
+        {
+            "task": {
+                "id": repair_task_id,
+                "status": "Open",
+                "input": {
+                    "source_failed_task_id": failed_task_id,
+                    "operator_approval": operator_approval,
+                },
+            }
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+
 window = {
     "prepared_at": ts,
     "started_at": (now - timedelta(minutes=5)).isoformat(),
@@ -220,6 +315,16 @@ PY
   --actor-id audit-owner-001 \
   --audit-ref-prefix "audit:l1-repair-audit-check:repair" \
   --append >"$REPORT_ROOT/audit_ref_export.json"
+
+"$PYTHON" scripts/l1_export_operator_repair_probe_byproducts.py \
+  --probe-root "$OPERATOR_REPAIR_PROBE_ROOT" \
+  --audit-output "$PACKET_ROOT/sinks/audit-events.jsonl" \
+  --probe-output "$PACKET_ROOT/monitoring/probe-events.jsonl" \
+  --audit-actor-id audit-owner-001 \
+  --observer-actor-id observer-001 \
+  --audit-ref-prefix "audit:l1-repair-audit-check:operator-repair-probe" \
+  --probe-ref-prefix "probe:l1-repair-audit-check" \
+  --append >"$REPORT_ROOT/operator_repair_probe_export.json"
 
 read_manifest_time() {
   "$PYTHON" - "$CHECK_ROOT/collection_window.json" "$1" <<'PY'
@@ -267,17 +372,26 @@ reports = Path(sys.argv[1])
 validation = json.loads((reports / "validation.json").read_text(encoding="utf-8"))
 review = json.loads((reports / "review.json").read_text(encoding="utf-8"))
 export = json.loads((reports / "audit_ref_export.json").read_text(encoding="utf-8"))
+probe_export = json.loads((reports / "operator_repair_probe_export.json").read_text(encoding="utf-8"))
 if validation.get("passed") is not True:
     raise SystemExit(f"L1 repair audit packet validation failed: {validation.get('failure_reasons')}")
 if review.get("passed") is not True:
     raise SystemExit(f"L1 repair audit packet review failed: {review.get('failure_reasons')}")
 if int(export.get("record_count") or 0) < 1:
     raise SystemExit("L1 repair audit packet check exported no audit ref records")
+if int(probe_export.get("audit_record_count") or 0) < 1:
+    raise SystemExit("L1 operator repair probe packet check exported no audit records")
+if int(probe_export.get("probe_record_count") or 0) < 1:
+    raise SystemExit("L1 operator repair probe packet check exported no probe records")
 summary = {
     "schema_version": "l1-repair-audit-packet-check-summary:v1",
     "validation_passed": validation.get("passed"),
     "review_passed": review.get("passed"),
     "audit_ref_record_count": export.get("record_count"),
+    "operator_repair_probe_audit_record_count": probe_export.get("audit_record_count"),
+    "operator_repair_probe_probe_record_count": probe_export.get("probe_record_count"),
+    "operator_repair_probe_failed_task_id": probe_export.get("failed_task_id"),
+    "operator_repair_probe_repair_task_id": probe_export.get("repair_task_id"),
     "packet_root": str(reports.parent / "packet"),
     "run_root": str(reports.parent / "imported_run"),
 }
