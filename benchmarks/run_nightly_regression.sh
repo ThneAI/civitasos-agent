@@ -29,6 +29,9 @@ RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 RUNS_ROOT="${RUNS_ROOT:-runs/nightly_${RUN_TS}}"
 RUN_L1_PILOT_001_CONTRACT_CHAIN="${RUN_L1_PILOT_001_CONTRACT_CHAIN:-0}"
 L1_PILOT_001_CONTRACT_ROOT="${L1_PILOT_001_CONTRACT_ROOT:-$RUNS_ROOT/l1_pilot_001_contract_runner}"
+RUN_L1_REPAIR_AUDIT_PACKET_CHECK="${RUN_L1_REPAIR_AUDIT_PACKET_CHECK:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"
+L1_REPAIR_AUDIT_PACKET_CHECK_ROOT="${L1_REPAIR_AUDIT_PACKET_CHECK_ROOT:-$RUNS_ROOT/l1_repair_audit_packet_check}"
+CIVITASOS_EVIDENCE_LEDGER_ROOT="${CIVITASOS_EVIDENCE_LEDGER_ROOT:-../civitasos-evidence-ledger}"
 if [ -z "${L1_PILOT_001_WAKE_MODE+x}" ] && [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
   L1_PILOT_001_WAKE_MODE="event"
 else
@@ -1199,6 +1202,14 @@ if wake.get("wake_mode") == "event":
             + ", ".join(str(role) for role in missing)
         )
 PY
+fi
+
+if [ "$RUN_L1_REPAIR_AUDIT_PACKET_CHECK" = "1" ]; then
+  CIVITASOS_EVIDENCE_LEDGER_ROOT="$CIVITASOS_EVIDENCE_LEDGER_ROOT" \
+  L1_REPAIR_AUDIT_PACKET_CHECK_ROOT="$L1_REPAIR_AUDIT_PACKET_CHECK_ROOT" \
+  RUN_TS="$RUN_TS" \
+  PYTHON="$PYTHON" \
+    benchmarks/run_l1_repair_audit_packet_check.sh
 fi
 
 if [ -n "$BASELINE_RUNS_ROOT" ]; then

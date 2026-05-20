@@ -9,6 +9,8 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
 
     assert 'RUN_L1_PILOT_001_CONTRACT_CHAIN="${RUN_L1_PILOT_001_CONTRACT_CHAIN:-0}"' in text
     assert 'L1_PILOT_001_CONTRACT_ROOT="${L1_PILOT_001_CONTRACT_ROOT:-$RUNS_ROOT/l1_pilot_001_contract_runner}"' in text
+    assert 'RUN_L1_REPAIR_AUDIT_PACKET_CHECK="${RUN_L1_REPAIR_AUDIT_PACKET_CHECK:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
+    assert 'L1_REPAIR_AUDIT_PACKET_CHECK_ROOT="${L1_REPAIR_AUDIT_PACKET_CHECK_ROOT:-$RUNS_ROOT/l1_repair_audit_packet_check}"' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
@@ -32,6 +34,8 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'L1_ENABLE_EVENT_WAKE="$L1_PILOT_001_ENABLE_EVENT_WAKE"' in text
     assert "wake_action_bias_pool_claim_count" in text
     assert "L1 nightly event wake hard gate requires wake action bias pool_claim" in text
+    assert 'if [ "$RUN_L1_REPAIR_AUDIT_PACKET_CHECK" = "1" ]; then' in text
+    assert "benchmarks/run_l1_repair_audit_packet_check.sh" in text
 
 
 def test_l1_contract_smoke_is_strict_service_token_signed_wake() -> None:
@@ -57,6 +61,7 @@ def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
 
     assert "benchmarks/run_l1_contract_smoke.sh" in text
     assert "benchmarks/run_l1_contract_smoke_scheduled.sh" in text
+    assert "benchmarks/run_l1_repair_audit_packet_check.sh" in text
     assert "benchmarks/run_nightly_regression.sh" in text
     assert "-u L1_PILOT_001_WAKE_CALLBACK_SECRET" in text
     assert "-u CIVITASOS_WAKE_CALLBACK_SECRET" in text
@@ -64,8 +69,10 @@ def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
     assert "L1_PILOT_001_SERVICE_SCOPES=pool:read" in text
     assert "missing required scope: agents:read" in text
     assert "benchmarks/tests/test_l1_nightly_wrapper.py" in text
+    assert "benchmarks/tests/test_l1_export_contract_audit_refs.py" in text
     assert "benchmarks/tests/test_l1_pilot_contract_runner.py" in text
     assert "benchmarks/tests/test_l1_pilot_contract_tasks.py" in text
+    assert "RUN_L1_REPAIR_AUDIT_PACKET_CHECK" in text
 
 
 def test_l1_contract_smoke_scheduled_indexes_evidence() -> None:

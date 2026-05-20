@@ -25,6 +25,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 bash -n \
   benchmarks/run_l1_contract_smoke.sh \
   benchmarks/run_l1_contract_smoke_scheduled.sh \
+  benchmarks/run_l1_repair_audit_packet_check.sh \
   benchmarks/run_nightly_regression.sh
 
 set +e
@@ -62,7 +63,24 @@ grep -q "missing required scope: agents:read" "$TMP_DIR/missing_scope.out"
 
 "$PYTHON" -m pytest -q \
   benchmarks/tests/test_l1_nightly_wrapper.py \
+  benchmarks/tests/test_l1_export_contract_audit_refs.py \
   benchmarks/tests/test_l1_pilot_contract_runner.py \
   benchmarks/tests/test_l1_pilot_contract_tasks.py
+
+LEDGER_ROOT="${CIVITASOS_EVIDENCE_LEDGER_ROOT:-../civitasos-evidence-ledger}"
+RUN_L1_REPAIR_AUDIT_PACKET_CHECK="${RUN_L1_REPAIR_AUDIT_PACKET_CHECK:-auto}"
+if [ "$RUN_L1_REPAIR_AUDIT_PACKET_CHECK" != "0" ]; then
+  if [ -d "$LEDGER_ROOT" ]; then
+    CIVITASOS_EVIDENCE_LEDGER_ROOT="$LEDGER_ROOT" \
+    L1_REPAIR_AUDIT_PACKET_CHECK_ROOT="$TMP_DIR/l1_repair_audit_packet_check" \
+    PYTHON="$PYTHON" \
+      benchmarks/run_l1_repair_audit_packet_check.sh
+  elif [ "$RUN_L1_REPAIR_AUDIT_PACKET_CHECK" = "1" ]; then
+    echo "RUN_L1_REPAIR_AUDIT_PACKET_CHECK=1 but ledger repo not found: $LEDGER_ROOT" >&2
+    exit 1
+  else
+    echo "Skipping L1 repair audit packet check; ledger repo not found: $LEDGER_ROOT"
+  fi
+fi
 
 echo "L1 contract smoke CI check passed"
