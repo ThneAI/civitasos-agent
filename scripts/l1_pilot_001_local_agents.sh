@@ -66,13 +66,18 @@ USAGE
 probe_url() {
   local label="$1"
   local url="$2"
-  "$PYTHON_BIN" - "$label" "$url" <<'PY'
+  local bearer_token="${3:-}"
+  "$PYTHON_BIN" - "$label" "$url" "$bearer_token" <<'PY'
 import sys
 import urllib.request
 
-label, url = sys.argv[1], sys.argv[2]
+label, url, bearer_token = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
-    with urllib.request.urlopen(url, timeout=3) as resp:
+    headers = {}
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=3) as resp:
         print(f"[ok] {label}: HTTP {resp.status} {url}")
 except Exception as exc:
     print(f"[fail] {label}: {type(exc).__name__}: {exc}")
@@ -86,7 +91,7 @@ check() {
     exit 1
   fi
   "$PYTHON_BIN" --version
-  probe_url "ollama-openai-models" "$LLM_BASE_URL_VALUE/models"
+  probe_url "llm-openai-compatible-models" "$LLM_BASE_URL_VALUE/models" "${LLM_API_KEY:-}"
   if ! probe_url "backend-healthz" "$CIVITASOS_URL/healthz"; then
     echo "[hint] Start civitasos backend before running Pilot 001 agents." >&2
     exit 1

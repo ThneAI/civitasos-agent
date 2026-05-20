@@ -35,7 +35,11 @@ elif ! command -v "$PYTHON" >/dev/null 2>&1; then
 fi
 
 curl -fsS "$BACKEND_URL/healthz" >/dev/null
-curl -fsS "$LLM_BASE_URL/models" >/dev/null
+if [ -n "${LLM_API_KEY:-}" ]; then
+  curl -fsS "$LLM_BASE_URL/models" -H "Authorization: Bearer $LLM_API_KEY" >/dev/null
+else
+  curl -fsS "$LLM_BASE_URL/models" >/dev/null
+fi
 
 export BACKEND_URL
 export LLM_BASE_URL

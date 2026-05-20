@@ -55,11 +55,21 @@ def test_l1_contract_smoke_is_strict_service_token_signed_wake() -> None:
     assert '"$PYTHON" scripts/l1_pilot_001_contract_runner.py "${RUNNER_ARGS[@]}"' in text
 
 
+def test_l1_local_agent_check_supports_authenticated_llm_models_probe() -> None:
+    wrapper = Path(__file__).resolve().parents[2] / "scripts" / "l1_pilot_001_local_agents.sh"
+    text = wrapper.read_text(encoding="utf-8")
+
+    assert "llm-openai-compatible-models" in text
+    assert 'headers["Authorization"] = f"Bearer {bearer_token}"' in text
+    assert '${LLM_API_KEY:-}' in text
+
+
 def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
     wrapper = Path(__file__).resolve().parents[1] / "run_l1_contract_smoke_ci_check.sh"
     text = wrapper.read_text(encoding="utf-8")
 
     assert "benchmarks/run_l1_contract_smoke.sh" in text
+    assert "benchmarks/run_beta0_real_model_pilot.sh" in text
     assert "benchmarks/run_l1_contract_smoke_scheduled.sh" in text
     assert "benchmarks/run_l1_repair_audit_packet_check.sh" in text
     assert "benchmarks/run_nightly_regression.sh" in text
@@ -75,12 +85,31 @@ def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
     assert "RUN_L1_REPAIR_AUDIT_PACKET_CHECK" in text
 
 
+def test_beta0_real_model_pilot_wrapper_enforces_external_model_and_strict_boundary() -> None:
+    wrapper = Path(__file__).resolve().parents[1] / "run_beta0_real_model_pilot.sh"
+    text = wrapper.read_text(encoding="utf-8")
+
+    assert "Beta-0 requires AGENT_LLM" in text
+    assert "Beta-0 requires LLM_API_KEY" in text
+    assert 'BETA0_REQUIRE_EXTERNAL_MODEL="${BETA0_REQUIRE_EXTERNAL_MODEL:-1}"' in text
+    assert '[[ "$AGENT_LLM" == ollama:* ]]' in text
+    assert 'LLM_BASE_URL must not point to local Ollama' in text
+    assert "Beta-0 requires signed wake" in text
+    assert "Beta-0 requires service-token auth" in text
+    assert "benchmarks/run_l1_contract_smoke.sh" in text
+    assert "benchmarks/run_l1_repair_audit_packet_check.sh" in text
+    assert "beta0-real-model-pilot-summary:v1" in text
+    assert "agent_llm" in text
+    assert "beta0_real_model_pilot_does_not_claim_h3_production_readiness" in text
+
+
 def test_l1_contract_smoke_scheduled_indexes_evidence() -> None:
     wrapper = Path(__file__).resolve().parents[1] / "run_l1_contract_smoke_scheduled.sh"
     text = wrapper.read_text(encoding="utf-8")
 
     assert "curl -fsS \"$BACKEND_URL/healthz\"" in text
     assert "curl -fsS \"$LLM_BASE_URL/models\"" in text
+    assert "Authorization: Bearer $LLM_API_KEY" in text
     assert "benchmarks/run_l1_contract_smoke.sh" in text
     assert "l1_contract_smoke_index.jsonl" in text
     assert "l1_contract_smoke_latest.json" in text

@@ -126,7 +126,9 @@ def test_evidence_includes_auth_context(tmp_path) -> None:
         def get(self, path: str) -> dict:
             if path == "/api/v1/a2a/pool/tasks":
                 return {"tasks": []}
-            return {"task": {"id": path.rsplit("/", 1)[-1], "status": "Delivered", "output": "ok"}}
+            task_id = path.rsplit("/", 1)[-1]
+            status = "Completed" if task_id == "a" else "Delivered"
+            return {"task": {"id": task_id, "status": status, "output": "ok"}}
 
     (tmp_path / "task_chain.json").write_text(
         '{"alpha_task_id":"a","beta_task_id":"b","gamma_task_id":"c"}',
@@ -152,6 +154,7 @@ def test_evidence_includes_auth_context(tmp_path) -> None:
     assert evidence["wake_security"]["require_signed_wake"] is True
     assert evidence["wake_security"]["callback_secret_configured"] is True
     assert evidence["event_wake_evidence"]["schema_version"] == "l1-event-wake-evidence:v1"
+    assert evidence["chain_passed"] is True
 
 
 def test_wake_security_context_records_signed_wake_requirements(monkeypatch) -> None:

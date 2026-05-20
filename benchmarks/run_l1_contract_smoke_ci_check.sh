@@ -24,6 +24,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 bash -n \
   benchmarks/run_l1_contract_smoke.sh \
+  benchmarks/run_beta0_real_model_pilot.sh \
   benchmarks/run_l1_contract_smoke_scheduled.sh \
   benchmarks/run_l1_repair_audit_packet_check.sh \
   benchmarks/run_nightly_regression.sh

@@ -36,6 +36,7 @@ ROLE_CAPABILITIES = {
     "beta": {"implementation", "documentation", "repair"},
     "gamma": {"review", "boundary_check", "audit"},
 }
+SUCCESS_STATUSES = {"Delivered", "Completed"}
 TERMINAL_STATUSES = {"Delivered", "Completed", "Failed"}
 
 
@@ -366,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
             }
             stage_reports.append(stage_report)
             _write_json(root / f"{role}_stage_report.json", stage_report)
-            if terminal.get("status") not in {"Delivered", "Completed"}:
+            if terminal.get("status") not in SUCCESS_STATUSES:
                 break
 
         evidence = _collect_evidence(client, root, agents, stage_reports, wake_security)
@@ -703,7 +704,10 @@ def _collect_evidence(
     return {
         "schema_version": "l1-pilot-001-contract-runner-evidence:v1",
         "generated_at": _now(),
-        "chain_passed": all(tasks.get(key, {}).get("status") == "Delivered" for key in ("alpha_task_id", "beta_task_id", "gamma_task_id")),
+        "chain_passed": all(
+            tasks.get(key, {}).get("status") in SUCCESS_STATUSES
+            for key in ("alpha_task_id", "beta_task_id", "gamma_task_id")
+        ),
         "root": str(root),
         "auth_context": client.auth_context(),
         "wake_security": wake_security or {},

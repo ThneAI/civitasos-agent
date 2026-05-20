@@ -206,6 +206,7 @@ def build_alpha_payload(
         "passed, approved, authorized, allowed, unblocked, 通过, 就绪, 授权, 允许, "
         "or 解锁 on any line that also mentions H3, H.3, production, or 生产. "
         "Use 采用 instead of 通过 when you mean 'by means of'."
+        + _h3_output_wording_rule()
     )
     return _pool_post_payload(
         requester=requester,
@@ -246,6 +247,7 @@ def build_beta_payload(
         "passed, approved, authorized, allowed, unblocked, 通过, 就绪, 授权, 允许, "
         "or 解锁 on any line that also mentions H3, H.3, production, or 生产. "
         "Use 采用 instead of 通过 when you mean 'by means of'."
+        + _h3_output_wording_rule()
     )
     return _pool_post_payload(
         requester=requester,
@@ -292,6 +294,7 @@ def build_gamma_payload(
         "approved, authorized, allowed, unblocked, 通过, 就绪, 授权, 允许, or 解锁 "
         "on any line that also mentions H3, H.3, production, or 生产. Use 采用 "
         "instead of 通过 when you mean 'by means of'."
+        + _h3_output_wording_rule()
     )
     return _pool_post_payload(
         requester=requester,
@@ -342,6 +345,7 @@ def build_repair_payload(
         "must contain only blocked-state claims: H.3 remains blocked; no "
         "production readiness; no production runtime execution; no production "
         "receipt writes."
+        + _h3_output_wording_rule()
     )
     return _pool_post_payload(
         requester=requester,
@@ -499,6 +503,16 @@ def _h3_blocked_boundary() -> str:
         "L1 controlled pilot only. H.3 remains blocked. No production readiness, "
         "no production runtime execution, no production receipt write permission, "
         "no external production mutation."
+    )
+
+
+def _h3_output_wording_rule() -> str:
+    return (
+        " In non-H3 sections, do not mention H3, H.3, production, 生产, 准入, "
+        "通过, 授权, 允许, 就绪, 解锁, ready, passed, approved, authorized, "
+        "allowed, or unblocked. Put all H.3 boundary wording only in the H3 "
+        "section. The H3 section should be short and use only blocked/no-"
+        "authorization wording."
     )
 
 
