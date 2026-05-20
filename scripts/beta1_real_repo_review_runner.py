@@ -22,6 +22,7 @@ from typing import Any
 
 from beta1_export_l1_packet import export_beta1_l1_packet
 from beta1_repo_review_proposal import NON_CLAIMS, prepare_request, validate_receipt, write_operator_receipt
+from beta2_patch_proposal import validate_patch_proposal
 
 
 RUN_SCHEMA = "beta1-real-repo-review-run-summary:v1"
@@ -45,6 +46,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     parser.add_argument("--max-diff-chars", type=int, default=DEFAULT_MAX_DIFF_CHARS)
+    parser.add_argument("--output-kind", choices=["proposal", "patch-proposal"], default="proposal")
+    parser.add_argument(
+        "--patch-allow-path-prefix",
+        action="append",
+        default=[],
+        help="Allowed patch target prefix when --output-kind=patch-proposal. Repeatable.",
+    )
+    parser.add_argument(
+        "--patch-deny-path-fragment",
+        action="append",
+        default=[],
+        help="Additional denied patch target fragment when --output-kind=patch-proposal. Repeatable.",
+    )
     parser.add_argument(
         "--include-untracked-path",
         action="append",
@@ -71,6 +85,9 @@ def main(argv: list[str] | None = None) -> int:
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         max_diff_chars=args.max_diff_chars,
+        output_kind=args.output_kind,
+        patch_allow_path_prefixes=args.patch_allow_path_prefix,
+        patch_deny_path_fragments=args.patch_deny_path_fragment,
         include_untracked_paths=[Path(path) for path in args.include_untracked_path],
         decision=args.decision,
         decision_reason=args.decision_reason,
@@ -96,6 +113,9 @@ def run_beta1_real_repo_review(
     temperature: float,
     max_tokens: int,
     max_diff_chars: int,
+    output_kind: str,
+    patch_allow_path_prefixes: list[str],
+    patch_deny_path_fragments: list[str],
     include_untracked_paths: list[Path],
     decision: str,
     decision_reason: str,
@@ -130,17 +150,36 @@ def run_beta1_real_repo_review(
         task_payload=_read_json(task_path),
         request_packet=_read_json(request_path),
         review_context=diff_context["content"],
+        output_kind=output_kind,
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    proposal_path = output_root / "proposal.md"
-    proposal_path.write_text(proposal["content"].strip() + "\n", encoding="utf-8")
+    artifact_path = output_root / ("patch_proposal.patch" if output_kind == "patch-proposal" else "proposal.md")
+    artifact_path.write_text(proposal["content"].strip() + "\n", encoding="utf-8")
+    patch_validation = None
+    if output_kind == "patch-proposal":
+        patch_validation = validate_patch_proposal(
+            repo=repo,
+            patch_path=artifact_path,
+            request_path=request_path,
+            allow_path_prefixes=patch_allow_path_prefixes,
+            deny_path_fragments=patch_deny_path_fragments,
+        )
+        _write_json(output_root / "beta2_patch_proposal_validation.json", patch_validation)
+        if patch_validation["passed"] is not True:
+            raise ValueError(f"Beta-2 patch proposal validation failed: {patch_validation['failure_reasons']}")
     external_summary = {
-        "schema_version": "beta1-external-model-proposal-run-summary:v1",
+        "schema_version": (
+            "beta2-external-model-patch-proposal-run-summary:v1"
+            if output_kind == "patch-proposal"
+            else "beta1-external-model-proposal-run-summary:v1"
+        ),
         "run_root": str(output_root.resolve()),
         "model": proposal["model"],
         "base_url_configured": bool(base_url),
-        "proposal_path": str(proposal_path.resolve()),
+        "output_kind": output_kind,
+        "proposal_path": str(artifact_path.resolve()),
+        "artifact_path": str(artifact_path.resolve()),
         "prompt_chars": proposal["prompt_chars"],
         "proposal_chars": len(proposal["content"]),
         "review_context_chars": diff_context["chars"],
@@ -153,7 +192,7 @@ def run_beta1_real_repo_review(
 
     receipt_report = write_operator_receipt(
         request_path=request_path,
-        proposal_path=proposal_path,
+        proposal_path=artifact_path,
         output_path=output_root / "operator_decision_receipt.json",
         decision=decision,
         operator_id=operator_id,
@@ -186,7 +225,10 @@ def run_beta1_real_repo_review(
         "request_path": str(request_path),
         "task_payload_path": str(task_path),
         "review_context_path": str(diff_context_path.resolve()),
-        "proposal_path": str(proposal_path.resolve()),
+        "output_kind": output_kind,
+        "proposal_path": str(artifact_path.resolve()),
+        "artifact_path": str(artifact_path.resolve()),
+        "patch_validation": patch_validation,
         "receipt_path": receipt_report["receipt_path"],
         "receipt_validation_passed": validation["passed"],
         "decision": decision,
@@ -251,6 +293,7 @@ def call_openai_compatible_model(
     task_payload: dict[str, Any],
     request_packet: dict[str, Any],
     review_context: str,
+    output_kind: str,
     temperature: float,
     max_tokens: int,
 ) -> dict[str, Any]:
@@ -262,6 +305,7 @@ def call_openai_compatible_model(
         task_payload=task_payload,
         request_packet=request_packet,
         review_context=review_context,
+        output_kind=output_kind,
     )
     body = {
         "model": model_name,
@@ -295,7 +339,32 @@ def call_openai_compatible_model(
     return {"model": model_name, "content": content, "prompt_chars": len(prompt)}
 
 
-def build_prompt(*, task_payload: dict[str, Any], request_packet: dict[str, Any], review_context: str) -> str:
+def build_prompt(
+    *,
+    task_payload: dict[str, Any],
+    request_packet: dict[str, Any],
+    review_context: str,
+    output_kind: str,
+) -> str:
+    if output_kind == "patch-proposal":
+        output_instruction = """
+Return only a unified diff patch proposal.
+Do not wrap it in Markdown fences.
+Do not include prose.
+Do not claim the patch has been applied, committed, pushed, merged, or deployed.
+The patch must target only repository-relative paths.
+""".strip()
+    else:
+        output_instruction = """
+Return Markdown with exactly these sections:
+## Scope
+## Repository Evidence
+## Findings
+## Proposal
+## Risks
+## Operator Decision Required
+## H3 Boundary
+""".strip()
     return f"""
 You are the external model reviewer in CivitasOS Beta-1.
 
@@ -313,14 +382,7 @@ Proposal request:
 Repository context:
 {review_context}
 
-Return Markdown with exactly these sections:
-## Scope
-## Repository Evidence
-## Findings
-## Proposal
-## Risks
-## Operator Decision Required
-## H3 Boundary
+{output_instruction}
 """.strip()
 
 

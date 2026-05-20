@@ -21,6 +21,13 @@ export_module = importlib.util.module_from_spec(export_spec)
 sys.modules[export_spec.name] = export_module
 export_spec.loader.exec_module(export_module)
 
+BETA2_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "beta2_patch_proposal.py"
+beta2_spec = importlib.util.spec_from_file_location("beta2_patch_proposal", BETA2_SCRIPT)
+assert beta2_spec and beta2_spec.loader
+beta2_module = importlib.util.module_from_spec(beta2_spec)
+sys.modules[beta2_spec.name] = beta2_module
+beta2_spec.loader.exec_module(beta2_module)
+
 RUNNER_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "beta1_real_repo_review_runner.py"
 runner_spec = importlib.util.spec_from_file_location("beta1_real_repo_review_runner", RUNNER_SCRIPT)
 assert runner_spec and runner_spec.loader

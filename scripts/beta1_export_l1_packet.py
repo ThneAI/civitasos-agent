@@ -78,13 +78,13 @@ def export_beta1_l1_packet(
         shutil.rmtree(packet_root)
 
     request_path = run_root / "beta1_repo_review_proposal_request.json"
-    proposal_path = run_root / "proposal.md"
     receipt_path = run_root / "operator_decision_receipt.json"
     validation_path = run_root / "operator_decision_receipt_validation.json"
     summary_path = run_root / "external_model_summary.json"
 
     request = _read_json(request_path)
     receipt = _read_json(receipt_path)
+    proposal_path = _receipt_artifact_path(receipt)
     validation = validate_receipt(receipt_path=receipt_path, request_path=request_path, proposal_path=proposal_path)
     if validation.get("passed") is not True:
         raise ValueError(f"Beta-1 receipt validation failed: {validation.get('failure_reasons')}")
@@ -310,6 +310,16 @@ def _read_json(path: Path) -> Any:
     if not path.is_file():
         raise FileNotFoundError(f"missing required Beta-1 artifact: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _receipt_artifact_path(receipt: dict[str, Any]) -> Path:
+    proposal_artifact = receipt.get("proposal_artifact")
+    if not isinstance(proposal_artifact, dict):
+        raise ValueError("operator decision receipt missing proposal_artifact object")
+    raw_path = proposal_artifact.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("operator decision receipt missing proposal_artifact.path")
+    return Path(raw_path)
 
 
 def _write_json(path: Path, payload: Any) -> None:

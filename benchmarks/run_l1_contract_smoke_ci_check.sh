@@ -27,6 +27,7 @@ bash -n \
   benchmarks/run_beta0_real_model_pilot.sh \
   benchmarks/run_beta1_l1_packet_check.sh \
   benchmarks/run_beta1_repo_review_packet_check.sh \
+  benchmarks/run_beta2_patch_proposal_packet_check.sh \
   benchmarks/run_l1_contract_smoke_scheduled.sh \
   benchmarks/run_l1_repair_audit_packet_check.sh \
   benchmarks/run_nightly_regression.sh
@@ -66,6 +67,7 @@ grep -q "missing required scope: agents:read" "$TMP_DIR/missing_scope.out"
 
 "$PYTHON" -m pytest -q \
   benchmarks/tests/test_beta1_repo_review_proposal.py \
+  benchmarks/tests/test_beta2_patch_proposal.py \
   benchmarks/tests/test_l1_nightly_wrapper.py \
   benchmarks/tests/test_l1_export_contract_audit_refs.py \
   benchmarks/tests/test_l1_export_operator_repair_probe_byproducts.py \
@@ -75,6 +77,7 @@ grep -q "missing required scope: agents:read" "$TMP_DIR/missing_scope.out"
 LEDGER_ROOT="${CIVITASOS_EVIDENCE_LEDGER_ROOT:-../civitasos-evidence-ledger}"
 RUN_L1_REPAIR_AUDIT_PACKET_CHECK="${RUN_L1_REPAIR_AUDIT_PACKET_CHECK:-auto}"
 RUN_BETA1_L1_PACKET_CHECK="${RUN_BETA1_L1_PACKET_CHECK:-auto}"
+RUN_BETA2_PATCH_PROPOSAL_PACKET_CHECK="${RUN_BETA2_PATCH_PROPOSAL_PACKET_CHECK:-auto}"
 if [ "$RUN_L1_REPAIR_AUDIT_PACKET_CHECK" != "0" ]; then
   if [ -d "$LEDGER_ROOT" ]; then
     CIVITASOS_EVIDENCE_LEDGER_ROOT="$LEDGER_ROOT" \
@@ -104,6 +107,20 @@ if [ "$RUN_BETA1_L1_PACKET_CHECK" != "0" ]; then
     exit 1
   else
     echo "Skipping Beta-1 L1 packet check; ledger repo not found: $LEDGER_ROOT"
+  fi
+fi
+
+if [ "$RUN_BETA2_PATCH_PROPOSAL_PACKET_CHECK" != "0" ]; then
+  if [ -d "$LEDGER_ROOT" ]; then
+    CIVITASOS_EVIDENCE_LEDGER_ROOT="$LEDGER_ROOT" \
+    BETA2_PATCH_PROPOSAL_PACKET_CHECK_ROOT="$TMP_DIR/beta2_patch_proposal_packet_check" \
+    PYTHON="$PYTHON" \
+      benchmarks/run_beta2_patch_proposal_packet_check.sh
+  elif [ "$RUN_BETA2_PATCH_PROPOSAL_PACKET_CHECK" = "1" ]; then
+    echo "RUN_BETA2_PATCH_PROPOSAL_PACKET_CHECK=1 but ledger repo not found: $LEDGER_ROOT" >&2
+    exit 1
+  else
+    echo "Skipping Beta-2 patch proposal packet check; ledger repo not found: $LEDGER_ROOT"
   fi
 fi
 
