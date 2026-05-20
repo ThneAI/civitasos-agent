@@ -14,6 +14,20 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
+EXPORT_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "beta1_export_l1_packet.py"
+export_spec = importlib.util.spec_from_file_location("beta1_export_l1_packet", EXPORT_SCRIPT)
+assert export_spec and export_spec.loader
+export_module = importlib.util.module_from_spec(export_spec)
+sys.modules[export_spec.name] = export_module
+export_spec.loader.exec_module(export_module)
+
+RUNNER_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "beta1_real_repo_review_runner.py"
+runner_spec = importlib.util.spec_from_file_location("beta1_real_repo_review_runner", RUNNER_SCRIPT)
+assert runner_spec and runner_spec.loader
+runner_module = importlib.util.module_from_spec(runner_spec)
+sys.modules[runner_spec.name] = runner_module
+runner_spec.loader.exec_module(runner_module)
+
 
 def test_prepare_writes_proposal_only_request_and_task_payload(tmp_path: Path) -> None:
     repo = _write_git_repo(tmp_path)
@@ -127,6 +141,76 @@ def test_validate_receipt_fails_closed_on_proposal_hash_mismatch(tmp_path: Path)
 
     assert validation["passed"] is False
     assert "proposal_artifact.sha256 does not match file bytes" in validation["failure_reasons"]
+
+
+def test_export_beta1_l1_packet_writes_importable_packet_shape(tmp_path: Path) -> None:
+    receipt_path = _write_valid_receipt(tmp_path)
+    run_root = receipt_path.parent
+    (run_root / "external_model_summary.json").write_text(
+        json.dumps({
+            "schema_version": "beta1-external-model-proposal-run-summary:v1",
+            "model": "deepseek-test",
+            "boundary": "proposal_only; H.3 remains blocked",
+        }),
+        encoding="utf-8",
+    )
+    packet_root = tmp_path / "packet"
+
+    report = export_module.export_beta1_l1_packet(
+        run_root=run_root,
+        packet_root=packet_root,
+        operator_id="operator-001",
+        observer_actor_id="observer-001",
+        registrar_actor_id="agent-registrar-001",
+        agent_observer_actor_id="agent-observer-001",
+        audit_actor_id="audit-owner-001",
+        external_agent_id="deepseek-reviewer",
+        overwrite=False,
+    )
+
+    assert report["exported"] is True
+    assert report["requires_packet_manifest_refresh"] is True
+    audit_rows = [
+        json.loads(line)
+        for line in (packet_root / "sinks" / "audit-events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    external_rows = [
+        json.loads(line)
+        for line in (packet_root / "sinks" / "external-agent-events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    receipt_rows = [
+        json.loads(line)
+        for line in (packet_root / "sinks" / "receipt-events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert {row["type"] for row in audit_rows} == {"audit_event_recorded"}
+    assert [row["type"] for row in external_rows] == [
+        "external_agent_registered",
+        "external_agent_message_observed",
+    ]
+    assert receipt_rows[0]["type"] == "receipt_sink_ready"
+    assert receipt_rows[0]["source_evidence_ref"] == str(run_root / "operator_decision_receipt.json")
+
+
+def test_runner_helpers_normalize_model_endpoint_and_reject_ignored_untracked(tmp_path: Path) -> None:
+    repo = _write_git_repo(tmp_path)
+    (repo / ".gitignore").write_text("secret.txt\n", encoding="utf-8")
+    (repo / "secret.txt").write_text("do-not-send\n", encoding="utf-8")
+
+    assert runner_module.normalize_model_name("openai:deepseek-v4-flash") == "deepseek-v4-flash"
+    assert runner_module.chat_completions_endpoint("https://api.example.com/v1") == (
+        "https://api.example.com/v1/chat/completions"
+    )
+    try:
+        runner_module.build_review_context(
+            repo=repo,
+            base_ref=None,
+            include_untracked_paths=[Path("secret.txt")],
+            max_chars=10_000,
+        )
+    except ValueError as exc:
+        assert "refusing to include ignored path" in str(exc)
+    else:
+        raise AssertionError("ignored untracked paths must not be included in model context")
 
 
 def _write_valid_receipt(tmp_path: Path) -> Path:

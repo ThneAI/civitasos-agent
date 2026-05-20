@@ -25,6 +25,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 bash -n \
   benchmarks/run_l1_contract_smoke.sh \
   benchmarks/run_beta0_real_model_pilot.sh \
+  benchmarks/run_beta1_l1_packet_check.sh \
   benchmarks/run_beta1_repo_review_packet_check.sh \
   benchmarks/run_l1_contract_smoke_scheduled.sh \
   benchmarks/run_l1_repair_audit_packet_check.sh \
@@ -73,6 +74,7 @@ grep -q "missing required scope: agents:read" "$TMP_DIR/missing_scope.out"
 
 LEDGER_ROOT="${CIVITASOS_EVIDENCE_LEDGER_ROOT:-../civitasos-evidence-ledger}"
 RUN_L1_REPAIR_AUDIT_PACKET_CHECK="${RUN_L1_REPAIR_AUDIT_PACKET_CHECK:-auto}"
+RUN_BETA1_L1_PACKET_CHECK="${RUN_BETA1_L1_PACKET_CHECK:-auto}"
 if [ "$RUN_L1_REPAIR_AUDIT_PACKET_CHECK" != "0" ]; then
   if [ -d "$LEDGER_ROOT" ]; then
     CIVITASOS_EVIDENCE_LEDGER_ROOT="$LEDGER_ROOT" \
@@ -90,5 +92,19 @@ fi
 BETA1_REPO_REVIEW_PACKET_CHECK_ROOT="$TMP_DIR/beta1_repo_review_packet_check" \
 PYTHON="$PYTHON" \
   benchmarks/run_beta1_repo_review_packet_check.sh
+
+if [ "$RUN_BETA1_L1_PACKET_CHECK" != "0" ]; then
+  if [ -d "$LEDGER_ROOT" ]; then
+    CIVITASOS_EVIDENCE_LEDGER_ROOT="$LEDGER_ROOT" \
+    BETA1_L1_PACKET_CHECK_ROOT="$TMP_DIR/beta1_l1_packet_check" \
+    PYTHON="$PYTHON" \
+      benchmarks/run_beta1_l1_packet_check.sh
+  elif [ "$RUN_BETA1_L1_PACKET_CHECK" = "1" ]; then
+    echo "RUN_BETA1_L1_PACKET_CHECK=1 but ledger repo not found: $LEDGER_ROOT" >&2
+    exit 1
+  else
+    echo "Skipping Beta-1 L1 packet check; ledger repo not found: $LEDGER_ROOT"
+  fi
+fi
 
 echo "L1 contract smoke CI check passed"
