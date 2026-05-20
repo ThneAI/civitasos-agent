@@ -25,6 +25,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 bash -n \
   benchmarks/run_l1_contract_smoke.sh \
   benchmarks/run_beta0_real_model_pilot.sh \
+  benchmarks/run_beta1_repo_review_packet_check.sh \
   benchmarks/run_l1_contract_smoke_scheduled.sh \
   benchmarks/run_l1_repair_audit_packet_check.sh \
   benchmarks/run_nightly_regression.sh
@@ -63,6 +64,7 @@ fi
 grep -q "missing required scope: agents:read" "$TMP_DIR/missing_scope.out"
 
 "$PYTHON" -m pytest -q \
+  benchmarks/tests/test_beta1_repo_review_proposal.py \
   benchmarks/tests/test_l1_nightly_wrapper.py \
   benchmarks/tests/test_l1_export_contract_audit_refs.py \
   benchmarks/tests/test_l1_export_operator_repair_probe_byproducts.py \
@@ -84,5 +86,9 @@ if [ "$RUN_L1_REPAIR_AUDIT_PACKET_CHECK" != "0" ]; then
     echo "Skipping L1 repair audit packet check; ledger repo not found: $LEDGER_ROOT"
   fi
 fi
+
+BETA1_REPO_REVIEW_PACKET_CHECK_ROOT="$TMP_DIR/beta1_repo_review_packet_check" \
+PYTHON="$PYTHON" \
+  benchmarks/run_beta1_repo_review_packet_check.sh
 
 echo "L1 contract smoke CI check passed"
