@@ -11,6 +11,10 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'L1_PILOT_001_CONTRACT_ROOT="${L1_PILOT_001_CONTRACT_ROOT:-$RUNS_ROOT/l1_pilot_001_contract_runner}"' in text
     assert 'RUN_L1_REPAIR_AUDIT_PACKET_CHECK="${RUN_L1_REPAIR_AUDIT_PACKET_CHECK:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
     assert 'L1_REPAIR_AUDIT_PACKET_CHECK_ROOT="${L1_REPAIR_AUDIT_PACKET_CHECK_ROOT:-$RUNS_ROOT/l1_repair_audit_packet_check}"' in text
+    assert 'RUN_BETA2_PATCH_REVIEW_OUTCOME_INDEX="${RUN_BETA2_PATCH_REVIEW_OUTCOME_INDEX:-0}"' in text
+    assert 'BETA2_PATCH_REVIEW_OUTCOME_SUMMARY="${BETA2_PATCH_REVIEW_OUTCOME_SUMMARY:-$RUNS_ROOT/beta2_patch_review_outcome_summary.json}"' in text
+    assert 'BETA2_PATCH_REVIEW_OUTCOME_INDEX_FILE="${BETA2_PATCH_REVIEW_OUTCOME_INDEX_FILE:-runs/beta2_patch_review_outcome_index.jsonl}"' in text
+    assert 'BETA2_PATCH_REVIEW_OUTCOME_LATEST="${BETA2_PATCH_REVIEW_OUTCOME_LATEST:-runs/beta2_patch_review_outcome_latest.json}"' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
@@ -36,6 +40,9 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert "L1 nightly event wake hard gate requires wake action bias pool_claim" in text
     assert 'if [ "$RUN_L1_REPAIR_AUDIT_PACKET_CHECK" = "1" ]; then' in text
     assert "benchmarks/run_l1_repair_audit_packet_check.sh" in text
+    assert 'if [ "$RUN_BETA2_PATCH_REVIEW_OUTCOME_INDEX" = "1" ]; then' in text
+    assert "requires BETA2_PATCH_REVIEW_OUTCOME_RUN_ROOTS" in text
+    assert 'scripts/beta2_patch_review_outcome.py "${BETA2_REVIEW_INDEX_ARGS[@]}"' in text
 
 
 def test_l1_contract_smoke_is_strict_service_token_signed_wake() -> None:

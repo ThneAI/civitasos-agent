@@ -24,6 +24,7 @@ from beta2_patch_proposal import VALIDATION_SCHEMA as PATCH_VALIDATION_SCHEMA
 
 OUTCOME_SCHEMA = "beta2-patch-review-outcome:v1"
 SUMMARY_SCHEMA = "beta2-patch-review-outcome-summary:v1"
+INDEX_SCHEMA = "beta2-patch-review-outcome-index-entry:v1"
 OUTCOMES = (
     "deferred",
     "rejected",
@@ -53,15 +54,29 @@ def main(argv: list[str] | None = None) -> int:
     summarize.add_argument("--run-root", action="append", required=True)
     summarize.add_argument("--output")
 
+    index = subparsers.add_parser("index", help="write outcome summary plus compact JSONL/latest index entry")
+    index.add_argument("--run-root", action="append", required=True)
+    index.add_argument("--summary-output", required=True)
+    index.add_argument("--index-output", required=True)
+    index.add_argument("--latest-output", required=True)
+
     args = parser.parse_args(argv)
     if args.command == "inspect":
         report = inspect_review_outcome(Path(args.run_root))
     elif args.command == "summarize":
         report = summarize_review_outcomes([Path(path) for path in args.run_root])
+    elif args.command == "index":
+        report = index_review_outcomes(
+            [Path(path) for path in args.run_root],
+            summary_output=Path(args.summary_output),
+            index_output=Path(args.index_output),
+            latest_output=Path(args.latest_output),
+        )
     else:
         raise AssertionError(f"unknown command: {args.command}")
-    if args.output:
-        _write_json(Path(args.output), report)
+    output = getattr(args, "output", None)
+    if output:
+        _write_json(Path(output), report)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if report["passed"] else 1
 
@@ -183,6 +198,38 @@ def summarize_review_outcomes(run_roots: list[Path]) -> dict[str, Any]:
     }
 
 
+def index_review_outcomes(
+    run_roots: list[Path],
+    *,
+    summary_output: Path,
+    index_output: Path,
+    latest_output: Path,
+) -> dict[str, Any]:
+    summary = summarize_review_outcomes(run_roots)
+    if summary["passed"] is not True:
+        return summary
+    _write_json(summary_output, summary)
+    entry = {
+        "schema_version": INDEX_SCHEMA,
+        "indexed_at": _now(),
+        "summary_path": str(summary_output.resolve()),
+        "sample_count": summary["sample_count"],
+        "outcome_counts": summary["outcome_counts"],
+        "metrics": summary["metrics"],
+        "run_roots": [sample["run_root"] for sample in summary["samples"]],
+        "non_claims": list(NON_CLAIMS),
+    }
+    _append_jsonl(index_output, entry)
+    _write_json(latest_output, entry)
+    return {
+        **summary,
+        "summary_path": str(summary_output.resolve()),
+        "index_path": str(index_output.resolve()),
+        "latest_path": str(latest_output.resolve()),
+        "index_entry": entry,
+    }
+
+
 def _validate_patch_validation(data: dict[str, Any], failures: list[str]) -> None:
     if data.get("schema_version") != PATCH_VALIDATION_SCHEMA:
         failures.append(f"patch validation schema_version must be {PATCH_VALIDATION_SCHEMA}")
@@ -292,6 +339,12 @@ def _sha256(path: Path) -> str:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def _now() -> str:

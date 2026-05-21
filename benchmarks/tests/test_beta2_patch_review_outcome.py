@@ -54,6 +54,51 @@ def test_inspect_review_outcome_fails_when_patch_validation_hash_drifted(tmp_pat
     assert "patch validation patch_sha256 must match patch bytes" in report["failure_reasons"]
 
 
+def test_index_review_outcomes_writes_summary_jsonl_and_latest(tmp_path: Path) -> None:
+    deferred = _write_run(tmp_path / "deferred", decision="deferred")
+    corrected = _write_run(tmp_path / "corrected", decision="approved", corrected_apply=True)
+
+    report = module.index_review_outcomes(
+        [deferred, corrected],
+        summary_output=tmp_path / "reports" / "summary.json",
+        index_output=tmp_path / "reports" / "index.jsonl",
+        latest_output=tmp_path / "reports" / "latest.json",
+    )
+    summary = json.loads((tmp_path / "reports" / "summary.json").read_text(encoding="utf-8"))
+    index_rows = [
+        json.loads(line)
+        for line in (tmp_path / "reports" / "index.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    latest = json.loads((tmp_path / "reports" / "latest.json").read_text(encoding="utf-8"))
+
+    assert report["passed"] is True
+    assert summary["sample_count"] == 2
+    assert index_rows[0]["schema_version"] == module.INDEX_SCHEMA
+    assert index_rows[0]["outcome_counts"]["deferred"] == 1
+    assert index_rows[0]["outcome_counts"]["corrected_applied"] == 1
+    assert latest == index_rows[0]
+
+
+def test_index_review_outcomes_does_not_write_outputs_for_invalid_sample(tmp_path: Path) -> None:
+    run = _write_run(tmp_path / "drifted", decision="deferred")
+    (run / "patch_proposal.patch").write_text(_patch_text(extra="+hash drift"), encoding="utf-8")
+    summary = tmp_path / "reports" / "summary.json"
+    index = tmp_path / "reports" / "index.jsonl"
+    latest = tmp_path / "reports" / "latest.json"
+
+    report = module.index_review_outcomes(
+        [run],
+        summary_output=summary,
+        index_output=index,
+        latest_output=latest,
+    )
+
+    assert report["passed"] is False
+    assert not summary.exists()
+    assert not index.exists()
+    assert not latest.exists()
+
+
 def _write_run(tmp_path: Path, *, decision: str, corrected_apply: bool = False) -> Path:
     repo = tmp_path / "repo"
     run = tmp_path / "run"
