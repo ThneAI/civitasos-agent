@@ -99,6 +99,56 @@ def test_record_operator_apply_receipt_requires_explicit_manual_confirmation(tmp
         )
 
 
+@pytest.mark.parametrize("reason", ["", "   "])
+def test_record_operator_apply_receipt_requires_reason(tmp_path: Path, reason: str) -> None:
+    fixture = _write_manual_apply_fixture(tmp_path, proposal_decision="approved")
+
+    with pytest.raises(ValueError, match="reason must be a non-empty string"):
+        module.record_operator_apply_receipt(
+            repo=fixture["repo"],
+            patch_validation_path=fixture["patch_validation"],
+            proposal_receipt_path=fixture["proposal_receipt"],
+            applied_diff_path=fixture["applied_diff"],
+            output_path=fixture["run"] / "beta2_operator_apply_receipt.json",
+            operator_id="operator-001",
+            reason=reason,
+            tests_status="passed",
+            tests_ref="tests:beta2-fixture:passed",
+            manual_apply_confirmed=True,
+            audit_output_path=None,
+            audit_actor_id="audit-owner-001",
+            append=False,
+        )
+
+
+def test_validate_operator_apply_receipt_rejects_blank_reason(tmp_path: Path) -> None:
+    fixture = _write_manual_apply_fixture(tmp_path, proposal_decision="approved")
+    output = fixture["run"] / "beta2_operator_apply_receipt.json"
+    module.record_operator_apply_receipt(
+        repo=fixture["repo"],
+        patch_validation_path=fixture["patch_validation"],
+        proposal_receipt_path=fixture["proposal_receipt"],
+        applied_diff_path=fixture["applied_diff"],
+        output_path=output,
+        operator_id="operator-001",
+        reason="operator manually applied approved patch",
+        tests_status="passed",
+        tests_ref="tests:beta2-fixture:passed",
+        manual_apply_confirmed=True,
+        audit_output_path=None,
+        audit_actor_id="audit-owner-001",
+        append=False,
+    )
+    receipt = json.loads(output.read_text(encoding="utf-8"))
+    receipt["reason"] = "  "
+    output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = module.validate_operator_apply_receipt(output)
+
+    assert report["passed"] is False
+    assert "reason must be a non-empty string" in report["failure_reasons"]
+
+
 def _write_manual_apply_fixture(tmp_path: Path, *, proposal_decision: str) -> dict[str, Path]:
     repo = tmp_path / "repo"
     run = tmp_path / "run"

@@ -104,6 +104,7 @@ def record_operator_apply_receipt(
 ) -> dict[str, Any]:
     if manual_apply_confirmed is not True:
         raise ValueError("record requires --manual-apply-confirmed")
+    reason = _required_str(reason, "reason")
     if tests_status not in TEST_STATUSES:
         raise ValueError(f"tests_status must be one of {sorted(TEST_STATUSES)}")
     patch_validation = _load_passed_patch_validation(patch_validation_path)
@@ -190,6 +191,8 @@ def validate_operator_apply_receipt(receipt_path: Path) -> dict[str, Any]:
         failures.append(f"schema_version must be {RECEIPT_SCHEMA}")
     if receipt.get("manual_apply_confirmed") is not True:
         failures.append("manual_apply_confirmed must be true")
+    if not isinstance(receipt.get("reason"), str) or not receipt.get("reason", "").strip():
+        failures.append("reason must be a non-empty string")
     for flag in (
         "auto_apply_performed",
         "commit_created_by_tool",
