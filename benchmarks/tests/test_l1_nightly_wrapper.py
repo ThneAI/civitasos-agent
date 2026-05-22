@@ -15,6 +15,22 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'BETA2_PATCH_REVIEW_OUTCOME_SUMMARY="${BETA2_PATCH_REVIEW_OUTCOME_SUMMARY:-$RUNS_ROOT/beta2_patch_review_outcome_summary.json}"' in text
     assert 'BETA2_PATCH_REVIEW_OUTCOME_INDEX_FILE="${BETA2_PATCH_REVIEW_OUTCOME_INDEX_FILE:-runs/beta2_patch_review_outcome_index.jsonl}"' in text
     assert 'BETA2_PATCH_REVIEW_OUTCOME_LATEST="${BETA2_PATCH_REVIEW_OUTCOME_LATEST:-runs/beta2_patch_review_outcome_latest.json}"' in text
+    assert 'RUN_BETA3_CONTROLLED_APPLY_CANDIDATE_CHECK="${RUN_BETA3_CONTROLLED_APPLY_CANDIDATE_CHECK:-0}"' in text
+    assert 'BETA3_CONTROLLED_APPLY_CANDIDATE_REPORT="${BETA3_CONTROLLED_APPLY_CANDIDATE_REPORT:-$RUNS_ROOT/beta3_controlled_apply_candidate.json}"' in text
+    assert 'RUN_BETA3_CONTROLLED_APPLY_SANDBOX_CHECK="${RUN_BETA3_CONTROLLED_APPLY_SANDBOX_CHECK:-0}"' in text
+    assert 'BETA3_CONTROLLED_APPLY_SANDBOX_OUTPUT_ROOT="${BETA3_CONTROLLED_APPLY_SANDBOX_OUTPUT_ROOT:-$RUNS_ROOT/beta3_controlled_apply_sandbox}"' in text
+    assert 'RUN_BETA3_POST_SANDBOX_RECEIPT_CHECK="${RUN_BETA3_POST_SANDBOX_RECEIPT_CHECK:-0}"' in text
+    assert 'RUN_BETA3_MULTI_AGENT_REVIEW_PACKET_CHECK="${RUN_BETA3_MULTI_AGENT_REVIEW_PACKET_CHECK:-0}"' in text
+    assert 'RUN_BETA3_SOURCE_APPLY_AUTHORIZATION_CHECK="${RUN_BETA3_SOURCE_APPLY_AUTHORIZATION_CHECK:-0}"' in text
+    assert 'RUN_BETA3_POST_SOURCE_APPLY_RECEIPT_CHECK="${RUN_BETA3_POST_SOURCE_APPLY_RECEIPT_CHECK:-0}"' in text
+    assert 'RUN_BETA3_SOURCE_APPLY_OUTCOME_INDEX="${RUN_BETA3_SOURCE_APPLY_OUTCOME_INDEX:-0}"' in text
+    assert 'BETA3_SOURCE_APPLY_OUTCOME_SUMMARY="${BETA3_SOURCE_APPLY_OUTCOME_SUMMARY:-$RUNS_ROOT/beta3_source_apply_outcome_summary.json}"' in text
+    assert 'RUN_BETA3_GIT_PUBLICATION_AUTHORIZATION_CHECK="${RUN_BETA3_GIT_PUBLICATION_AUTHORIZATION_CHECK:-0}"' in text
+    assert 'RUN_BETA3_GIT_COMMIT_RECEIPT_CHECK="${RUN_BETA3_GIT_COMMIT_RECEIPT_CHECK:-0}"' in text
+    assert 'RUN_BETA3_GIT_PUSH_AUTHORIZATION_CHECK="${RUN_BETA3_GIT_PUSH_AUTHORIZATION_CHECK:-0}"' in text
+    assert 'RUN_BETA3_GIT_PUSH_RECEIPT_CHECK="${RUN_BETA3_GIT_PUSH_RECEIPT_CHECK:-0}"' in text
+    assert 'RUN_BETA3_GIT_MERGE_AUTHORIZATION_CHECK="${RUN_BETA3_GIT_MERGE_AUTHORIZATION_CHECK:-0}"' in text
+    assert 'RUN_BETA3_GIT_MERGE_RECEIPT_CHECK="${RUN_BETA3_GIT_MERGE_RECEIPT_CHECK:-0}"' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
@@ -43,6 +59,46 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_BETA2_PATCH_REVIEW_OUTCOME_INDEX" = "1" ]; then' in text
     assert "requires BETA2_PATCH_REVIEW_OUTCOME_RUN_ROOTS" in text
     assert 'scripts/beta2_patch_review_outcome.py "${BETA2_REVIEW_INDEX_ARGS[@]}"' in text
+    assert 'if [ "$RUN_BETA3_CONTROLLED_APPLY_CANDIDATE_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_CONTROLLED_APPLY_RUN_ROOT" in text
+    assert "requires BETA3_CONTROLLED_APPLY_SELECTION_REASON" in text
+    assert 'scripts/beta3_controlled_apply_candidate.py "${BETA3_CANDIDATE_ARGS[@]}"' in text
+    assert 'if [ "$RUN_BETA3_CONTROLLED_APPLY_SANDBOX_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_CONTROLLED_APPLY_SANDBOX_CANDIDATE_REPORT" in text
+    assert "scripts/beta3_controlled_apply_sandbox.py" in text
+    assert 'if [ "$RUN_BETA3_POST_SANDBOX_RECEIPT_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_POST_SANDBOX_RECEIPT_PATH" in text
+    assert "scripts/beta3_post_sandbox_operator_receipt.py validate" in text
+    assert 'if [ "$RUN_BETA3_MULTI_AGENT_REVIEW_PACKET_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_MULTI_AGENT_REVIEW_PACKET_PATH" in text
+    assert "scripts/beta3_multi_agent_review_packet.py validate" in text
+    assert 'if [ "$RUN_BETA3_SOURCE_APPLY_AUTHORIZATION_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_SOURCE_APPLY_AUTHORIZATION_PATH" in text
+    assert "scripts/beta3_source_apply_authorization.py validate" in text
+    assert 'if [ "$RUN_BETA3_POST_SOURCE_APPLY_RECEIPT_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_POST_SOURCE_APPLY_RECEIPT_PATH" in text
+    assert "scripts/beta3_source_apply_executor.py validate-receipt" in text
+    assert 'if [ "$RUN_BETA3_SOURCE_APPLY_OUTCOME_INDEX" = "1" ]; then' in text
+    assert "requires BETA3_SOURCE_APPLY_EXECUTION_REPORTS" in text
+    assert 'scripts/beta3_source_apply_outcome.py "${BETA3_SOURCE_APPLY_OUTCOME_ARGS[@]}"' in text
+    assert 'if [ "$RUN_BETA3_GIT_PUBLICATION_AUTHORIZATION_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_GIT_PUBLICATION_AUTHORIZATION_PATH" in text
+    assert "scripts/beta3_git_publication_authorization.py validate" in text
+    assert 'if [ "$RUN_BETA3_GIT_COMMIT_RECEIPT_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_GIT_COMMIT_RECEIPT_PATH" in text
+    assert "scripts/beta3_git_commit_executor.py validate-receipt" in text
+    assert 'if [ "$RUN_BETA3_GIT_PUSH_AUTHORIZATION_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_GIT_PUSH_AUTHORIZATION_PATH" in text
+    assert "scripts/beta3_git_push_executor.py validate-authorization" in text
+    assert 'if [ "$RUN_BETA3_GIT_PUSH_RECEIPT_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_GIT_PUSH_RECEIPT_PATH" in text
+    assert "scripts/beta3_git_push_executor.py validate-receipt" in text
+    assert 'if [ "$RUN_BETA3_GIT_MERGE_AUTHORIZATION_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_GIT_MERGE_AUTHORIZATION_PATH" in text
+    assert "scripts/beta3_git_merge_executor.py validate-authorization" in text
+    assert 'if [ "$RUN_BETA3_GIT_MERGE_RECEIPT_CHECK" = "1" ]; then' in text
+    assert "requires BETA3_GIT_MERGE_RECEIPT_PATH" in text
+    assert "scripts/beta3_git_merge_executor.py validate-receipt" in text
 
 
 def test_l1_contract_smoke_is_strict_service_token_signed_wake() -> None:
@@ -86,6 +142,18 @@ def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
     assert "L1_PILOT_001_SERVICE_SCOPES=pool:read" in text
     assert "missing required scope: agents:read" in text
     assert "benchmarks/tests/test_l1_nightly_wrapper.py" in text
+    assert "benchmarks/tests/test_beta3_controlled_apply_candidate.py" in text
+    assert "benchmarks/tests/test_beta3_controlled_apply_sandbox.py" in text
+    assert "benchmarks/tests/test_beta3_git_commit_executor.py" in text
+    assert "benchmarks/tests/test_beta3_git_merge_executor.py" in text
+    assert "benchmarks/tests/test_beta3_git_push_executor.py" in text
+    assert "benchmarks/tests/test_beta3_git_publication_authorization.py" in text
+    assert "benchmarks/tests/test_beta3_multi_agent_review_packet.py" in text
+    assert "benchmarks/tests/test_beta3_post_sandbox_operator_receipt.py" in text
+    assert "benchmarks/tests/test_beta3_real_multi_agent_review_runner.py" in text
+    assert "benchmarks/tests/test_beta3_source_apply_authorization.py" in text
+    assert "benchmarks/tests/test_beta3_source_apply_executor.py" in text
+    assert "benchmarks/tests/test_beta3_source_apply_outcome.py" in text
     assert "benchmarks/tests/test_l1_export_contract_audit_refs.py" in text
     assert "benchmarks/tests/test_l1_pilot_contract_runner.py" in text
     assert "benchmarks/tests/test_l1_pilot_contract_tasks.py" in text

@@ -71,6 +71,18 @@ grep -q "missing required scope: agents:read" "$TMP_DIR/missing_scope.out"
   benchmarks/tests/test_beta2_operator_apply_receipt.py \
   benchmarks/tests/test_beta2_patch_proposal.py \
   benchmarks/tests/test_beta2_patch_review_outcome.py \
+  benchmarks/tests/test_beta3_controlled_apply_candidate.py \
+  benchmarks/tests/test_beta3_controlled_apply_sandbox.py \
+  benchmarks/tests/test_beta3_git_commit_executor.py \
+  benchmarks/tests/test_beta3_git_merge_executor.py \
+  benchmarks/tests/test_beta3_git_push_executor.py \
+  benchmarks/tests/test_beta3_git_publication_authorization.py \
+  benchmarks/tests/test_beta3_multi_agent_review_packet.py \
+  benchmarks/tests/test_beta3_post_sandbox_operator_receipt.py \
+  benchmarks/tests/test_beta3_real_multi_agent_review_runner.py \
+  benchmarks/tests/test_beta3_source_apply_authorization.py \
+  benchmarks/tests/test_beta3_source_apply_executor.py \
+  benchmarks/tests/test_beta3_source_apply_outcome.py \
   benchmarks/tests/test_l1_nightly_wrapper.py \
   benchmarks/tests/test_l1_export_contract_audit_refs.py \
   benchmarks/tests/test_l1_export_operator_repair_probe_byproducts.py \
