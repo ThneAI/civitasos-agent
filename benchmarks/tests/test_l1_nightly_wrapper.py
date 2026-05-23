@@ -39,6 +39,7 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'RUN_BETA5_POST_REVIEW_MERGE_AUTHORIZATION_CHECK="${RUN_BETA5_POST_REVIEW_MERGE_AUTHORIZATION_CHECK:-0}"' in text
     assert 'RUN_BETA6_EXTERNAL_AGENT_INVITATION_CHECK="${RUN_BETA6_EXTERNAL_AGENT_INVITATION_CHECK:-0}"' in text
     assert 'RUN_BETA6_EXTERNAL_AGENT_REGISTRATION_CHECK="${RUN_BETA6_EXTERNAL_AGENT_REGISTRATION_CHECK:-0}"' in text
+    assert 'RUN_BETA7_EXTERNAL_AGENT_TASK_INVITATION_CHECK="${RUN_BETA7_EXTERNAL_AGENT_TASK_INVITATION_CHECK:-0}"' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
@@ -131,6 +132,9 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_BETA6_EXTERNAL_AGENT_REGISTRATION_CHECK" = "1" ]; then' in text
     assert "requires BETA6_EXTERNAL_AGENT_REGISTRATION_PATH" in text
     assert "scripts/beta6_external_agent_onboarding.py validate-registration" in text
+    assert 'if [ "$RUN_BETA7_EXTERNAL_AGENT_TASK_INVITATION_CHECK" = "1" ]; then' in text
+    assert "requires BETA7_EXTERNAL_AGENT_TASK_INVITATION_PATH" in text
+    assert "scripts/beta7_external_agent_task_invitation.py validate" in text
 
 
 def test_l1_contract_smoke_is_strict_service_token_signed_wake() -> None:
@@ -191,6 +195,7 @@ def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
     assert "benchmarks/tests/test_beta4_pr_review_evidence.py" in text
     assert "benchmarks/tests/test_beta5_post_review_merge_authorization.py" in text
     assert "benchmarks/tests/test_beta6_external_agent_onboarding.py" in text
+    assert "benchmarks/tests/test_beta7_external_agent_task_invitation.py" in text
     assert "benchmarks/tests/test_l1_export_contract_audit_refs.py" in text
     assert "benchmarks/tests/test_l1_pilot_contract_runner.py" in text
     assert "benchmarks/tests/test_l1_pilot_contract_tasks.py" in text
