@@ -34,6 +34,8 @@ for script in (
     "beta3_git_push_executor.py",
     "beta4_draft_pr_executor.py",
     "beta4_pr_review_evidence.py",
+    "beta_approval_sandbox_observation.py",
+    "beta4_ready_pr_review_evidence.py",
     "beta6_external_agent_onboarding.py",
     "beta7_external_agent_task_invitation.py",
     "beta8_external_agent_review_response.py",
@@ -48,6 +50,7 @@ beta6_tests = _load(
 beta7 = sys.modules["beta7_external_agent_task_invitation"]
 beta8 = sys.modules["beta8_external_agent_review_response"]
 beta4_review = sys.modules["beta4_pr_review_evidence"]
+beta4_ready_review = sys.modules["beta4_ready_pr_review_evidence"]
 beta4_review_tests = _load(
     "beta4_pr_review_evidence_fixture_for_beta9",
     ROOT / "benchmarks" / "tests" / "test_beta4_pr_review_evidence.py",
@@ -115,6 +118,29 @@ def test_review_reconciliation_ready_when_external_and_github_approved(tmp_path:
     assert payload["merge_performed"] is False
 
 
+def test_review_reconciliation_ready_with_ready_pr_review_packet(tmp_path: Path) -> None:
+    pr_packet = _write_ready_pr_review_packet(tmp_path)
+    response = _write_review_response(tmp_path, pr_packet, verdict="approved")
+    reconciliation = tmp_path / "ready_from_ready_pr_packet.json"
+
+    report = module.record_reconciliation(
+        review_response_path=response,
+        pr_review_evidence_path=pr_packet,
+        operator_decision="ready_for_beta5_authorization",
+        reason="external verdict and ready PR GitHub approval are observed",
+        output_path=reconciliation,
+        operator_id="post-review-reconciliation-operator-001",
+    )
+    payload = json.loads(reconciliation.read_text(encoding="utf-8"))
+
+    assert report["validation"]["passed"] is True
+    assert payload["github_review_approval_observed"] is True
+    assert payload["beta5_authorization_input_ready"] is True
+    assert payload["blocking_reason"] == "none"
+    assert payload["merge_authorized"] is False
+    assert payload["merge_performed"] is False
+
+
 def test_review_reconciliation_requires_pr_packet_in_task_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pr_packet = _write_pr_review_packet(tmp_path, monkeypatch, approved=False)
     other_packet = _write_pr_review_packet(tmp_path / "other", monkeypatch, approved=False)
@@ -161,6 +187,63 @@ def _write_pr_review_packet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, 
     packet = tmp_path / ("approved_pr_review_packet.json" if approved else "pending_pr_review_packet.json")
     report = beta4_review.capture_review_evidence(draft_pr_receipt_path=receipt, output_path=packet)
     assert report["passed"] is True
+    return packet
+
+
+def _write_ready_pr_review_packet(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    observation = tmp_path / "approval_observation.json"
+    observation.write_text(
+        json.dumps(
+            {
+                "schema_version": "beta-approval-sandbox-observation:v1",
+                "captured_at": "2099-01-01T00:00:00+00:00",
+                "observation_scope": "github_cross_account_approval_observation_only",
+                "github_repo": "ThneAI/civitasos-approval-sandbox",
+                "pr_number": 2,
+                "pr_url": "https://github.com/ThneAI/civitasos-approval-sandbox/pull/2",
+                "pr_title": "Approval observed fixture",
+                "pr_state": "OPEN",
+                "is_draft": False,
+                "head_ref_name": "approval-observed-fixture",
+                "head_ref_oid": "abc123",
+                "base_ref_name": "main",
+                "expected_author": "ThneAI",
+                "expected_approver": "Thneoly",
+                "pr_author": "ThneAI",
+                "review_decision": "APPROVED",
+                "approval_observed": True,
+                "approvers": ["Thneoly"],
+                "review_count": 1,
+                "latest_review_count": 1,
+                "comment_count": 0,
+                "status_check_count": 0,
+                "merge_state_status": "CLEAN",
+                "gh_view": {"returncode": 0},
+                "beta4_review_packet_replaced": False,
+                "beta5_authorization_executed": False,
+                "merge_performed": False,
+                "deploy_allowed": False,
+                "production_runtime_execution_allowed": False,
+                "production_receipt_write_allowed": False,
+                "h3_boundary": {
+                    "h3_production_readiness_claimed": False,
+                    "h3_remains_blocked": True,
+                },
+                "non_claims": [],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    packet = tmp_path / "ready_pr_review_packet.json"
+    report = beta4_ready_review.record_ready_pr_review_evidence(
+        approval_observation_path=observation,
+        output_path=packet,
+    )
+    assert report["validation"]["passed"] is True
     return packet
 
 

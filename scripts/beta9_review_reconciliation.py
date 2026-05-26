@@ -20,6 +20,8 @@ from typing import Any
 
 from beta4_pr_review_evidence import PACKET_SCHEMA as BETA4_PACKET_SCHEMA
 from beta4_pr_review_evidence import validate_review_evidence_packet
+from beta4_ready_pr_review_evidence import PACKET_SCHEMA as BETA4_READY_PACKET_SCHEMA
+from beta4_ready_pr_review_evidence import validate_ready_pr_review_evidence_packet
 from beta8_external_agent_review_response import REVIEW_RESPONSE_SCHEMA
 from beta8_external_agent_review_response import validate_review_response
 
@@ -34,6 +36,7 @@ OPERATOR_DECISIONS = (
     "no_action",
 )
 FORBIDDEN_TOKENS = ("TODO", "REPLACE", "PLACEHOLDER", "TEMPLATE_ONLY")
+SUPPORTED_PR_REVIEW_PACKET_SCHEMAS = (BETA4_PACKET_SCHEMA, BETA4_READY_PACKET_SCHEMA)
 NON_CLAIMS = (
     "beta9_reconciliation_is_l1_controlled_pilot_evidence_only",
     "beta9_reconciliation_does_not_replace_github_review_state_packet",
@@ -225,14 +228,19 @@ def _load_valid_review_response(path: Path | None, failures: list[str]) -> dict[
 def _load_valid_pr_review_evidence(path: Path | None, failures: list[str]) -> dict[str, Any]:
     if path is None:
         return {}
-    validation = validate_review_evidence_packet(path)
-    if validation.get("passed") is not True:
-        failures.extend(f"PR review evidence invalid: {reason}" for reason in validation.get("failure_reasons", []))
     packet = _safe_read_json(path, failures, "PR review evidence packet")
     if not isinstance(packet, dict):
         return {}
-    if packet.get("schema_version") != BETA4_PACKET_SCHEMA:
-        failures.append(f"PR review evidence schema_version must be {BETA4_PACKET_SCHEMA}")
+    schema = packet.get("schema_version")
+    if schema == BETA4_PACKET_SCHEMA:
+        validation = validate_review_evidence_packet(path)
+    elif schema == BETA4_READY_PACKET_SCHEMA:
+        validation = validate_ready_pr_review_evidence_packet(path)
+    else:
+        failures.append(f"PR review evidence schema_version must be one of {SUPPORTED_PR_REVIEW_PACKET_SCHEMAS}")
+        validation = {"passed": False, "failure_reasons": []}
+    if validation.get("passed") is not True:
+        failures.extend(f"PR review evidence invalid: {reason}" for reason in validation.get("failure_reasons", []))
     return packet
 
 
