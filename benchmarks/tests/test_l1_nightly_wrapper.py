@@ -206,6 +206,7 @@ def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
     assert "benchmarks/tests/test_beta7_external_agent_task_invitation.py" in text
     assert "benchmarks/tests/test_beta8_external_agent_review_response.py" in text
     assert "benchmarks/tests/test_beta9_review_reconciliation.py" in text
+    assert "benchmarks/tests/test_beta_approval_sandbox_observation.py" in text
     assert "benchmarks/tests/test_l1_export_contract_audit_refs.py" in text
     assert "benchmarks/tests/test_l1_pilot_contract_runner.py" in text
     assert "benchmarks/tests/test_l1_pilot_contract_tasks.py" in text
