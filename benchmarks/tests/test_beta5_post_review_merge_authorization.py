@@ -33,6 +33,8 @@ _load("beta3_git_commit_executor", ROOT / "scripts" / "beta3_git_commit_executor
 _load("beta3_git_push_executor", ROOT / "scripts" / "beta3_git_push_executor.py")
 draft = _load("beta4_draft_pr_executor", ROOT / "scripts" / "beta4_draft_pr_executor.py")
 review = _load("beta4_pr_review_evidence", ROOT / "scripts" / "beta4_pr_review_evidence.py")
+_load("beta_approval_sandbox_observation", ROOT / "scripts" / "beta_approval_sandbox_observation.py")
+ready_review = _load("beta4_ready_pr_review_evidence", ROOT / "scripts" / "beta4_ready_pr_review_evidence.py")
 review_tests = _load(
     "beta4_pr_review_evidence_fixture_for_beta5",
     ROOT / "benchmarks" / "tests" / "test_beta4_pr_review_evidence.py",
@@ -65,6 +67,28 @@ def test_post_review_merge_authorization_records_observed_approval(
     assert authorization["github_review_approval_observed"] is True
     assert authorization["deploy_allowed"] is False
     assert authorization["review_observation"]["review_state"] == "approved_review_observed"
+
+
+def test_post_review_merge_authorization_accepts_ready_pr_approval_packet(tmp_path: Path) -> None:
+    packet = _write_ready_review_packet(tmp_path)
+    authorization_path = tmp_path / "beta5_ready_post_review_merge_authorization.json"
+
+    report = module.record_post_review_merge_authorization(
+        review_evidence_packet_path=packet,
+        output_path=authorization_path,
+        operator_id="operator-001",
+        reason="approve sandbox ready PR after real cross-account approval evidence",
+        rollback_evidence_ref="rollback:close-ready-pr-without-merge",
+    )
+    authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+
+    assert report["validation"]["passed"] is True
+    assert authorization["source_review_evidence_packet_schema"] == ready_review.PACKET_SCHEMA
+    assert authorization["source_approval_observation"]["path"]
+    assert authorization["source_draft_pr_receipt"] is None
+    assert authorization["pr"]["isDraft"] is False
+    assert authorization["merge_authorized"] is True
+    assert authorization["merge_performed"] is False
 
 
 def test_post_review_merge_authorization_blocks_pending_review(
@@ -136,6 +160,62 @@ def _write_review_packet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, app
     packet = tmp_path / ("approved_review_packet.json" if approved else "pending_review_packet.json")
     report = review.capture_review_evidence(draft_pr_receipt_path=receipt, output_path=packet)
     assert report["passed"] is True
+    return packet
+
+
+def _write_ready_review_packet(tmp_path: Path) -> Path:
+    observation = tmp_path / "approval_observation.json"
+    observation.write_text(
+        json.dumps(
+            {
+                "schema_version": "beta-approval-sandbox-observation:v1",
+                "captured_at": "2099-01-01T00:00:00+00:00",
+                "observation_scope": "github_cross_account_approval_observation_only",
+                "github_repo": "ThneAI/civitasos-approval-sandbox",
+                "pr_number": 2,
+                "pr_url": "https://github.com/ThneAI/civitasos-approval-sandbox/pull/2",
+                "pr_title": "Approval observed fixture",
+                "pr_state": "OPEN",
+                "is_draft": False,
+                "head_ref_name": "approval-observed-fixture",
+                "head_ref_oid": "abc123",
+                "base_ref_name": "main",
+                "expected_author": "ThneAI",
+                "expected_approver": "Thneoly",
+                "pr_author": "ThneAI",
+                "review_decision": "APPROVED",
+                "approval_observed": True,
+                "approvers": ["Thneoly"],
+                "review_count": 1,
+                "latest_review_count": 1,
+                "comment_count": 0,
+                "status_check_count": 0,
+                "merge_state_status": "CLEAN",
+                "gh_view": {"returncode": 0},
+                "beta4_review_packet_replaced": False,
+                "beta5_authorization_executed": False,
+                "merge_performed": False,
+                "deploy_allowed": False,
+                "production_runtime_execution_allowed": False,
+                "production_receipt_write_allowed": False,
+                "h3_boundary": {
+                    "h3_production_readiness_claimed": False,
+                    "h3_remains_blocked": True,
+                },
+                "non_claims": [],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    packet = tmp_path / "ready_review_packet.json"
+    report = ready_review.record_ready_pr_review_evidence(
+        approval_observation_path=observation,
+        output_path=packet,
+    )
+    assert report["validation"]["passed"] is True
     return packet
 
 

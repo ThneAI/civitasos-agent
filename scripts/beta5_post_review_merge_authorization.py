@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Record Beta-5 merge authorization after observed GitHub PR approval.
 
-This gate consumes one valid Beta-4 PR review-state packet. It only records a
-fresh operator authorization when GitHub approval was observed in that packet.
-It does not merge a PR, mark a draft ready, deploy, execute production runtime
-actions, or write production receipts.
+This gate consumes one valid Beta-4 PR review-state packet. It accepts the
+original draft-PR packet or the ready-for-review approval packet, and only
+records a fresh operator authorization when GitHub approval was observed in that
+packet. It does not merge a PR, mark a draft ready, deploy, execute production
+runtime actions, or write production receipts.
 """
 
 from __future__ import annotations
@@ -19,12 +20,15 @@ from typing import Any
 
 from beta4_pr_review_evidence import PACKET_SCHEMA as REVIEW_PACKET_SCHEMA
 from beta4_pr_review_evidence import validate_review_evidence_packet
+from beta4_ready_pr_review_evidence import PACKET_SCHEMA as READY_REVIEW_PACKET_SCHEMA
+from beta4_ready_pr_review_evidence import validate_ready_pr_review_evidence_packet
 
 
 AUTHORIZATION_SCHEMA = "beta5-post-review-merge-authorization:v1"
 VALIDATION_SCHEMA = "beta5-post-review-merge-authorization-validation:v1"
 WRITE_REPORT_SCHEMA = "beta5-post-review-merge-authorization-write-report:v1"
 APPROVED_REVIEW_STATE = "approved_review_observed"
+SUPPORTED_REVIEW_PACKET_SCHEMAS = (REVIEW_PACKET_SCHEMA, READY_REVIEW_PACKET_SCHEMA)
 NON_CLAIMS = (
     "beta5_post_review_merge_authorization_is_l1_controlled_pilot_only",
     "beta5_post_review_merge_authorization_requires_observed_github_approval",
@@ -93,13 +97,16 @@ def record_post_review_merge_authorization(
         "reason": reason,
         "rollback_evidence_ref": rollback_evidence_ref,
         "source_review_evidence_packet": _artifact_ref(review_evidence_packet_path),
-        "source_draft_pr_receipt": packet["source_draft_pr_receipt"],
-        "source_git_push_receipt": packet["source_git_push_receipt"],
+        "source_review_evidence_packet_schema": packet["schema_version"],
+        "source_draft_pr_receipt": packet.get("source_draft_pr_receipt"),
+        "source_git_push_receipt": packet.get("source_git_push_receipt"),
+        "source_approval_observation": packet.get("source_approval_observation"),
         "source_commit_id": packet["source_commit_id"],
         "source_branch": packet["source_branch"],
         "github_repo": packet["github_repo"],
         "base_branch": packet["base_branch"],
-        "draft_pr": packet["draft_pr"],
+        "pr": packet.get("pr", packet.get("draft_pr")),
+        "draft_pr": packet.get("draft_pr", packet.get("pr")),
         "review_observation": packet["review_observation"],
         "github_review_approval_observed": True,
         "merge_authorized": True,
@@ -144,17 +151,29 @@ def validate_post_review_merge_authorization(path: Path) -> dict[str, Any]:
     packet = _load_approved_review_packet(packet_path, failures)
     for field in (
         "request_id",
-        "source_draft_pr_receipt",
-        "source_git_push_receipt",
         "source_commit_id",
         "source_branch",
         "github_repo",
         "base_branch",
-        "draft_pr",
         "review_observation",
     ):
         if authorization.get(field) != packet.get(field):
             failures.append(f"{field} must match approved review evidence packet")
+    if authorization.get("source_review_evidence_packet_schema") != packet.get("schema_version"):
+        failures.append("source_review_evidence_packet_schema must match approved review evidence packet")
+    for field in (
+        "source_draft_pr_receipt",
+        "source_git_push_receipt",
+        "source_approval_observation",
+    ):
+        if authorization.get(field) != packet.get(field):
+            failures.append(f"{field} must match approved review evidence packet")
+    expected_pr = packet.get("pr", packet.get("draft_pr"))
+    expected_draft_pr = packet.get("draft_pr", packet.get("pr"))
+    if authorization.get("pr") != expected_pr:
+        failures.append("pr must match approved review evidence packet")
+    if authorization.get("draft_pr") != expected_draft_pr:
+        failures.append("draft_pr must match approved review evidence packet")
     if authorization.get("github_review_approval_observed") is not True:
         failures.append("github_review_approval_observed must be true")
     if authorization.get("merge_authorized") is not True:
@@ -171,14 +190,19 @@ def validate_post_review_merge_authorization(path: Path) -> dict[str, Any]:
 def _load_approved_review_packet(path: Path | None, failures: list[str]) -> dict[str, Any]:
     if path is None:
         return {}
-    validation = validate_review_evidence_packet(path)
-    if validation.get("passed") is not True:
-        failures.extend(f"review evidence packet invalid: {reason}" for reason in validation.get("failure_reasons", []))
     packet = _safe_read_json(path, failures, "review evidence packet")
     if not isinstance(packet, dict):
         return {}
-    if packet.get("schema_version") != REVIEW_PACKET_SCHEMA:
-        failures.append(f"review evidence packet schema_version must be {REVIEW_PACKET_SCHEMA}")
+    schema = packet.get("schema_version")
+    if schema == REVIEW_PACKET_SCHEMA:
+        validation = validate_review_evidence_packet(path)
+    elif schema == READY_REVIEW_PACKET_SCHEMA:
+        validation = validate_ready_pr_review_evidence_packet(path)
+    else:
+        failures.append(f"review evidence packet schema_version must be one of {SUPPORTED_REVIEW_PACKET_SCHEMAS}")
+        validation = {"passed": False, "failure_reasons": []}
+    if validation.get("passed") is not True:
+        failures.extend(f"review evidence packet invalid: {reason}" for reason in validation.get("failure_reasons", []))
     observation = _as_dict(packet.get("review_observation"), failures, "review_observation")
     if observation.get("review_state") != APPROVED_REVIEW_STATE:
         failures.append(f"review_observation.review_state must be {APPROVED_REVIEW_STATE}")
