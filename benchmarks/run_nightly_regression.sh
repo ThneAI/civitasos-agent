@@ -107,6 +107,20 @@ RUN_BETA5_EXTERNAL_ROLLBACK_AUTHORIZATION_CHECK="${RUN_BETA5_EXTERNAL_ROLLBACK_A
 BETA5_EXTERNAL_ROLLBACK_AUTHORIZATION_PATH="${BETA5_EXTERNAL_ROLLBACK_AUTHORIZATION_PATH:-}"
 RUN_BETA5_EXTERNAL_ROLLBACK_RECEIPT_CHECK="${RUN_BETA5_EXTERNAL_ROLLBACK_RECEIPT_CHECK:-0}"
 BETA5_EXTERNAL_ROLLBACK_RECEIPT_PATH="${BETA5_EXTERNAL_ROLLBACK_RECEIPT_PATH:-}"
+RUN_BETA5_REPEATABLE_PREVIEW_ARTIFACT="${RUN_BETA5_REPEATABLE_PREVIEW_ARTIFACT:-0}"
+BETA5_REPEATABLE_PREVIEW_RUN_ROOT="${BETA5_REPEATABLE_PREVIEW_RUN_ROOT:-$RUNS_ROOT/beta5_repeatable_preview}"
+BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_PATH="${BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_PATH:-$BETA5_LOCAL_DEPLOY_RECEIPT_PATH}"
+BETA5_REPEATABLE_PREVIEW_BACKEND_BIN="${BETA5_REPEATABLE_PREVIEW_BACKEND_BIN:-../civitasos-backend/target/debug/api_only}"
+BETA5_REPEATABLE_PREVIEW_FRONTEND_BUILD_DIR="${BETA5_REPEATABLE_PREVIEW_FRONTEND_BUILD_DIR:-../civitasos-frontend/build}"
+BETA5_REPEATABLE_PREVIEW_NODES="${BETA5_REPEATABLE_PREVIEW_NODES:-vm1,vm1,192.168.56.4 vm2,vm2,192.168.56.5 vm3,vm3,192.168.56.6}"
+BETA5_REPEATABLE_PREVIEW_REMOTE_ROOT="${BETA5_REPEATABLE_PREVIEW_REMOTE_ROOT:-/home/cal/civitasos_beta5_real_multivm_preview}"
+BETA5_REPEATABLE_PREVIEW_BACKEND_PORT="${BETA5_REPEATABLE_PREVIEW_BACKEND_PORT:-18181}"
+BETA5_REPEATABLE_PREVIEW_FRONTEND_PORT="${BETA5_REPEATABLE_PREVIEW_FRONTEND_PORT:-18182}"
+BETA5_REPEATABLE_PREVIEW_OWNER="${BETA5_REPEATABLE_PREVIEW_OWNER:-local-operator-cc}"
+BETA5_REPEATABLE_PREVIEW_SUMMARY="${BETA5_REPEATABLE_PREVIEW_SUMMARY:-$RUNS_ROOT/beta5_repeatable_preview_summary.json}"
+RUN_BETA5_OWNER_FEEDBACK_PACKET_CHECK="${RUN_BETA5_OWNER_FEEDBACK_PACKET_CHECK:-0}"
+BETA5_OWNER_FEEDBACK_PACKET_PATH="${BETA5_OWNER_FEEDBACK_PACKET_PATH:-}"
+BETA5_OWNER_FEEDBACK_PACKET_VALIDATION_OUTPUT="${BETA5_OWNER_FEEDBACK_PACKET_VALIDATION_OUTPUT:-$RUNS_ROOT/beta5_owner_feedback_packet_validation.json}"
 RUN_BETA6_EXTERNAL_AGENT_INVITATION_CHECK="${RUN_BETA6_EXTERNAL_AGENT_INVITATION_CHECK:-0}"
 BETA6_EXTERNAL_AGENT_INVITATION_PATH="${BETA6_EXTERNAL_AGENT_INVITATION_PATH:-}"
 RUN_BETA6_EXTERNAL_AGENT_REGISTRATION_CHECK="${RUN_BETA6_EXTERNAL_AGENT_REGISTRATION_CHECK:-0}"
@@ -1612,6 +1626,114 @@ if [ "$RUN_BETA5_EXTERNAL_ROLLBACK_RECEIPT_CHECK" = "1" ]; then
   fi
   "$PYTHON" scripts/beta5_external_deploy_rollback_drill.py validate-receipt \
     --receipt "$BETA5_EXTERNAL_ROLLBACK_RECEIPT_PATH"
+fi
+
+if [ "$RUN_BETA5_REPEATABLE_PREVIEW_ARTIFACT" = "1" ]; then
+  if [ -z "$BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_PATH" ]; then
+    echo "RUN_BETA5_REPEATABLE_PREVIEW_ARTIFACT=1 requires BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_PATH or BETA5_LOCAL_DEPLOY_RECEIPT_PATH" >&2
+    exit 1
+  fi
+  if [ ! -s "$BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_PATH" ]; then
+    echo "Beta-5 repeatable preview local deploy receipt not found: $BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_PATH" >&2
+    exit 1
+  fi
+  if [ -z "$BETA5_REPEATABLE_PREVIEW_NODES" ]; then
+    echo "RUN_BETA5_REPEATABLE_PREVIEW_ARTIFACT=1 requires BETA5_REPEATABLE_PREVIEW_NODES" >&2
+    exit 1
+  fi
+
+  mkdir -p "$RUNS_ROOT"
+  BETA5_REPEATABLE_PREVIEW_PREPARE_ARGS=(
+    --run-root "$BETA5_REPEATABLE_PREVIEW_RUN_ROOT"
+    --backend-bin "$BETA5_REPEATABLE_PREVIEW_BACKEND_BIN"
+    --frontend-build-dir "$BETA5_REPEATABLE_PREVIEW_FRONTEND_BUILD_DIR"
+    --remote-root "$BETA5_REPEATABLE_PREVIEW_REMOTE_ROOT"
+    --backend-port "$BETA5_REPEATABLE_PREVIEW_BACKEND_PORT"
+    --frontend-port "$BETA5_REPEATABLE_PREVIEW_FRONTEND_PORT"
+    --owner "$BETA5_REPEATABLE_PREVIEW_OWNER"
+  )
+  for node in $BETA5_REPEATABLE_PREVIEW_NODES; do
+    BETA5_REPEATABLE_PREVIEW_PREPARE_ARGS+=(--node "$node")
+  done
+
+  "$PYTHON" scripts/beta5_real_multivm_preview_prepare.py "${BETA5_REPEATABLE_PREVIEW_PREPARE_ARGS[@]}"
+
+  BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_ABS="$(realpath "$BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_PATH")"
+  CIVITASOS_AGENT_ROOT="$PWD" \
+  BETA5_LOCAL_DEPLOY_RECEIPT="$BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_ABS" \
+  BETA5_OPERATOR_ID="$BETA5_REPEATABLE_PREVIEW_OWNER" \
+    "$BETA5_REPEATABLE_PREVIEW_RUN_ROOT/operator_commands.sh"
+
+  BETA5_REPEATABLE_PREVIEW_RUN_ROOT="$BETA5_REPEATABLE_PREVIEW_RUN_ROOT" \
+  BETA5_REPEATABLE_PREVIEW_SUMMARY="$BETA5_REPEATABLE_PREVIEW_SUMMARY" \
+  "$PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+run_root = Path(os.environ["BETA5_REPEATABLE_PREVIEW_RUN_ROOT"])
+summary_path = Path(os.environ["BETA5_REPEATABLE_PREVIEW_SUMMARY"])
+
+def read_json(name: str) -> dict:
+    path = run_root / name
+    if not path.is_file():
+        raise SystemExit(f"missing repeatable preview artifact: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+prepare = read_json("prepare_report.json")
+deploy = read_json("beta5_external_deploy_execution_report.json")
+rollback = read_json("beta5_external_deploy_rollback_drill_execution_report.json")
+deploy_validation = read_json("beta5_external_deploy_receipt_validation.json")
+rollback_validation = read_json("beta5_external_deploy_rollback_drill_receipt_validation.json")
+smoke = read_json("multivm_real_service_smoke_summary.json")
+
+for label, report in (
+    ("deploy", deploy),
+    ("rollback", rollback),
+    ("deploy_validation", deploy_validation),
+    ("rollback_validation", rollback_validation),
+    ("smoke", smoke),
+):
+    if report.get("passed") is not True:
+        raise SystemExit(f"repeatable preview {label} did not pass")
+
+summary = {
+    "schema_version": "beta5-repeatable-preview-nightly-artifact:v1",
+    "passed": True,
+    "run_root": str(run_root),
+    "prepare_report": str((run_root / "prepare_report.json").resolve()),
+    "deploy_receipt": deploy["deploy_receipt_path"],
+    "deploy_receipt_sha256": deploy_validation["receipt_sha256"],
+    "rollback_receipt": rollback["rollback_receipt_path"],
+    "rollback_receipt_sha256": rollback_validation["receipt_sha256"],
+    "nodes": smoke["nodes"],
+    "smoke_cycles": smoke["cycles"],
+    "smoke_total_checks": smoke["total_checks"],
+    "latency_ms_min": smoke["latency_ms_min"],
+    "latency_ms_median": smoke["latency_ms_median"],
+    "latency_ms_max": smoke["latency_ms_max"],
+    "environment_proof": prepare["environment_proof"],
+    "external_environment_classification": "external_preview",
+    "external_environment_provider": "virtualbox",
+    "production_deploy_allowed": False,
+    "production_runtime_execution_allowed": False,
+    "production_receipt_write_allowed": False,
+    "h3_production_readiness_claimed": False,
+}
+summary_path.parent.mkdir(parents=True, exist_ok=True)
+summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(json.dumps(summary, indent=2, sort_keys=True))
+PY
+fi
+
+if [ "$RUN_BETA5_OWNER_FEEDBACK_PACKET_CHECK" = "1" ]; then
+  if [ -z "$BETA5_OWNER_FEEDBACK_PACKET_PATH" ]; then
+    echo "RUN_BETA5_OWNER_FEEDBACK_PACKET_CHECK=1 requires BETA5_OWNER_FEEDBACK_PACKET_PATH" >&2
+    exit 1
+  fi
+  "$PYTHON" scripts/beta5_owner_feedback_packet.py validate \
+    --packet "$BETA5_OWNER_FEEDBACK_PACKET_PATH" \
+    --output "$BETA5_OWNER_FEEDBACK_PACKET_VALIDATION_OUTPUT"
 fi
 
 if [ "$RUN_BETA6_EXTERNAL_AGENT_INVITATION_CHECK" = "1" ]; then
