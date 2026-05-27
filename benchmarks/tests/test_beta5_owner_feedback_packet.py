@@ -87,6 +87,81 @@ def test_record_and_validate_owner_feedback_packet(tmp_path: Path) -> None:
     assert packet["h3_boundary"]["h3_remains_blocked"] is True
 
 
+def test_write_owner_feedback_index_over_valid_packets(tmp_path: Path) -> None:
+    accepted_summary = _write_preview_summary(tmp_path / "accepted")
+    followup_summary = _write_preview_summary(tmp_path / "followup")
+    accepted_packet = tmp_path / "accepted_packet.json"
+    followup_packet = tmp_path / "followup_packet.json"
+    module.record_owner_feedback_packet(
+        preview_summary_path=accepted_summary,
+        output_path=accepted_packet,
+        owner_id="owner-cc",
+        operator_id="operator-cc",
+        feedback_verdict="accepted",
+        feedback_ref="owner-feedback:accepted",
+        audit_ref="audit:rollback-clean",
+        external_evidence_ref="external-preview:virtualbox-vm1-vm2-vm3",
+    )
+    module.record_owner_feedback_packet(
+        preview_summary_path=followup_summary,
+        output_path=followup_packet,
+        owner_id="owner-cc",
+        operator_id="operator-cc",
+        feedback_verdict="needs_followup",
+        feedback_ref="owner-feedback:needs-followup",
+        audit_ref="audit:followup-required",
+        external_evidence_ref="external-preview:virtualbox-vm1-vm2-vm3",
+    )
+
+    index = module.write_owner_feedback_index(
+        packet_paths=[],
+        packet_globs=[str(tmp_path / "*_packet.json")],
+        output_path=tmp_path / "index.json",
+        min_packets=2,
+    )
+
+    assert index["schema_version"] == module.INDEX_SCHEMA
+    assert index["passed"] is True
+    assert index["packet_count"] == 2
+    assert index["verdict_counts"]["accepted"] == 1
+    assert index["verdict_counts"]["needs_followup"] == 1
+    assert index["accepted_ratio"] == 0.5
+    assert index["total_smoke_checks"] == 30
+    assert index["external_environment_providers"] == ["virtualbox"]
+    assert index["production_deploy_allowed"] is False
+    assert index["h3_boundary"]["h3_remains_blocked"] is True
+
+
+def test_write_owner_feedback_index_fails_on_invalid_packet_or_threshold(tmp_path: Path) -> None:
+    preview_summary = _write_preview_summary(tmp_path)
+    packet_path = tmp_path / "packet.json"
+    module.record_owner_feedback_packet(
+        preview_summary_path=preview_summary,
+        output_path=packet_path,
+        owner_id="owner-cc",
+        operator_id="operator-cc",
+        feedback_verdict="accepted",
+        feedback_ref="owner-feedback:accepted",
+        audit_ref="audit:rollback-clean",
+        external_evidence_ref="external-preview:virtualbox-vm1-vm2-vm3",
+    )
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    packet["production_runtime_execution_allowed"] = True
+    packet_path.write_text(json.dumps(packet, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    index = module.write_owner_feedback_index(
+        packet_paths=[packet_path],
+        packet_globs=[],
+        output_path=tmp_path / "index.json",
+        min_packets=2,
+    )
+
+    assert index["passed"] is False
+    assert index["packet_count"] == 0
+    assert any("production_runtime_execution_allowed must be false" in reason for reason in index["failure_reasons"])
+    assert "validated packet count 0 below min_packets 2" in index["failure_reasons"]
+
+
 def test_validate_rejects_tampered_source_preview_summary(tmp_path: Path) -> None:
     preview_summary = _write_preview_summary(tmp_path)
     packet_path = tmp_path / "beta5_owner_feedback_packet.json"

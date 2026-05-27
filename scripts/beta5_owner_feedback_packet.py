@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from glob import glob
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 PACKET_SCHEMA = "beta5-owner-feedback-evidence-packet:v1"
 VALIDATION_SCHEMA = "beta5-owner-feedback-evidence-packet-validation:v1"
 WRITE_REPORT_SCHEMA = "beta5-owner-feedback-evidence-packet-write-report:v1"
+INDEX_SCHEMA = "beta5-owner-feedback-evidence-index:v1"
 SUMMARY_SCHEMA = "beta5-repeatable-preview-nightly-artifact:v1"
 VERDICTS = ("accepted", "needs_followup", "rejected")
 NON_CLAIMS = (
@@ -48,6 +50,12 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--packet", required=True)
     validate.add_argument("--output")
 
+    index = subparsers.add_parser("index", help="write cumulative owner feedback evidence index")
+    index.add_argument("--packet", action="append", default=[])
+    index.add_argument("--packet-glob", action="append", default=[])
+    index.add_argument("--output", required=True)
+    index.add_argument("--min-packets", type=int, default=1)
+
     args = parser.parse_args(argv)
     if args.command == "record":
         report = record_owner_feedback_packet(
@@ -65,11 +73,110 @@ def main(argv: list[str] | None = None) -> int:
         report = validate_owner_feedback_packet(Path(args.packet))
         if args.output:
             _write_json(Path(args.output), report)
+    elif args.command == "index":
+        report = write_owner_feedback_index(
+            packet_paths=[Path(path) for path in args.packet],
+            packet_globs=list(args.packet_glob),
+            output_path=Path(args.output),
+            min_packets=args.min_packets,
+        )
     else:
         raise AssertionError(f"unknown command: {args.command}")
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     validation = report.get("validation") or report
     return 0 if validation.get("passed") else 1
+
+
+def write_owner_feedback_index(
+    *,
+    packet_paths: list[Path],
+    packet_globs: list[str],
+    output_path: Path,
+    min_packets: int = 1,
+) -> dict[str, Any]:
+    paths = _collect_packet_paths(packet_paths, packet_globs)
+    failures: list[str] = []
+    if min_packets < 1:
+        failures.append("min_packets must be >= 1")
+    if not paths:
+        failures.append("at least one owner feedback packet path is required")
+
+    records: list[dict[str, Any]] = []
+    verdict_counts = {verdict: 0 for verdict in VERDICTS}
+    for path in paths:
+        validation = validate_owner_feedback_packet(path)
+        if validation["passed"] is not True:
+            failures.append(f"{path}: {validation['failure_reasons']}")
+            continue
+        packet = json.loads(path.read_text(encoding="utf-8"))
+        observation = packet["preview_observation"]
+        verdict = packet["feedback_verdict"]
+        verdict_counts[verdict] += 1
+        records.append(
+            {
+                "packet_path": str(path.resolve()),
+                "packet_sha256": validation["packet_sha256"],
+                "recorded_at": packet["recorded_at"],
+                "owner_id": packet["owner_id"],
+                "operator_id": packet["operator_id"],
+                "feedback_verdict": verdict,
+                "feedback_ref": packet["feedback_ref"],
+                "audit_ref": packet["audit_ref"],
+                "external_evidence_ref": packet["external_evidence_ref"],
+                "source_preview_summary": packet["source_preview_summary"],
+                "source_preview_run_root": packet["source_preview_run_root"],
+                "source_deploy_receipt_sha256": packet["source_deploy_receipt_sha256"],
+                "source_rollback_receipt_sha256": packet["source_rollback_receipt_sha256"],
+                "nodes": observation["nodes"],
+                "smoke_cycles": observation["smoke_cycles"],
+                "smoke_total_checks": observation["smoke_total_checks"],
+                "latency_ms_median": observation["latency_ms_median"],
+                "latency_ms_max": observation["latency_ms_max"],
+                "external_environment_provider": observation["external_environment_provider"],
+                "external_environment_classification": observation["external_environment_classification"],
+            }
+        )
+
+    records.sort(key=lambda item: (item["recorded_at"], item["packet_path"]))
+    if len(records) < min_packets:
+        failures.append(f"validated packet count {len(records)} below min_packets {min_packets}")
+
+    providers = sorted({record["external_environment_provider"] for record in records})
+    classifications = sorted({record["external_environment_classification"] for record in records})
+    if providers and providers != ["virtualbox"]:
+        failures.append("owner feedback index currently only supports virtualbox provider")
+    if classifications and classifications != ["external_preview"]:
+        failures.append("owner feedback index currently only supports external_preview classification")
+
+    total_smoke_checks = sum(record["smoke_total_checks"] for record in records)
+    max_latency = max((record["latency_ms_max"] for record in records), default=None)
+    accepted_count = verdict_counts["accepted"]
+    index = {
+        "schema_version": INDEX_SCHEMA,
+        "indexed_at": _now(),
+        "passed": not failures,
+        "failure_reasons": failures,
+        "packet_count": len(records),
+        "min_packets": min_packets,
+        "verdict_counts": verdict_counts,
+        "accepted_ratio": accepted_count / len(records) if records else 0.0,
+        "total_smoke_checks": total_smoke_checks,
+        "max_latency_ms_max": max_latency,
+        "external_environment_providers": providers,
+        "external_environment_classifications": classifications,
+        "records": records,
+        "production_deploy_allowed": False,
+        "production_runtime_execution_allowed": False,
+        "production_receipt_write_allowed": False,
+        "h3_production_readiness_claimed": False,
+        "h3_boundary": {
+            "h3_remains_blocked": True,
+            "h3_production_readiness_claimed": False,
+        },
+        "non_claims": list(NON_CLAIMS),
+    }
+    _write_json(output_path, index)
+    return index
 
 
 def record_owner_feedback_packet(
@@ -273,6 +380,23 @@ def _validate_summary_artifact(
         return
     if _sha256(path) != expected_sha:
         failures.append(f"preview summary {sha_field} does not match {path_field}")
+
+
+def _collect_packet_paths(packet_paths: list[Path], packet_globs: list[str]) -> list[Path]:
+    collected: list[Path] = []
+    for path in packet_paths:
+        collected.append(path)
+    for pattern in packet_globs:
+        collected.extend(Path(path) for path in glob(pattern))
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in collected:
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return sorted(unique, key=lambda path: str(path))
 
 
 def _artifact_ref(path: Path) -> dict[str, str]:
