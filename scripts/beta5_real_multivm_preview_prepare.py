@@ -339,7 +339,7 @@ summary = {{
     "h3_production_readiness_claimed": False,
     "observations": observations,
 }}
-(run_root / "multivm_real_service_smoke_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+(run_root / "multivm_real_service_smoke_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 print(json.dumps(summary, sort_keys=True))
 '''
 

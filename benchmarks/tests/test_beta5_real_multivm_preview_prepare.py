@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import py_compile
 import sys
 from pathlib import Path
 
@@ -63,6 +64,7 @@ def test_prepare_writes_fail_closed_multivm_preview_run_root(tmp_path: Path) -> 
     assert 'ssh -n "$SSH_HOST"' in deploy
     assert "api_only.next" in deploy
     assert "mv \"$REMOTE_ROOT/backend/api_only.next\" \"$REMOTE_ROOT/backend/api_only\"" in deploy
+    py_compile.compile(str(run_root / "smoke_multivm_real_service.py"), doraise=True)
     assert os.access(run_root / "deploy_multivm_real_service.sh", os.X_OK)
     assert os.access(run_root / "operator_commands.sh", os.X_OK)
 
