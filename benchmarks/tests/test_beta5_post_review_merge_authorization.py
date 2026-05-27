@@ -32,6 +32,7 @@ _load("beta3_git_publication_authorization", ROOT / "scripts" / "beta3_git_publi
 _load("beta3_git_commit_executor", ROOT / "scripts" / "beta3_git_commit_executor.py")
 _load("beta3_git_push_executor", ROOT / "scripts" / "beta3_git_push_executor.py")
 draft = _load("beta4_draft_pr_executor", ROOT / "scripts" / "beta4_draft_pr_executor.py")
+_load("beta4_ready_pr_transition_executor", ROOT / "scripts" / "beta4_ready_pr_transition_executor.py")
 review = _load("beta4_pr_review_evidence", ROOT / "scripts" / "beta4_pr_review_evidence.py")
 _load("beta_approval_sandbox_observation", ROOT / "scripts" / "beta_approval_sandbox_observation.py")
 ready_review = _load("beta4_ready_pr_review_evidence", ROOT / "scripts" / "beta4_ready_pr_review_evidence.py")
