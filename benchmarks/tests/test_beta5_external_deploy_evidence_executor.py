@@ -128,6 +128,40 @@ def test_external_deploy_blocks_failed_external_smoke(
     assert execution["deploy_receipt_path"] is None
 
 
+def test_external_deploy_cli_failed_smoke_returns_nonzero_without_receipt_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_receipt = _write_local_deploy_receipt(tmp_path, monkeypatch)
+    environment_proof = _write_environment_proof(tmp_path / "environment_proof.json")
+    authorization_path = tmp_path / "external_deploy_authorization.json"
+    module.record_external_deploy_authorization(
+        local_deploy_receipt_path=local_receipt,
+        environment_proof_path=environment_proof,
+        deploy_target="external-preview-fixture",
+        deploy_command=f"{sys.executable} -c \"print('deploy')\"",
+        external_smoke_command=f"{sys.executable} -c \"raise SystemExit(9)\"",
+        working_directory=tmp_path,
+        output_path=authorization_path,
+        operator_id="operator-001",
+        reason="failed smoke CLI fixture",
+        rollback_evidence_ref="rollback:failed-external-smoke-cli-fixture",
+        ack_external_controlled_deploy=True,
+    )
+
+    rc = module.main(
+        [
+            "deploy",
+            "--authorization",
+            str(authorization_path),
+            "--output-root",
+            str(tmp_path / "external-run"),
+        ]
+    )
+
+    assert rc == 1
+
+
 def test_external_deploy_receipt_rejects_production_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

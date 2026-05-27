@@ -125,10 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raise AssertionError(f"unknown command: {args.command}")
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    passed = report.get("receipt_validation", report.get("validation", report)).get("passed") and report.get(
-        "passed",
-        True,
-    )
+    validation = report.get("receipt_validation") or report.get("validation") or report
+    passed = validation.get("passed") and report.get("passed", True)
     return 0 if passed else 1
 
 
