@@ -27,6 +27,7 @@ RUNS_ROOT="${RUNS_ROOT:-runs/F1c}"
 MANIFEST="${MANIFEST:-benchmarks/v1/manifest.yaml}"
 WALL_CLOCK_PER_TICK_S="${WALL_CLOCK_PER_TICK_S:-60}"
 AGENT_IDS_FILE="$RUNS_ROOT/agent_ids.json"
+REUSE_AGENT_PROCESS="${REUSE_AGENT_PROCESS:-${BENCHMARK_REUSE_AGENT_PROCESS:-1}}"
 
 # Speed knobs (benchmark-only; production agents unaffected):
 #   LLM_DISABLE_THINKING=1  → ollama qwen3/deepseek-r1 skip <think> chain
@@ -65,6 +66,21 @@ TASKS="${TASKS:-$TASKS_DEFAULT}"
 
 mkdir -p "$RUNS_ROOT"
 
+reuse_agent_process_flag=""
+case "${REUSE_AGENT_PROCESS,,}" in
+    1|true|yes|on)
+        REUSE_AGENT_PROCESS="1"
+        reuse_agent_process_flag="--reuse-agent-process"
+        ;;
+    0|false|no|off)
+        REUSE_AGENT_PROCESS="0"
+        ;;
+    *)
+        echo "ERROR: REUSE_AGENT_PROCESS must be 1/0, true/false, yes/no, or on/off (got: $REUSE_AGENT_PROCESS)" >&2
+        exit 2
+        ;;
+esac
+
 if [ ! -f "$AGENT_IDS_FILE" ]; then
     echo "ERROR: $AGENT_IDS_FILE not found — run f1c_preflight first:" >&2
     echo "  $PYTHON -m benchmarks.f1c_preflight --backend-url $BACKEND_URL --runs-root $RUNS_ROOT" >&2
@@ -84,6 +100,7 @@ echo "  runs_root     : $RUNS_ROOT"
 echo "  agents        : $AGENTS"
 echo "  tasks         : ${TASKS:-<all 60>}"
 echo "  smoke mode    : $SMOKE"
+echo "  reuse process : $REUSE_AGENT_PROCESS"
 echo "  wall_clock/tick: ${WALL_CLOCK_PER_TICK_S}s"
 echo "════════════════════════════════════════════════════════════════════════"
 
@@ -167,7 +184,7 @@ else:
         --runs-root "$RUNS_ROOT" \
         --run-id "$RUN_ID" \
         $RESUME_FLAG \
-        --reuse-agent-process \
+        $reuse_agent_process_flag \
         --wall-clock-per-tick-s "$WALL_CLOCK_PER_TICK_S" \
         --backend-mode backend-tasks \
         --backend-url "$BACKEND_URL" \

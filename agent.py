@@ -21,6 +21,14 @@ from civitasos_runtime.models import Decision, DecisionSource
 log = logging.getLogger(__name__)
 
 
+def _benchmark_target_mode_enabled() -> bool:
+    """Return True when benchmark mode owns pool-claim routing."""
+    return bool(
+        os.getenv("BENCHMARK_BACKEND_TASK_ID")
+        or os.getenv("BENCHMARK_BACKEND_TASK_ID_FILE")
+    )
+
+
 def build_runner() -> AgentRunner:
     """从环境变量构建 AgentRunner。"""
     backend = os.getenv("CIVITASOS_URL", "http://localhost:8099")
@@ -68,6 +76,11 @@ def build_runner() -> AgentRunner:
     # 示例: 自动认领匹配 capabilities 的任务
     @runner.rule(priority=30, name="auto_claim_matching")
     def auto_claim_matching(briefing: dict, _memories: dict) -> Decision | None:
+        if _benchmark_target_mode_enabled():
+            # Benchmark target mode installs a higher-priority rule that owns
+            # the claim path. Returning None here lets the claimed target fall
+            # through to LLM execution instead of re-claiming and deadlocking.
+            return None
         wake_bias = briefing.get("backend_wake_action_bias")
         if isinstance(wake_bias, dict) and wake_bias.get("action") == "pool_claim":
             task_id = str(wake_bias.get("task_id") or "").strip()
