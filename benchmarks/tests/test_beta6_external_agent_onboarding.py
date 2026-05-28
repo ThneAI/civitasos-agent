@@ -112,6 +112,56 @@ def test_external_agent_onboarding_cli_validate_invitation(tmp_path: Path) -> No
     assert payload["passed"] is True
 
 
+def test_readiness_backed_invitation_hash_binds_beta6_readiness(tmp_path: Path) -> None:
+    readiness = _write_readiness(tmp_path)
+    invitation = tmp_path / "readiness_backed_invitation.json"
+
+    report = module.record_invitation(
+        external_agent_id="external-reviewer-001",
+        display_name="External Reviewer 001",
+        agent_kind="ai_agent",
+        capabilities=["code_review", "boundary_review"],
+        allowed_scopes=["review_only", "l1_controlled_message"],
+        contact_ref="github:external-reviewer-001",
+        reason="invite an external reviewer for controlled L1 review evidence",
+        output_path=invitation,
+        operator_id="external-agent-registrar-001",
+        expires_at="2099-01-01T00:00:00+00:00",
+        readiness_path=readiness,
+    )
+    payload = json.loads(invitation.read_text(encoding="utf-8"))
+
+    assert report["validation"]["passed"] is True
+    assert payload["source_onboarding_readiness"]["sha256"] == module._sha256(readiness)
+    assert payload["readiness_state"] == "ready_with_owner_followup"
+    assert payload["owner_followup_required"] is True
+    assert payload["registration_observed"] is False
+
+
+def test_readiness_backed_invitation_rejects_blocked_readiness(tmp_path: Path) -> None:
+    readiness = _write_readiness(tmp_path)
+    payload = json.loads(readiness.read_text(encoding="utf-8"))
+    payload["passed"] = False
+    payload["controlled_external_agent_invitation_allowed"] = False
+    payload["failure_reasons"] = ["blocked for test"]
+    readiness.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="readiness must have passed=true"):
+        module.record_invitation(
+            external_agent_id="external-reviewer-001",
+            display_name="External Reviewer 001",
+            agent_kind="ai_agent",
+            capabilities=["code_review"],
+            allowed_scopes=["review_only"],
+            contact_ref="github:external-reviewer-001",
+            reason="invite external reviewer for L1 boundary review",
+            output_path=tmp_path / "blocked.json",
+            operator_id="external-agent-registrar-001",
+            expires_at="2099-01-01T00:00:00+00:00",
+            readiness_path=readiness,
+        )
+
+
 def test_beta6_readiness_accepts_beta5_feedback_index_with_followup(tmp_path: Path) -> None:
     index = _write_feedback_index(tmp_path, accepted=1, followup=1)
 
@@ -204,4 +254,12 @@ def _write_feedback_index(
     }
     path = tmp_path / "beta5_owner_feedback_index.json"
     path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_readiness(tmp_path: Path) -> Path:
+    feedback_index = _write_feedback_index(tmp_path, accepted=1, followup=1)
+    readiness = module.validate_onboarding_readiness(feedback_index_path=feedback_index)
+    path = tmp_path / "beta6_readiness.json"
+    path.write_text(json.dumps(readiness, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

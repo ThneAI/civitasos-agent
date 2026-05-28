@@ -55,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     invite.add_argument("--output", required=True)
     invite.add_argument("--operator-id", default="external-agent-registrar-001")
     invite.add_argument("--expires-at")
+    invite.add_argument(
+        "--readiness",
+        help="optional Beta-6 readiness artifact to hash-bind invitation to Beta-5 feedback evidence",
+    )
 
     validate_invitation_cmd = subparsers.add_parser("validate-invitation", help="validate invitation")
     validate_invitation_cmd.add_argument("--invitation", required=True)
@@ -90,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path=Path(args.output),
             operator_id=args.operator_id,
             expires_at=args.expires_at,
+            readiness_path=Path(args.readiness) if args.readiness else None,
         )
     elif args.command == "validate-invitation":
         report = validate_invitation(Path(args.invitation))
@@ -174,8 +179,10 @@ def record_invitation(
     output_path: Path,
     operator_id: str,
     expires_at: str | None,
+    readiness_path: Path | None = None,
 ) -> dict[str, Any]:
     failures: list[str] = []
+    readiness = _load_valid_readiness(readiness_path, failures) if readiness_path else {}
     external_agent_id = _required_text(external_agent_id, "external_agent_id")
     display_name = _required_text(display_name, "display_name")
     contact_ref = _required_text(contact_ref, "contact_ref")
@@ -209,6 +216,9 @@ def record_invitation(
         "allowed_scopes": normalized_scopes,
         "contact_ref": contact_ref,
         "expires_at": expiry,
+        "source_onboarding_readiness": _artifact_ref(readiness_path) if readiness_path else None,
+        "readiness_state": readiness.get("readiness_state") if readiness else None,
+        "owner_followup_required": readiness.get("owner_followup_required") if readiness else None,
         "registration_observed": False,
         "controlled_task_invitation_allowed": False,
         "direct_task_execution_allowed": False,
@@ -229,6 +239,8 @@ def record_invitation(
         "invitation_path": str(output_path.resolve()),
         "invitation_sha256": _sha256(output_path),
         "external_agent_id": external_agent_id,
+        "readiness_state": readiness.get("readiness_state") if readiness else None,
+        "owner_followup_required": readiness.get("owner_followup_required") if readiness else None,
         "validation": validation,
         "non_claims": list(NON_CLAIMS),
     }
@@ -356,6 +368,24 @@ def _validate_invitation_shape(invitation: dict[str, Any], failures: list[str]) 
         failures.append("controlled_task_invitation_allowed must be false in invitation")
     if invitation.get("direct_task_execution_allowed") is not False:
         failures.append("direct_task_execution_allowed must be false")
+    readiness_ref = invitation.get("source_onboarding_readiness")
+    if readiness_ref is not None:
+        readiness_path = _validate_ref_bytes(
+            _as_ref(readiness_ref, failures, "source_onboarding_readiness"),
+            failures,
+            "source_onboarding_readiness",
+        )
+        readiness = _load_valid_readiness(readiness_path, failures)
+        if readiness:
+            if invitation.get("readiness_state") != readiness.get("readiness_state"):
+                failures.append("readiness_state must match source onboarding readiness")
+            if invitation.get("owner_followup_required") != readiness.get("owner_followup_required"):
+                failures.append("owner_followup_required must match source onboarding readiness")
+    else:
+        if invitation.get("readiness_state") is not None:
+            failures.append("readiness_state must be null when source_onboarding_readiness is absent")
+        if invitation.get("owner_followup_required") is not None:
+            failures.append("owner_followup_required must be null when source_onboarding_readiness is absent")
     _reject_forbidden_text(
         [
             _text(invitation.get("operator_id")),
@@ -369,6 +399,44 @@ def _validate_invitation_shape(invitation: dict[str, Any], failures: list[str]) 
     )
     _validate_no_merge_deploy_production(invitation, failures)
     _validate_h3_boundary(invitation, failures)
+
+
+def _load_valid_readiness(path: Path | None, failures: list[str]) -> dict[str, Any]:
+    if path is None:
+        return {}
+    readiness = _safe_read_json(path, failures, "Beta-6 onboarding readiness")
+    if not isinstance(readiness, dict):
+        return {}
+    _validate_readiness_artifact_shape(readiness, failures)
+    return readiness
+
+
+def _validate_readiness_artifact_shape(readiness: dict[str, Any], failures: list[str]) -> None:
+    if readiness.get("schema_version") != READINESS_SCHEMA:
+        failures.append(f"readiness schema_version must be {READINESS_SCHEMA}")
+    if readiness.get("passed") is not True:
+        failures.append("readiness must have passed=true")
+    if readiness.get("controlled_external_agent_invitation_allowed") is not True:
+        failures.append("readiness must allow controlled external Agent invitation")
+    if readiness.get("readiness_state") not in ("ready", "ready_with_owner_followup"):
+        failures.append("readiness_state must be ready or ready_with_owner_followup")
+    if not isinstance(readiness.get("owner_followup_required"), bool):
+        failures.append("owner_followup_required must be boolean")
+    if readiness.get("production_runtime_execution_allowed") is not False:
+        failures.append("readiness production_runtime_execution_allowed must be false")
+    if readiness.get("production_receipt_write_allowed") is not False:
+        failures.append("readiness production_receipt_write_allowed must be false")
+    if readiness.get("h3_boundary") != _h3_boundary():
+        failures.append("readiness h3_boundary must keep production readiness blocked")
+    index_ref = readiness.get("source_beta5_owner_feedback_index")
+    if index_ref is None:
+        failures.append("readiness source_beta5_owner_feedback_index must be present")
+    else:
+        _validate_ref_bytes(
+            _as_ref(index_ref, failures, "source_beta5_owner_feedback_index"),
+            failures,
+            "source_beta5_owner_feedback_index",
+        )
 
 
 def _validate_feedback_index_shape(
