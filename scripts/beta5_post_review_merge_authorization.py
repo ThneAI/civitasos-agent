@@ -22,6 +22,8 @@ from beta4_pr_review_evidence import PACKET_SCHEMA as REVIEW_PACKET_SCHEMA
 from beta4_pr_review_evidence import validate_review_evidence_packet
 from beta4_ready_pr_review_evidence import PACKET_SCHEMA as READY_REVIEW_PACKET_SCHEMA
 from beta4_ready_pr_review_evidence import validate_ready_pr_review_evidence_packet
+from beta9_review_reconciliation import RECONCILIATION_SCHEMA as REVIEW_RECONCILIATION_SCHEMA
+from beta9_review_reconciliation import validate_reconciliation
 
 
 AUTHORIZATION_SCHEMA = "beta5-post-review-merge-authorization:v1"
@@ -48,6 +50,10 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--operator-id", default="l1-controlled-pilot-operator")
     record.add_argument("--reason", required=True)
     record.add_argument("--rollback-evidence-ref", required=True)
+    record.add_argument(
+        "--review-reconciliation",
+        help="optional Beta-9 reconciliation artifact that must be ready for Beta-5 authorization",
+    )
 
     validate = subparsers.add_parser("validate", help="validate post-review merge authorization")
     validate.add_argument("--authorization", required=True)
@@ -61,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
             operator_id=args.operator_id,
             reason=args.reason,
             rollback_evidence_ref=args.rollback_evidence_ref,
+            review_reconciliation_path=Path(args.review_reconciliation) if args.review_reconciliation else None,
         )
     elif args.command == "validate":
         report = validate_post_review_merge_authorization(Path(args.authorization))
@@ -79,9 +86,15 @@ def record_post_review_merge_authorization(
     operator_id: str,
     reason: str,
     rollback_evidence_ref: str,
+    review_reconciliation_path: Path | None = None,
 ) -> dict[str, Any]:
     failures: list[str] = []
     packet = _load_approved_review_packet(review_evidence_packet_path, failures)
+    reconciliation = _load_ready_review_reconciliation(
+        review_reconciliation_path,
+        review_evidence_packet_path,
+        failures,
+    )
     operator_id = _required_text(operator_id, "operator_id")
     reason = _required_text(reason, "reason")
     rollback_evidence_ref = _required_text(rollback_evidence_ref, "rollback_evidence_ref")
@@ -98,6 +111,8 @@ def record_post_review_merge_authorization(
         "rollback_evidence_ref": rollback_evidence_ref,
         "source_review_evidence_packet": _artifact_ref(review_evidence_packet_path),
         "source_review_evidence_packet_schema": packet["schema_version"],
+        "source_review_reconciliation": _artifact_ref(review_reconciliation_path) if review_reconciliation_path else None,
+        "source_review_reconciliation_schema": reconciliation.get("schema_version") if reconciliation else None,
         "source_draft_pr_receipt": packet.get("source_draft_pr_receipt"),
         "source_git_push_receipt": packet.get("source_git_push_receipt"),
         "source_approval_observation": packet.get("source_approval_observation"),
@@ -149,6 +164,16 @@ def validate_post_review_merge_authorization(path: Path) -> dict[str, Any]:
     packet_ref = _as_ref(authorization.get("source_review_evidence_packet"), failures, "source_review_evidence_packet")
     packet_path = _validate_ref_bytes(packet_ref, failures, "source_review_evidence_packet")
     packet = _load_approved_review_packet(packet_path, failures)
+    reconciliation_ref = authorization.get("source_review_reconciliation")
+    if reconciliation_ref is not None:
+        reconciliation_path = _validate_ref_bytes(
+            _as_ref(reconciliation_ref, failures, "source_review_reconciliation"),
+            failures,
+            "source_review_reconciliation",
+        )
+        reconciliation = _load_ready_review_reconciliation(reconciliation_path, packet_path, failures)
+        if authorization.get("source_review_reconciliation_schema") != reconciliation.get("schema_version"):
+            failures.append("source_review_reconciliation_schema must match review reconciliation artifact")
     for field in (
         "request_id",
         "source_commit_id",
@@ -209,6 +234,40 @@ def _load_approved_review_packet(path: Path | None, failures: list[str]) -> dict
     if packet.get("github_review_approval_observed") is not True:
         failures.append("review evidence packet must observe GitHub review approval")
     return packet
+
+
+def _load_ready_review_reconciliation(
+    path: Path | None,
+    review_evidence_packet_path: Path | None,
+    failures: list[str],
+) -> dict[str, Any]:
+    if path is None:
+        return {}
+    validation = validate_reconciliation(path)
+    if validation.get("passed") is not True:
+        failures.extend(f"review reconciliation invalid: {reason}" for reason in validation.get("failure_reasons", []))
+    reconciliation = _safe_read_json(path, failures, "review reconciliation")
+    if not isinstance(reconciliation, dict):
+        return {}
+    if reconciliation.get("schema_version") != REVIEW_RECONCILIATION_SCHEMA:
+        failures.append(f"review reconciliation schema_version must be {REVIEW_RECONCILIATION_SCHEMA}")
+    if reconciliation.get("beta5_authorization_input_ready") is not True:
+        failures.append("review reconciliation must have beta5_authorization_input_ready=true")
+    if reconciliation.get("merge_authorized") is not False:
+        failures.append("review reconciliation must not authorize merge")
+    if reconciliation.get("deploy_allowed") is not False:
+        failures.append("review reconciliation must not allow deploy")
+    if reconciliation.get("h3_boundary") != _h3_boundary():
+        failures.append("review reconciliation must keep H.3 blocked")
+    if review_evidence_packet_path is not None:
+        source_pr = _as_ref(
+            reconciliation.get("source_pr_review_evidence"),
+            failures,
+            "review_reconciliation.source_pr_review_evidence",
+        )
+        if source_pr != _artifact_ref(review_evidence_packet_path):
+            failures.append("review reconciliation source_pr_review_evidence must match authorization review evidence packet")
+    return reconciliation
 
 
 def _validate_false_boundary_flags(payload: dict[str, Any], failures: list[str]) -> None:

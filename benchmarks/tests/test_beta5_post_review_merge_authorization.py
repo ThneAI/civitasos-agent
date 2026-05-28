@@ -36,9 +36,17 @@ _load("beta4_ready_pr_transition_executor", ROOT / "scripts" / "beta4_ready_pr_t
 review = _load("beta4_pr_review_evidence", ROOT / "scripts" / "beta4_pr_review_evidence.py")
 _load("beta_approval_sandbox_observation", ROOT / "scripts" / "beta_approval_sandbox_observation.py")
 ready_review = _load("beta4_ready_pr_review_evidence", ROOT / "scripts" / "beta4_ready_pr_review_evidence.py")
+beta6 = _load("beta6_external_agent_onboarding", ROOT / "scripts" / "beta6_external_agent_onboarding.py")
+beta7 = _load("beta7_external_agent_task_invitation", ROOT / "scripts" / "beta7_external_agent_task_invitation.py")
+beta8 = _load("beta8_external_agent_review_response", ROOT / "scripts" / "beta8_external_agent_review_response.py")
+beta9 = _load("beta9_review_reconciliation", ROOT / "scripts" / "beta9_review_reconciliation.py")
 review_tests = _load(
     "beta4_pr_review_evidence_fixture_for_beta5",
     ROOT / "benchmarks" / "tests" / "test_beta4_pr_review_evidence.py",
+)
+beta6_tests = _load(
+    "beta6_external_agent_onboarding_fixture_for_beta5",
+    ROOT / "benchmarks" / "tests" / "test_beta6_external_agent_onboarding.py",
 )
 module = _load(
     "beta5_post_review_merge_authorization",
@@ -90,6 +98,43 @@ def test_post_review_merge_authorization_accepts_ready_pr_approval_packet(tmp_pa
     assert authorization["pr"]["isDraft"] is False
     assert authorization["merge_authorized"] is True
     assert authorization["merge_performed"] is False
+
+
+def test_post_review_merge_authorization_hash_binds_ready_beta9_reconciliation(tmp_path: Path) -> None:
+    packet = _write_ready_review_packet(tmp_path)
+    reconciliation = _write_reconciliation(tmp_path, packet, verdict="approved", operator_decision="ready_for_beta5_authorization")
+    authorization_path = tmp_path / "beta5_ready_post_review_merge_authorization.json"
+
+    report = module.record_post_review_merge_authorization(
+        review_evidence_packet_path=packet,
+        review_reconciliation_path=reconciliation,
+        output_path=authorization_path,
+        operator_id="operator-001",
+        reason="approve sandbox ready PR after GitHub approval and Beta-9 reconciliation evidence",
+        rollback_evidence_ref="rollback:close-ready-pr-without-merge",
+    )
+    authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+
+    assert report["validation"]["passed"] is True
+    assert authorization["source_review_reconciliation"]["sha256"] == module._sha256(reconciliation)
+    assert authorization["source_review_reconciliation_schema"] == beta9.RECONCILIATION_SCHEMA
+    assert authorization["merge_authorized"] is True
+    assert authorization["merge_performed"] is False
+
+
+def test_post_review_merge_authorization_rejects_nonready_beta9_reconciliation(tmp_path: Path) -> None:
+    packet = _write_ready_review_packet(tmp_path)
+    reconciliation = _write_reconciliation(tmp_path, packet, verdict="commented", operator_decision="no_action")
+
+    with pytest.raises(ValueError, match="beta5_authorization_input_ready=true"):
+        module.record_post_review_merge_authorization(
+            review_evidence_packet_path=packet,
+            review_reconciliation_path=reconciliation,
+            output_path=tmp_path / "must-not-write.json",
+            operator_id="operator-001",
+            reason="cannot authorize merge from non-ready Beta-9 reconciliation",
+            rollback_evidence_ref="rollback:not-authorized",
+        )
 
 
 def test_post_review_merge_authorization_blocks_pending_review(
@@ -218,6 +263,81 @@ def _write_ready_review_packet(tmp_path: Path) -> Path:
     )
     assert report["validation"]["passed"] is True
     return packet
+
+
+def _write_reconciliation(
+    tmp_path: Path,
+    pr_packet: Path,
+    *,
+    verdict: str,
+    operator_decision: str,
+) -> Path:
+    registration = _write_external_registration(tmp_path)
+    brief = tmp_path / "task_brief.md"
+    brief.write_text("Review the PR review-state packet as upstream evidence only.\n", encoding="utf-8")
+    task_invitation = tmp_path / "task_invitation.json"
+    beta7.record_task_invitation(
+        registration_path=registration,
+        task_kind="github_pr_review",
+        task_title="Review PR review-state boundary",
+        task_brief_file=brief,
+        expected_output="review_verdict",
+        source_artifacts=[pr_packet],
+        reason="ask registered external reviewer for controlled PR review",
+        output_path=task_invitation,
+        operator_id="external-agent-task-coordinator-001",
+        due_at="2099-01-02T00:00:00+00:00",
+    )
+    response_file = tmp_path / "response.md"
+    response_file.write_text(f"Verdict: {verdict}. Upstream evidence only.\n", encoding="utf-8")
+    response = tmp_path / "review_response.json"
+    beta8.record_review_response(
+        task_invitation_path=task_invitation,
+        external_agent_id="external-reviewer-001",
+        response_channel="api_callback",
+        review_verdict=verdict,
+        response_file=response_file,
+        attestation_ref="attestation:external-reviewer-001:review-response-observed",
+        observer_actor_id="external-agent-observer-001",
+        reason="record external reviewer verdict as upstream evidence only",
+        output_path=response,
+    )
+    reconciliation = tmp_path / "reconciliation.json"
+    beta9.record_reconciliation(
+        review_response_path=response,
+        pr_review_evidence_path=pr_packet,
+        operator_decision=operator_decision,
+        reason="reconcile external reviewer verdict with GitHub review evidence",
+        output_path=reconciliation,
+        operator_id="post-review-reconciliation-operator-001",
+    )
+    return reconciliation
+
+
+def _write_external_registration(tmp_path: Path) -> Path:
+    invitation = tmp_path / "external_invitation.json"
+    beta6.record_invitation(
+        external_agent_id="external-reviewer-001",
+        display_name="External Reviewer 001",
+        agent_kind="ai_agent",
+        capabilities=["code_review", "boundary_review"],
+        allowed_scopes=["review_only", "l1_controlled_message"],
+        contact_ref="github:external-reviewer-001",
+        reason="invite an external reviewer for controlled L1 review evidence",
+        output_path=invitation,
+        operator_id="external-agent-registrar-001",
+        expires_at="2099-01-01T00:00:00+00:00",
+    )
+    card = beta6_tests._write_agent_card(tmp_path)
+    registration = tmp_path / "external_registration.json"
+    beta6.record_registration(
+        invitation_path=invitation,
+        agent_card_path=card,
+        attestation_ref="attestation:external-reviewer-001:accepted-l1-boundary",
+        observer_actor_id="external-agent-observer-001",
+        output_path=registration,
+    )
+    return registration
 
 
 def _fake_gh(receipt: dict[str, object], *, approved: bool):
