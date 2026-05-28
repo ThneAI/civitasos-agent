@@ -68,6 +68,12 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'RUN_BETA7_EXTERNAL_AGENT_TASK_INVITATION_CHECK="${RUN_BETA7_EXTERNAL_AGENT_TASK_INVITATION_CHECK:-0}"' in text
     assert 'RUN_BETA8_EXTERNAL_AGENT_REVIEW_RESPONSE_CHECK="${RUN_BETA8_EXTERNAL_AGENT_REVIEW_RESPONSE_CHECK:-0}"' in text
     assert 'RUN_BETA9_REVIEW_RECONCILIATION_CHECK="${RUN_BETA9_REVIEW_RECONCILIATION_CHECK:-0}"' in text
+    assert 'RUN_BETA6_9_REAL_API_REVIEW_RUNNER="${RUN_BETA6_9_REAL_API_REVIEW_RUNNER:-0}"' in text
+    assert 'BETA6_9_REAL_API_REVIEW_RUN_ROOT="${BETA6_9_REAL_API_REVIEW_RUN_ROOT:-$RUNS_ROOT/beta6_9_real_api_review}"' in text
+    assert 'BETA6_9_REAL_API_REVIEW_ENV_FILE="${BETA6_9_REAL_API_REVIEW_ENV_FILE:-.env.beta6.external.local}"' in text
+    assert 'BETA6_9_REAL_API_REVIEW_FEEDBACK_INDEX="${BETA6_9_REAL_API_REVIEW_FEEDBACK_INDEX:-$BETA6_EXTERNAL_AGENT_READINESS_FEEDBACK_INDEX}"' in text
+    assert 'BETA6_9_REAL_API_REVIEW_PR_REVIEW_EVIDENCE="${BETA6_9_REAL_API_REVIEW_PR_REVIEW_EVIDENCE:-$BETA4_READY_PR_REVIEW_EVIDENCE_PATH}"' in text
+    assert 'BETA6_9_REAL_API_REVIEW_PREVIEW_SUMMARY="${BETA6_9_REAL_API_REVIEW_PREVIEW_SUMMARY:-$BETA5_REPEATABLE_PREVIEW_SUMMARY}"' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
@@ -224,6 +230,10 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_BETA9_REVIEW_RECONCILIATION_CHECK" = "1" ]; then' in text
     assert "requires BETA9_REVIEW_RECONCILIATION_PATH" in text
     assert "scripts/beta9_review_reconciliation.py validate" in text
+    assert 'if [ "$RUN_BETA6_9_REAL_API_REVIEW_RUNNER" = "1" ]; then' in text
+    assert "requires BETA6_9_REAL_API_REVIEW_PR_REVIEW_EVIDENCE" in text
+    assert "scripts/beta6_9_real_api_review_runner.py" in text
+    assert '--model-max-tokens "$BETA6_9_REAL_API_REVIEW_MODEL_MAX_TOKENS"' in text
 
 
 def test_l1_contract_smoke_is_strict_service_token_signed_wake() -> None:
@@ -258,6 +268,7 @@ def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
 
     assert "benchmarks/run_l1_contract_smoke.sh" in text
     assert "benchmarks/run_beta0_real_model_pilot.sh" in text
+    assert "benchmarks/tests/test_beta6_9_real_api_review_runner.py" in text
     assert "benchmarks/run_l1_contract_smoke_scheduled.sh" in text
     assert "benchmarks/run_l1_repair_audit_packet_check.sh" in text
     assert "benchmarks/run_nightly_regression.sh" in text
