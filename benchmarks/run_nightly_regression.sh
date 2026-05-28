@@ -88,6 +88,7 @@ RUN_BETA4_READY_PR_REVIEW_EVIDENCE_CHECK="${RUN_BETA4_READY_PR_REVIEW_EVIDENCE_C
 BETA4_READY_PR_REVIEW_EVIDENCE_PATH="${BETA4_READY_PR_REVIEW_EVIDENCE_PATH:-}"
 RUN_BETA5_POST_REVIEW_MERGE_AUTHORIZATION_CHECK="${RUN_BETA5_POST_REVIEW_MERGE_AUTHORIZATION_CHECK:-0}"
 BETA5_POST_REVIEW_MERGE_AUTHORIZATION_PATH="${BETA5_POST_REVIEW_MERGE_AUTHORIZATION_PATH:-}"
+BETA5_POST_REVIEW_MERGE_RECONCILIATION_PATH="${BETA5_POST_REVIEW_MERGE_RECONCILIATION_PATH:-}"
 RUN_BETA5_GITHUB_MERGE_PREFLIGHT_CHECK="${RUN_BETA5_GITHUB_MERGE_PREFLIGHT_CHECK:-0}"
 BETA5_GITHUB_MERGE_AUTHORIZATION_PATH="${BETA5_GITHUB_MERGE_AUTHORIZATION_PATH:-}"
 BETA5_GITHUB_MERGE_PREFLIGHT_OUTPUT="${BETA5_GITHUB_MERGE_PREFLIGHT_OUTPUT:-$RUNS_ROOT/beta5_github_merge_preflight.json}"
@@ -1554,6 +1555,27 @@ if [ "$RUN_BETA5_POST_REVIEW_MERGE_AUTHORIZATION_CHECK" = "1" ]; then
   fi
   "$PYTHON" scripts/beta5_post_review_merge_authorization.py validate \
     --authorization "$BETA5_POST_REVIEW_MERGE_AUTHORIZATION_PATH"
+  if [ -n "$BETA5_POST_REVIEW_MERGE_RECONCILIATION_PATH" ]; then
+    "$PYTHON" - "$BETA5_POST_REVIEW_MERGE_AUTHORIZATION_PATH" "$BETA5_POST_REVIEW_MERGE_RECONCILIATION_PATH" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+authorization_path = Path(sys.argv[1])
+reconciliation_path = Path(sys.argv[2])
+authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+expected = {
+    "path": str(reconciliation_path.resolve()),
+    "sha256": hashlib.sha256(reconciliation_path.read_bytes()).hexdigest(),
+}
+if authorization.get("source_review_reconciliation") != expected:
+    raise SystemExit(
+        "BETA5_POST_REVIEW_MERGE_RECONCILIATION_PATH does not match "
+        "authorization.source_review_reconciliation"
+    )
+PY
+  fi
 fi
 
 if [ "$RUN_BETA5_GITHUB_MERGE_PREFLIGHT_CHECK" = "1" ]; then

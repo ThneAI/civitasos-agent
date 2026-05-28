@@ -40,6 +40,7 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'RUN_BETA4_PR_REVIEW_EVIDENCE_CHECK="${RUN_BETA4_PR_REVIEW_EVIDENCE_CHECK:-0}"' in text
     assert 'RUN_BETA4_READY_PR_REVIEW_EVIDENCE_CHECK="${RUN_BETA4_READY_PR_REVIEW_EVIDENCE_CHECK:-0}"' in text
     assert 'RUN_BETA5_POST_REVIEW_MERGE_AUTHORIZATION_CHECK="${RUN_BETA5_POST_REVIEW_MERGE_AUTHORIZATION_CHECK:-0}"' in text
+    assert 'BETA5_POST_REVIEW_MERGE_RECONCILIATION_PATH="${BETA5_POST_REVIEW_MERGE_RECONCILIATION_PATH:-}"' in text
     assert 'RUN_BETA5_GITHUB_MERGE_PREFLIGHT_CHECK="${RUN_BETA5_GITHUB_MERGE_PREFLIGHT_CHECK:-0}"' in text
     assert 'RUN_BETA5_GITHUB_MERGE_RECEIPT_CHECK="${RUN_BETA5_GITHUB_MERGE_RECEIPT_CHECK:-0}"' in text
     assert 'RUN_BETA5_LOCAL_DEPLOY_AUTHORIZATION_CHECK="${RUN_BETA5_LOCAL_DEPLOY_AUTHORIZATION_CHECK:-0}"' in text
@@ -162,6 +163,8 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_BETA5_POST_REVIEW_MERGE_AUTHORIZATION_CHECK" = "1" ]; then' in text
     assert "requires BETA5_POST_REVIEW_MERGE_AUTHORIZATION_PATH" in text
     assert "scripts/beta5_post_review_merge_authorization.py validate" in text
+    assert "BETA5_POST_REVIEW_MERGE_RECONCILIATION_PATH does not match" in text
+    assert "authorization.source_review_reconciliation" in text
     assert 'if [ "$RUN_BETA5_GITHUB_MERGE_PREFLIGHT_CHECK" = "1" ]; then' in text
     assert "requires BETA5_GITHUB_MERGE_AUTHORIZATION_PATH" in text
     assert "scripts/beta5_github_merge_executor.py preflight" in text
