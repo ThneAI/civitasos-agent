@@ -162,6 +162,58 @@ def test_readiness_backed_invitation_rejects_blocked_readiness(tmp_path: Path) -
         )
 
 
+def test_registration_request_hash_binds_invitation_without_opening_task_scope(tmp_path: Path) -> None:
+    readiness = _write_readiness(tmp_path)
+    invitation = tmp_path / "readiness_backed_invitation.json"
+    module.record_invitation(
+        external_agent_id="external-reviewer-001",
+        display_name="External Reviewer 001",
+        agent_kind="ai_agent",
+        capabilities=["code_review", "boundary_review"],
+        allowed_scopes=["review_only", "l1_controlled_message"],
+        contact_ref="github:external-reviewer-001",
+        reason="invite an external reviewer for controlled L1 review evidence",
+        output_path=invitation,
+        operator_id="external-agent-registrar-001",
+        expires_at="2099-01-01T00:00:00+00:00",
+        readiness_path=readiness,
+    )
+    request_path = tmp_path / "registration_request.json"
+
+    report = module.record_registration_request(
+        invitation_path=invitation,
+        output_path=request_path,
+        requester_id="external-agent-registrar-001",
+    )
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+
+    assert report["validation"]["passed"] is True
+    assert request["source_invitation"]["sha256"] == module._sha256(invitation)
+    assert request["expected_agent_card"]["agent_id"] == "external-reviewer-001"
+    assert request["required_attestation"]["attestation_ref_required"] is True
+    assert request["registration_observed"] is False
+    assert request["controlled_task_invitation_allowed"] is False
+    assert request["direct_task_execution_allowed"] is False
+
+
+def test_registration_request_rejects_expected_card_drift(tmp_path: Path) -> None:
+    invitation = _write_invitation(tmp_path)
+    request_path = tmp_path / "registration_request.json"
+    module.record_registration_request(
+        invitation_path=invitation,
+        output_path=request_path,
+        requester_id="external-agent-registrar-001",
+    )
+    payload = json.loads(request_path.read_text(encoding="utf-8"))
+    payload["expected_agent_card"]["contact_ref"] = "github:different-agent"
+    request_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    validation = module.validate_registration_request(request_path)
+
+    assert validation["passed"] is False
+    assert "external Agent card contact_ref must match invitation contact_ref" in validation["failure_reasons"]
+
+
 def test_beta6_readiness_accepts_beta5_feedback_index_with_followup(tmp_path: Path) -> None:
     index = _write_feedback_index(tmp_path, accepted=1, followup=1)
 

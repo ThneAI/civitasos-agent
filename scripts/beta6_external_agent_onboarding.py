@@ -22,6 +22,9 @@ INVITATION_SCHEMA = "beta6-external-agent-invitation:v1"
 INVITATION_VALIDATION_SCHEMA = "beta6-external-agent-invitation-validation:v1"
 INVITATION_WRITE_SCHEMA = "beta6-external-agent-invitation-write-report:v1"
 AGENT_CARD_SCHEMA = "beta6-external-agent-card:v1"
+REGISTRATION_REQUEST_SCHEMA = "beta6-external-agent-registration-request:v1"
+REGISTRATION_REQUEST_VALIDATION_SCHEMA = "beta6-external-agent-registration-request-validation:v1"
+REGISTRATION_REQUEST_WRITE_SCHEMA = "beta6-external-agent-registration-request-write-report:v1"
 REGISTRATION_SCHEMA = "beta6-external-agent-registration:v1"
 REGISTRATION_VALIDATION_SCHEMA = "beta6-external-agent-registration-validation:v1"
 REGISTRATION_WRITE_SCHEMA = "beta6-external-agent-registration-write-report:v1"
@@ -64,6 +67,21 @@ def main(argv: list[str] | None = None) -> int:
     validate_invitation_cmd.add_argument("--invitation", required=True)
     validate_invitation_cmd.add_argument("--output")
 
+    registration_request = subparsers.add_parser(
+        "record-registration-request",
+        help="write a hash-bound request for external Agent card and attestation",
+    )
+    registration_request.add_argument("--invitation", required=True)
+    registration_request.add_argument("--output", required=True)
+    registration_request.add_argument("--requester-id", default="external-agent-registrar-001")
+
+    validate_registration_request_cmd = subparsers.add_parser(
+        "validate-registration-request",
+        help="validate registration request",
+    )
+    validate_registration_request_cmd.add_argument("--registration-request", required=True)
+    validate_registration_request_cmd.add_argument("--output")
+
     register = subparsers.add_parser("record-registration", help="record observed external Agent registration")
     register.add_argument("--invitation", required=True)
     register.add_argument("--agent-card", required=True)
@@ -98,6 +116,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "validate-invitation":
         report = validate_invitation(Path(args.invitation))
+        if args.output:
+            _write_json(Path(args.output), report)
+    elif args.command == "record-registration-request":
+        report = record_registration_request(
+            invitation_path=Path(args.invitation),
+            output_path=Path(args.output),
+            requester_id=args.requester_id,
+        )
+    elif args.command == "validate-registration-request":
+        report = validate_registration_request(Path(args.registration_request))
         if args.output:
             _write_json(Path(args.output), report)
     elif args.command == "record-registration":
@@ -253,6 +281,108 @@ def validate_invitation(path: Path) -> dict[str, Any]:
         return _invitation_validation_report(path, failures or ["external Agent invitation must be an object"])
     _validate_invitation_shape(invitation, failures)
     return _invitation_validation_report(path, failures)
+
+
+def record_registration_request(
+    *,
+    invitation_path: Path,
+    output_path: Path,
+    requester_id: str,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    invitation = _load_valid_invitation(invitation_path, failures)
+    requester_id = _required_text(requester_id, "requester_id")
+    _reject_forbidden_text([requester_id], failures)
+    if failures:
+        raise ValueError(f"external Agent registration request blocked: {failures}")
+
+    request = {
+        "schema_version": REGISTRATION_REQUEST_SCHEMA,
+        "recorded_at": _now(),
+        "request_scope": "external_agent_registration_intake_only",
+        "requester_id": requester_id,
+        "source_invitation": _artifact_ref(invitation_path),
+        "expected_agent_card": _expected_agent_card(invitation),
+        "required_attestation": {
+            "attestation_ref_required": True,
+            "observer_actor_id_required": True,
+        },
+        "registration_observed": False,
+        "controlled_task_invitation_allowed": False,
+        "direct_task_execution_allowed": False,
+        "merge_allowed": False,
+        "deploy_allowed": False,
+        "production_runtime_execution_allowed": False,
+        "production_receipt_write_allowed": False,
+        "h3_boundary": _h3_boundary(),
+        "non_claims": list(NON_CLAIMS),
+    }
+    _write_json(output_path, request)
+    validation = validate_registration_request(output_path)
+    if validation["passed"] is not True:
+        raise ValueError(f"written external Agent registration request failed validation: {validation['failure_reasons']}")
+    return {
+        "schema_version": REGISTRATION_REQUEST_WRITE_SCHEMA,
+        "registration_request_written": True,
+        "registration_request_path": str(output_path.resolve()),
+        "registration_request_sha256": _sha256(output_path),
+        "external_agent_id": invitation["external_agent_id"],
+        "validation": validation,
+        "non_claims": list(NON_CLAIMS),
+    }
+
+
+def validate_registration_request(path: Path) -> dict[str, Any]:
+    failures: list[str] = []
+    request = _safe_read_json(path, failures, "external Agent registration request")
+    if not isinstance(request, dict):
+        return _registration_request_validation_report(
+            path,
+            failures or ["external Agent registration request must be an object"],
+        )
+    if request.get("schema_version") != REGISTRATION_REQUEST_SCHEMA:
+        failures.append(f"schema_version must be {REGISTRATION_REQUEST_SCHEMA}")
+    if request.get("request_scope") != "external_agent_registration_intake_only":
+        failures.append("request_scope must be external_agent_registration_intake_only")
+    if not _text(request.get("requester_id")):
+        failures.append("requester_id must be a non-empty string")
+    invitation_ref = _as_ref(request.get("source_invitation"), failures, "source_invitation")
+    invitation_path = _validate_ref_bytes(invitation_ref, failures, "source_invitation")
+    invitation = _load_valid_invitation(invitation_path, failures)
+    expected_card = request.get("expected_agent_card")
+    if not isinstance(expected_card, dict):
+        failures.append("expected_agent_card must be an object")
+        expected_card = {}
+    if expected_card.get("schema_version") != AGENT_CARD_SCHEMA:
+        failures.append(f"expected_agent_card.schema_version must be {AGENT_CARD_SCHEMA}")
+    _validate_agent_card_matches_invitation(expected_card, invitation, failures)
+    required_attestation = request.get("required_attestation")
+    if not isinstance(required_attestation, dict):
+        failures.append("required_attestation must be an object")
+        required_attestation = {}
+    if required_attestation.get("attestation_ref_required") is not True:
+        failures.append("required_attestation.attestation_ref_required must be true")
+    if required_attestation.get("observer_actor_id_required") is not True:
+        failures.append("required_attestation.observer_actor_id_required must be true")
+    if request.get("registration_observed") is not False:
+        failures.append("registration_observed must be false in registration request")
+    if request.get("controlled_task_invitation_allowed") is not False:
+        failures.append("controlled_task_invitation_allowed must be false in registration request")
+    if request.get("direct_task_execution_allowed") is not False:
+        failures.append("direct_task_execution_allowed must be false")
+    _reject_forbidden_text(
+        [
+            _text(request.get("requester_id")),
+            _text(expected_card.get("agent_id")),
+            _text(expected_card.get("display_name")),
+            _text(expected_card.get("contact_ref")),
+            *_string_list(expected_card.get("capabilities")),
+        ],
+        failures,
+    )
+    _validate_no_merge_deploy_production(request, failures)
+    _validate_h3_boundary(request, failures)
+    return _registration_request_validation_report(path, failures)
 
 
 def record_registration(
@@ -439,6 +569,22 @@ def _validate_readiness_artifact_shape(readiness: dict[str, Any], failures: list
         )
 
 
+def _expected_agent_card(invitation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": AGENT_CARD_SCHEMA,
+        "agent_id": invitation["external_agent_id"],
+        "display_name": invitation["display_name"],
+        "agent_kind": invitation["agent_kind"],
+        "capabilities": invitation["capabilities"],
+        "contact_ref": invitation["contact_ref"],
+        "non_claims": [
+            "external_agent_card_does_not_authorize_task_execution",
+            "external_agent_card_does_not_authorize_merge_or_deploy",
+            "external_agent_card_does_not_authorize_production_runtime",
+        ],
+    }
+
+
 def _validate_feedback_index_shape(
     index: dict[str, Any],
     min_packets: int,
@@ -604,6 +750,18 @@ def _invitation_validation_report(path: Path, failures: list[str]) -> dict[str, 
         "checked_at": _now(),
         "invitation_path": str(path.resolve()),
         "invitation_sha256": _sha256(path) if path.is_file() else None,
+        "non_claims": list(NON_CLAIMS),
+    }
+
+
+def _registration_request_validation_report(path: Path, failures: list[str]) -> dict[str, Any]:
+    return {
+        "schema_version": REGISTRATION_REQUEST_VALIDATION_SCHEMA,
+        "passed": not failures,
+        "failure_reasons": failures,
+        "checked_at": _now(),
+        "registration_request_path": str(path.resolve()),
+        "registration_request_sha256": _sha256(path) if path.is_file() else None,
         "non_claims": list(NON_CLAIMS),
     }
 
