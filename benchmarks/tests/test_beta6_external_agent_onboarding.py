@@ -112,6 +112,36 @@ def test_external_agent_onboarding_cli_validate_invitation(tmp_path: Path) -> No
     assert payload["passed"] is True
 
 
+def test_beta6_readiness_accepts_beta5_feedback_index_with_followup(tmp_path: Path) -> None:
+    index = _write_feedback_index(tmp_path, accepted=1, followup=1)
+
+    readiness = module.validate_onboarding_readiness(feedback_index_path=index)
+
+    assert readiness["passed"] is True
+    assert readiness["readiness_state"] == "ready_with_owner_followup"
+    assert readiness["controlled_external_agent_invitation_allowed"] is True
+    assert readiness["owner_followup_required"] is True
+    assert readiness["observed_packet_count"] == 2
+    assert readiness["observed_accepted_ratio"] == 0.5
+    assert readiness["production_runtime_execution_allowed"] is False
+    assert readiness["h3_boundary"]["h3_remains_blocked"] is True
+
+
+def test_beta6_readiness_blocks_rejected_feedback_or_low_acceptance(tmp_path: Path) -> None:
+    rejected = _write_feedback_index(tmp_path / "rejected", accepted=1, followup=0, rejected=1)
+    rejected_readiness = module.validate_onboarding_readiness(feedback_index_path=rejected)
+
+    assert rejected_readiness["passed"] is False
+    assert "feedback index must not contain rejected owner feedback" in rejected_readiness["failure_reasons"]
+    assert rejected_readiness["controlled_external_agent_invitation_allowed"] is False
+
+    low_acceptance = _write_feedback_index(tmp_path / "low", accepted=0, followup=2)
+    low_readiness = module.validate_onboarding_readiness(feedback_index_path=low_acceptance)
+
+    assert low_readiness["passed"] is False
+    assert "feedback index accepted_ratio 0.0 below required 0.5" in low_readiness["failure_reasons"]
+
+
 def _write_invitation(tmp_path: Path) -> Path:
     invitation = tmp_path / "invitation.json"
     module.record_invitation(
@@ -144,4 +174,34 @@ def _write_agent_card(tmp_path: Path, *, agent_id: str = "external-reviewer-001"
     }
     path = tmp_path / "agent_card.json"
     path.write_text(json.dumps(card, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_feedback_index(
+    tmp_path: Path,
+    *,
+    accepted: int,
+    followup: int,
+    rejected: int = 0,
+) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    packet_count = accepted + followup + rejected
+    index = {
+        "schema_version": module.BETA5_FEEDBACK_INDEX_SCHEMA,
+        "passed": True,
+        "packet_count": packet_count,
+        "accepted_ratio": accepted / packet_count if packet_count else 0.0,
+        "verdict_counts": {
+            "accepted": accepted,
+            "needs_followup": followup,
+            "rejected": rejected,
+        },
+        "production_deploy_allowed": False,
+        "production_runtime_execution_allowed": False,
+        "production_receipt_write_allowed": False,
+        "h3_production_readiness_claimed": False,
+        "h3_boundary": module._h3_boundary(),
+    }
+    path = tmp_path / "beta5_owner_feedback_index.json"
+    path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

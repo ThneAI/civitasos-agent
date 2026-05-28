@@ -25,6 +25,8 @@ AGENT_CARD_SCHEMA = "beta6-external-agent-card:v1"
 REGISTRATION_SCHEMA = "beta6-external-agent-registration:v1"
 REGISTRATION_VALIDATION_SCHEMA = "beta6-external-agent-registration-validation:v1"
 REGISTRATION_WRITE_SCHEMA = "beta6-external-agent-registration-write-report:v1"
+READINESS_SCHEMA = "beta6-external-agent-onboarding-readiness:v1"
+BETA5_FEEDBACK_INDEX_SCHEMA = "beta5-owner-feedback-evidence-index:v1"
 AGENT_KINDS = ("ai_agent", "human_operator", "service_agent")
 ALLOWED_SCOPES = ("proposal_only", "review_only", "audit_observation", "l1_controlled_message")
 FORBIDDEN_TOKENS = ("TODO", "REPLACE", "PLACEHOLDER", "TEMPLATE_ONLY")
@@ -69,6 +71,12 @@ def main(argv: list[str] | None = None) -> int:
     validate_registration_cmd.add_argument("--registration", required=True)
     validate_registration_cmd.add_argument("--output")
 
+    readiness_cmd = subparsers.add_parser("validate-readiness", help="validate Beta-6 onboarding readiness from Beta-5 owner feedback index")
+    readiness_cmd.add_argument("--feedback-index", required=True)
+    readiness_cmd.add_argument("--output")
+    readiness_cmd.add_argument("--min-packets", type=int, default=2)
+    readiness_cmd.add_argument("--min-accepted-ratio", type=float, default=0.5)
+
     args = parser.parse_args(argv)
     if args.command == "record-invitation":
         report = record_invitation(
@@ -99,10 +107,59 @@ def main(argv: list[str] | None = None) -> int:
         report = validate_registration(Path(args.registration))
         if args.output:
             _write_json(Path(args.output), report)
+    elif args.command == "validate-readiness":
+        report = validate_onboarding_readiness(
+            feedback_index_path=Path(args.feedback_index),
+            min_packets=args.min_packets,
+            min_accepted_ratio=args.min_accepted_ratio,
+        )
+        if args.output:
+            _write_json(Path(args.output), report)
     else:
         raise AssertionError(f"unknown command: {args.command}")
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if report.get("validation", report).get("passed") else 1
+
+
+def validate_onboarding_readiness(
+    *,
+    feedback_index_path: Path,
+    min_packets: int = 2,
+    min_accepted_ratio: float = 0.5,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    index = _safe_read_json(feedback_index_path, failures, "Beta-5 owner feedback index")
+    if min_packets < 1:
+        failures.append("min_packets must be >= 1")
+    if not 0 <= min_accepted_ratio <= 1:
+        failures.append("min_accepted_ratio must be between 0 and 1")
+    if not isinstance(index, dict):
+        index = {}
+    _validate_feedback_index_shape(index, min_packets, min_accepted_ratio, failures)
+    verdict_counts = index.get("verdict_counts") if isinstance(index.get("verdict_counts"), dict) else {}
+    followup_count = int(verdict_counts.get("needs_followup", 0) or 0)
+    readiness_state = "blocked"
+    if not failures:
+        readiness_state = "ready_with_owner_followup" if followup_count else "ready"
+    return {
+        "schema_version": READINESS_SCHEMA,
+        "checked_at": _now(),
+        "passed": not failures,
+        "failure_reasons": failures,
+        "readiness_state": readiness_state,
+        "controlled_external_agent_invitation_allowed": not failures,
+        "owner_followup_required": not failures and followup_count > 0,
+        "source_beta5_owner_feedback_index": _artifact_ref(feedback_index_path) if feedback_index_path.is_file() else None,
+        "required_min_packets": min_packets,
+        "required_min_accepted_ratio": min_accepted_ratio,
+        "observed_packet_count": index.get("packet_count"),
+        "observed_accepted_ratio": index.get("accepted_ratio"),
+        "observed_verdict_counts": verdict_counts,
+        "production_runtime_execution_allowed": False,
+        "production_receipt_write_allowed": False,
+        "h3_boundary": _h3_boundary(),
+        "non_claims": list(NON_CLAIMS),
+    }
 
 
 def record_invitation(
@@ -312,6 +369,41 @@ def _validate_invitation_shape(invitation: dict[str, Any], failures: list[str]) 
     )
     _validate_no_merge_deploy_production(invitation, failures)
     _validate_h3_boundary(invitation, failures)
+
+
+def _validate_feedback_index_shape(
+    index: dict[str, Any],
+    min_packets: int,
+    min_accepted_ratio: float,
+    failures: list[str],
+) -> None:
+    if index.get("schema_version") != BETA5_FEEDBACK_INDEX_SCHEMA:
+        failures.append(f"feedback index schema_version must be {BETA5_FEEDBACK_INDEX_SCHEMA}")
+    if index.get("passed") is not True:
+        failures.append("feedback index must have passed=true")
+    packet_count = index.get("packet_count")
+    if not isinstance(packet_count, int):
+        failures.append("feedback index packet_count must be an integer")
+    elif packet_count < min_packets:
+        failures.append(f"feedback index packet_count {packet_count} below required {min_packets}")
+    accepted_ratio = index.get("accepted_ratio")
+    if not isinstance(accepted_ratio, int | float):
+        failures.append("feedback index accepted_ratio must be numeric")
+    elif accepted_ratio < min_accepted_ratio:
+        failures.append(f"feedback index accepted_ratio {accepted_ratio} below required {min_accepted_ratio}")
+    verdict_counts = index.get("verdict_counts")
+    if not isinstance(verdict_counts, dict):
+        failures.append("feedback index verdict_counts must be an object")
+    else:
+        if int(verdict_counts.get("rejected", 0) or 0) > 0:
+            failures.append("feedback index must not contain rejected owner feedback")
+    if index.get("production_deploy_allowed") is not False:
+        failures.append("feedback index production_deploy_allowed must be false")
+    for field in ("production_runtime_execution_allowed", "production_receipt_write_allowed", "h3_production_readiness_claimed"):
+        if index.get(field) is not False:
+            failures.append(f"feedback index {field} must be false")
+    if index.get("h3_boundary") != _h3_boundary():
+        failures.append("feedback index h3_boundary must keep production readiness blocked")
 
 
 def _load_valid_invitation(path: Path | None, failures: list[str]) -> dict[str, Any]:

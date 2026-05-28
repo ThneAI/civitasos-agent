@@ -59,6 +59,9 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'RUN_BETA5_OWNER_FEEDBACK_INDEX="${RUN_BETA5_OWNER_FEEDBACK_INDEX:-0}"' in text
     assert 'BETA5_OWNER_FEEDBACK_INDEX_PACKET_PATHS="${BETA5_OWNER_FEEDBACK_INDEX_PACKET_PATHS:-$BETA5_OWNER_FEEDBACK_PACKET_PATH}"' in text
     assert 'BETA5_OWNER_FEEDBACK_INDEX_OUTPUT="${BETA5_OWNER_FEEDBACK_INDEX_OUTPUT:-$RUNS_ROOT/beta5_owner_feedback_index.json}"' in text
+    assert 'RUN_BETA6_EXTERNAL_AGENT_READINESS_CHECK="${RUN_BETA6_EXTERNAL_AGENT_READINESS_CHECK:-0}"' in text
+    assert 'BETA6_EXTERNAL_AGENT_READINESS_FEEDBACK_INDEX="${BETA6_EXTERNAL_AGENT_READINESS_FEEDBACK_INDEX:-$BETA5_OWNER_FEEDBACK_INDEX_OUTPUT}"' in text
+    assert 'BETA6_EXTERNAL_AGENT_READINESS_MIN_ACCEPTED_RATIO="${BETA6_EXTERNAL_AGENT_READINESS_MIN_ACCEPTED_RATIO:-0.5}"' in text
     assert 'RUN_BETA6_EXTERNAL_AGENT_INVITATION_CHECK="${RUN_BETA6_EXTERNAL_AGENT_INVITATION_CHECK:-0}"' in text
     assert 'RUN_BETA6_EXTERNAL_AGENT_REGISTRATION_CHECK="${RUN_BETA6_EXTERNAL_AGENT_REGISTRATION_CHECK:-0}"' in text
     assert 'RUN_BETA7_EXTERNAL_AGENT_TASK_INVITATION_CHECK="${RUN_BETA7_EXTERNAL_AGENT_TASK_INVITATION_CHECK:-0}"' in text
@@ -199,6 +202,10 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_BETA5_OWNER_FEEDBACK_INDEX" = "1" ]; then' in text
     assert '--min-packets "$BETA5_OWNER_FEEDBACK_INDEX_MIN_PACKETS"' in text
     assert "scripts/beta5_owner_feedback_packet.py index" in text
+    assert 'if [ "$RUN_BETA6_EXTERNAL_AGENT_READINESS_CHECK" = "1" ]; then' in text
+    assert "scripts/beta6_external_agent_onboarding.py validate-readiness" in text
+    assert '--feedback-index "$BETA6_EXTERNAL_AGENT_READINESS_FEEDBACK_INDEX"' in text
+    assert '--min-accepted-ratio "$BETA6_EXTERNAL_AGENT_READINESS_MIN_ACCEPTED_RATIO"' in text
     assert 'if [ "$RUN_BETA6_EXTERNAL_AGENT_INVITATION_CHECK" = "1" ]; then' in text
     assert "requires BETA6_EXTERNAL_AGENT_INVITATION_PATH" in text
     assert "scripts/beta6_external_agent_onboarding.py validate-invitation" in text
