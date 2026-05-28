@@ -22,6 +22,7 @@ INVITATION_SCHEMA = "beta6-external-agent-invitation:v1"
 INVITATION_VALIDATION_SCHEMA = "beta6-external-agent-invitation-validation:v1"
 INVITATION_WRITE_SCHEMA = "beta6-external-agent-invitation-write-report:v1"
 AGENT_CARD_SCHEMA = "beta6-external-agent-card:v1"
+AGENT_CARD_INTAKE_REPORT_SCHEMA = "beta6-external-agent-card-intake-report:v1"
 REGISTRATION_REQUEST_SCHEMA = "beta6-external-agent-registration-request:v1"
 REGISTRATION_REQUEST_VALIDATION_SCHEMA = "beta6-external-agent-registration-request-validation:v1"
 REGISTRATION_REQUEST_WRITE_SCHEMA = "beta6-external-agent-registration-request-write-report:v1"
@@ -82,6 +83,15 @@ def main(argv: list[str] | None = None) -> int:
     validate_registration_request_cmd.add_argument("--registration-request", required=True)
     validate_registration_request_cmd.add_argument("--output")
 
+    agent_card = subparsers.add_parser(
+        "write-agent-card-from-env",
+        help="write a sanitized external Agent card from a local-only API credential env file",
+    )
+    agent_card.add_argument("--registration-request", required=True)
+    agent_card.add_argument("--env-file", required=True)
+    agent_card.add_argument("--output", required=True)
+    agent_card.add_argument("--report-output")
+
     register = subparsers.add_parser("record-registration", help="record observed external Agent registration")
     register.add_argument("--invitation", required=True)
     register.add_argument("--agent-card", required=True)
@@ -128,6 +138,14 @@ def main(argv: list[str] | None = None) -> int:
         report = validate_registration_request(Path(args.registration_request))
         if args.output:
             _write_json(Path(args.output), report)
+    elif args.command == "write-agent-card-from-env":
+        report = write_agent_card_from_env(
+            registration_request_path=Path(args.registration_request),
+            env_file_path=Path(args.env_file),
+            output_path=Path(args.output),
+        )
+        if args.report_output:
+            _write_json(Path(args.report_output), report)
     elif args.command == "record-registration":
         report = record_registration(
             invitation_path=Path(args.invitation),
@@ -385,6 +403,62 @@ def validate_registration_request(path: Path) -> dict[str, Any]:
     return _registration_request_validation_report(path, failures)
 
 
+def write_agent_card_from_env(
+    *,
+    registration_request_path: Path,
+    env_file_path: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    request = _load_valid_registration_request(registration_request_path, failures)
+    env = _read_env_file(env_file_path, failures)
+    base_url = _required_env(env, "BETA6_EXTERNAL_AGENT_API_BASE_URL", failures)
+    model = _required_env(env, "BETA6_EXTERNAL_AGENT_MODEL", failures)
+    api_key = _required_env(env, "BETA6_EXTERNAL_AGENT_API_KEY", failures)
+    provider = _text(env.get("BETA6_EXTERNAL_AGENT_PROVIDER")) or "openai_compatible"
+    _reject_forbidden_text([base_url, model, api_key, provider], failures)
+    if failures:
+        raise ValueError(f"external Agent card intake blocked: {failures}")
+
+    expected_card = request["expected_agent_card"]
+    card = dict(expected_card)
+    card["external_api"] = {
+        "provider": provider,
+        "base_url": base_url.rstrip("/"),
+        "model": model,
+        "credential_source": str(env_file_path.resolve()),
+        "api_key_present": True,
+        "api_key_redacted": True,
+    }
+    card["non_claims"] = sorted(set(_string_list(card.get("non_claims")) + [
+        "external_agent_api_key_is_local_only_and_not_recorded",
+        "external_agent_card_does_not_prove_provider_runtime_success",
+        "external_agent_card_does_not_authorize_controlled_task_invitation",
+    ]))
+    _write_json(output_path, card)
+    validation_failures: list[str] = []
+    _load_agent_card(output_path, validation_failures)
+    if _file_contains_secret(output_path, api_key):
+        validation_failures.append("agent card must not contain API key bytes")
+    if validation_failures:
+        raise ValueError(f"written external Agent card failed validation: {validation_failures}")
+    return {
+        "schema_version": AGENT_CARD_INTAKE_REPORT_SCHEMA,
+        "agent_card_written": True,
+        "agent_card_path": str(output_path.resolve()),
+        "agent_card_sha256": _sha256(output_path),
+        "source_registration_request": _artifact_ref(registration_request_path),
+        "credential_env_file": str(env_file_path.resolve()),
+        "api_key_present": True,
+        "api_key_recorded": False,
+        "external_api": card["external_api"],
+        "non_claims": list(NON_CLAIMS) + [
+            "agent_card_intake_does_not_store_api_key",
+            "agent_card_intake_does_not_call_external_provider",
+        ],
+    }
+
+
 def record_registration(
     *,
     invitation_path: Path,
@@ -630,6 +704,19 @@ def _load_valid_invitation(path: Path | None, failures: list[str]) -> dict[str, 
     return invitation if isinstance(invitation, dict) else {}
 
 
+def _load_valid_registration_request(path: Path | None, failures: list[str]) -> dict[str, Any]:
+    if path is None:
+        return {}
+    validation = validate_registration_request(path)
+    if validation.get("passed") is not True:
+        failures.extend(
+            f"external Agent registration request invalid: {reason}"
+            for reason in validation.get("failure_reasons", [])
+        )
+    request = _safe_read_json(path, failures, "external Agent registration request")
+    return request if isinstance(request, dict) else {}
+
+
 def _load_agent_card(path: Path | None, failures: list[str]) -> dict[str, Any]:
     card = _safe_read_json(path, failures, "external Agent card")
     if not isinstance(card, dict):
@@ -817,6 +904,41 @@ def _safe_read_json(path: Path | None, failures: list[str], label: str) -> Any:
         failures.append(f"{label} must be a JSON object")
         return None
     return payload
+
+
+def _read_env_file(path: Path, failures: list[str]) -> dict[str, str]:
+    if not path.is_file():
+        failures.append(f"env file is not a file: {path}")
+        return {}
+    env: dict[str, str] = {}
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            failures.append(f"env file line {line_number} must be KEY=VALUE")
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if not key:
+            failures.append(f"env file line {line_number} has empty key")
+            continue
+        env[key] = value
+    return env
+
+
+def _required_env(env: dict[str, str], key: str, failures: list[str]) -> str:
+    value = _text(env.get(key))
+    if not value:
+        failures.append(f"{key} must be set in env file")
+    return value
+
+
+def _file_contains_secret(path: Path, secret: str) -> bool:
+    if not secret:
+        return False
+    return secret.encode("utf-8") in path.read_bytes()
 
 
 def _required_text(value: Any, field: str) -> str:

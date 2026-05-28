@@ -214,6 +214,76 @@ def test_registration_request_rejects_expected_card_drift(tmp_path: Path) -> Non
     assert "external Agent card contact_ref must match invitation contact_ref" in validation["failure_reasons"]
 
 
+def test_agent_card_from_env_redacts_api_key_and_can_register(tmp_path: Path) -> None:
+    invitation = _write_invitation(tmp_path)
+    request_path = tmp_path / "registration_request.json"
+    module.record_registration_request(
+        invitation_path=invitation,
+        output_path=request_path,
+        requester_id="external-agent-registrar-001",
+    )
+    env_file = tmp_path / ".env.beta6.external.local"
+    secret = "sk-test-secret-must-not-appear"
+    env_file.write_text(
+        "\n".join([
+            "BETA6_EXTERNAL_AGENT_PROVIDER=openai_compatible",
+            "BETA6_EXTERNAL_AGENT_API_BASE_URL=https://external-agent.example/v1",
+            "BETA6_EXTERNAL_AGENT_MODEL=external-reviewer-model",
+            f"BETA6_EXTERNAL_AGENT_API_KEY={secret}",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    agent_card = tmp_path / "agent_card.json"
+
+    report = module.write_agent_card_from_env(
+        registration_request_path=request_path,
+        env_file_path=env_file,
+        output_path=agent_card,
+    )
+    card_bytes = agent_card.read_bytes()
+    report_text = json.dumps(report, sort_keys=True)
+    registration = tmp_path / "registration.json"
+    registration_report = module.record_registration(
+        invitation_path=invitation,
+        agent_card_path=agent_card,
+        attestation_ref="operator-attested-api-endpoint:external-reviewer-001",
+        observer_actor_id="external-agent-observer-001",
+        output_path=registration,
+    )
+
+    assert report["api_key_present"] is True
+    assert report["api_key_recorded"] is False
+    assert secret.encode("utf-8") not in card_bytes
+    assert secret not in report_text
+    assert report["external_api"]["base_url"] == "https://external-agent.example/v1"
+    assert registration_report["validation"]["passed"] is True
+
+
+def test_agent_card_from_env_requires_api_key(tmp_path: Path) -> None:
+    invitation = _write_invitation(tmp_path)
+    request_path = tmp_path / "registration_request.json"
+    module.record_registration_request(
+        invitation_path=invitation,
+        output_path=request_path,
+        requester_id="external-agent-registrar-001",
+    )
+    env_file = tmp_path / ".env.beta6.external.local"
+    env_file.write_text(
+        "\n".join([
+            "BETA6_EXTERNAL_AGENT_API_BASE_URL=https://external-agent.example/v1",
+            "BETA6_EXTERNAL_AGENT_MODEL=external-reviewer-model",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="BETA6_EXTERNAL_AGENT_API_KEY must be set"):
+        module.write_agent_card_from_env(
+            registration_request_path=request_path,
+            env_file_path=env_file,
+            output_path=tmp_path / "agent_card.json",
+        )
+
+
 def test_beta6_readiness_accepts_beta5_feedback_index_with_followup(tmp_path: Path) -> None:
     index = _write_feedback_index(tmp_path, accepted=1, followup=1)
 
