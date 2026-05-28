@@ -20,6 +20,7 @@ REPORT_SCHEMA = "beta-deployment-preview-readiness-report:v1"
 BETA6_9_SUMMARY_SCHEMA = "beta6-9-real-api-review-run-summary:v1"
 PREVIEW_SUMMARY_SCHEMA = "beta5-repeatable-preview-nightly-artifact:v1"
 OWNER_INDEX_SCHEMA = "beta5-owner-feedback-evidence-index:v1"
+MULTI_EXTERNAL_REVIEW_SCHEMA = "beta-multi-external-review-reconciliation:v1"
 NON_CLAIMS = (
     "beta_deployment_preview_readiness_is_l1_controlled_preview_only",
     "beta_deployment_preview_readiness_does_not_execute_merge",
@@ -35,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--beta6-9-summary", required=True)
     parser.add_argument("--preview-summary", required=True)
     parser.add_argument("--owner-feedback-index", required=True)
+    parser.add_argument("--multi-external-review")
     parser.add_argument("--output", required=True)
     parser.add_argument("--min-owner-feedback-packets", type=int, default=3)
     parser.add_argument("--min-owner-feedback-accepted-ratio", type=float, default=0.66)
@@ -45,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         beta6_9_summary_path=Path(args.beta6_9_summary),
         preview_summary_path=Path(args.preview_summary),
         owner_feedback_index_path=Path(args.owner_feedback_index),
+        multi_external_review_path=Path(args.multi_external_review) if args.multi_external_review else None,
         output_path=Path(args.output),
         min_owner_feedback_packets=args.min_owner_feedback_packets,
         min_owner_feedback_accepted_ratio=args.min_owner_feedback_accepted_ratio,
@@ -59,6 +62,7 @@ def inspect_beta_deployment_preview_readiness(
     beta6_9_summary_path: Path,
     preview_summary_path: Path,
     owner_feedback_index_path: Path,
+    multi_external_review_path: Path | None = None,
     output_path: Path,
     min_owner_feedback_packets: int = 3,
     min_owner_feedback_accepted_ratio: float = 0.66,
@@ -68,6 +72,7 @@ def inspect_beta_deployment_preview_readiness(
     beta6_9 = _read_json(beta6_9_summary_path, failures, "beta6_9_summary")
     preview = _read_json(preview_summary_path, failures, "preview_summary")
     owner_index = _read_json(owner_feedback_index_path, failures, "owner_feedback_index")
+    multi_review = _read_json(multi_external_review_path, failures, "multi_external_review") if multi_external_review_path else None
 
     if min_owner_feedback_packets < 1:
         failures.append("min_owner_feedback_packets must be >= 1")
@@ -121,6 +126,19 @@ def inspect_beta_deployment_preview_readiness(
         _expect_false(owner_index, "h3_production_readiness_claimed", failures, "owner_feedback_index")
         _expect_h3_blocked(owner_index, failures, "owner_feedback_index")
 
+    if multi_review:
+        _expect(multi_review, "schema_version", MULTI_EXTERNAL_REVIEW_SCHEMA, failures, "multi_external_review")
+        _expect_true(multi_review, "passed", failures, "multi_external_review")
+        _expect(multi_review, "decision", "multi_external_review_ready", failures, "multi_external_review")
+        _expect_true(multi_review, "all_external_verdicts_approved", failures, "multi_external_review")
+        if int(multi_review.get("unique_external_agent_count") or 0) < 2:
+            failures.append("multi_external_review.unique_external_agent_count must be >= 2")
+        readiness = multi_review.get("readiness") if isinstance(multi_review.get("readiness"), dict) else {}
+        for key in ("production_deploy_allowed", "production_runtime_execution_allowed", "production_receipt_write_allowed", "h3_production_readiness_claimed"):
+            if readiness.get(key) is not False:
+                failures.append(f"multi_external_review.readiness.{key} must be false")
+        _expect_h3_blocked(multi_review, failures, "multi_external_review")
+
     passed = not failures
     report = {
         "schema_version": REPORT_SCHEMA,
@@ -132,6 +150,7 @@ def inspect_beta_deployment_preview_readiness(
             "beta6_9_summary": _artifact_ref(beta6_9_summary_path),
             "preview_summary": _artifact_ref(preview_summary_path),
             "owner_feedback_index": _artifact_ref(owner_feedback_index_path),
+            "multi_external_review": _artifact_ref(multi_external_review_path) if multi_external_review_path else None,
         },
         "thresholds": {
             "min_owner_feedback_packets": min_owner_feedback_packets,
@@ -140,6 +159,7 @@ def inspect_beta_deployment_preview_readiness(
         },
         "readiness": {
             "beta_preview_repeat_ready": passed,
+            "multi_external_review_observed": bool(multi_review),
             "production_deploy_allowed": False,
             "production_runtime_execution_allowed": False,
             "production_receipt_write_allowed": False,

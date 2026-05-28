@@ -268,7 +268,13 @@ def run_real_api_review_chain(
         validate_post_review_merge_authorization(authorization_path),
     )
 
-    summary = _summary(output_root, api_call_report, reconciliation_path, authorization_path)
+    summary = _summary(
+        output_root,
+        api_call_report,
+        reconciliation_path,
+        authorization_path,
+        agent_card_path,
+    )
     _write_json(output_root / "beta6_9_real_api_review_summary.json", summary)
     return summary
 
@@ -391,14 +397,25 @@ def _summary(
     api_call_report: dict[str, Any],
     reconciliation_path: Path,
     authorization_path: Path,
+    agent_card_path: Path,
 ) -> dict[str, Any]:
     authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
     reconciliation = json.loads(reconciliation_path.read_text(encoding="utf-8"))
+    agent_card = json.loads(agent_card_path.read_text(encoding="utf-8"))
+    external_api = agent_card.get("external_api") if isinstance(agent_card.get("external_api"), dict) else {}
     return {
         "schema_version": SUMMARY_SCHEMA,
         "checked_at": _now(),
         "passed": True,
         "run_root": str(output_root.resolve()),
+        "external_agent": {
+            "agent_id": agent_card.get("agent_id"),
+            "display_name": agent_card.get("display_name"),
+            "contact_ref": agent_card.get("contact_ref"),
+            "provider": external_api.get("provider"),
+            "model": external_api.get("model"),
+            "api_key_recorded": False,
+        },
         "external_review_verdict": api_call_report["review_verdict"],
         "beta5_authorization_input_ready": reconciliation["beta5_authorization_input_ready"],
         "merge_authorized": authorization["merge_authorized"],

@@ -80,6 +80,10 @@ def test_real_api_review_runner_writes_complete_bounded_chain(tmp_path: Path, mo
     )
 
     assert summary["passed"] is True
+    assert summary["external_agent"]["agent_id"] == "external-real-reviewer-002"
+    assert summary["external_agent"]["provider"] == "openai_compatible"
+    assert summary["external_agent"]["model"] == "external-reviewer-model"
+    assert summary["external_agent"]["api_key_recorded"] is False
     assert summary["external_review_verdict"] == "approved"
     assert summary["beta5_authorization_input_ready"] is True
     assert summary["merge_authorized"] is True
