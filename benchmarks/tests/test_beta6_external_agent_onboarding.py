@@ -284,6 +284,90 @@ def test_agent_card_from_env_requires_api_key(tmp_path: Path) -> None:
         )
 
 
+def test_external_api_probe_report_redacts_key_and_passes_visible_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    invitation = _write_invitation(tmp_path)
+    request_path = tmp_path / "registration_request.json"
+    module.record_registration_request(
+        invitation_path=invitation,
+        output_path=request_path,
+        requester_id="external-agent-registrar-001",
+    )
+    secret = "sk-test-secret-must-not-appear"
+    env_file = _write_external_api_env(tmp_path, secret=secret)
+    agent_card = tmp_path / "agent_card.json"
+    module.write_agent_card_from_env(
+        registration_request_path=request_path,
+        env_file_path=env_file,
+        output_path=agent_card,
+    )
+    monkeypatch.setattr(
+        module,
+        "_probe_models_endpoint",
+        lambda *, base_url, api_key, model: {
+            "provider_probe_attempted": True,
+            "reachable": True,
+            "http_status": 200,
+            "models_endpoint": f"{base_url}/models",
+            "requested_model_visible": True,
+            "model_count": 1,
+            "error_class": None,
+        },
+    )
+    report_path = tmp_path / "api_probe.json"
+
+    report = module.probe_external_api_from_env(
+        agent_card_path=agent_card,
+        env_file_path=env_file,
+        output_path=report_path,
+    )
+    report_bytes = report_path.read_bytes()
+
+    assert report["passed"] is True
+    assert report["api_key_present"] is True
+    assert report["api_key_recorded"] is False
+    assert report["probe"]["requested_model_visible"] is True
+    assert secret.encode("utf-8") not in report_bytes
+
+
+def test_external_api_probe_blocks_invisible_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    invitation = _write_invitation(tmp_path)
+    request_path = tmp_path / "registration_request.json"
+    module.record_registration_request(
+        invitation_path=invitation,
+        output_path=request_path,
+        requester_id="external-agent-registrar-001",
+    )
+    env_file = _write_external_api_env(tmp_path)
+    agent_card = tmp_path / "agent_card.json"
+    module.write_agent_card_from_env(
+        registration_request_path=request_path,
+        env_file_path=env_file,
+        output_path=agent_card,
+    )
+    monkeypatch.setattr(
+        module,
+        "_probe_models_endpoint",
+        lambda *, base_url, api_key, model: {
+            "provider_probe_attempted": True,
+            "reachable": True,
+            "http_status": 200,
+            "models_endpoint": f"{base_url}/models",
+            "requested_model_visible": False,
+            "model_count": 1,
+            "error_class": None,
+        },
+    )
+
+    report = module.probe_external_api_from_env(
+        agent_card_path=agent_card,
+        env_file_path=env_file,
+        output_path=tmp_path / "api_probe.json",
+    )
+
+    assert report["passed"] is False
+    assert "external Agent model must be visible in provider models response" in report["failure_reasons"]
+
+
 def test_beta6_readiness_accepts_beta5_feedback_index_with_followup(tmp_path: Path) -> None:
     index = _write_feedback_index(tmp_path, accepted=1, followup=1)
 
@@ -385,3 +469,17 @@ def _write_readiness(tmp_path: Path) -> Path:
     path = tmp_path / "beta6_readiness.json"
     path.write_text(json.dumps(readiness, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _write_external_api_env(tmp_path: Path, *, secret: str = "sk-test-secret-must-not-appear") -> Path:
+    env_file = tmp_path / ".env.beta6.external.local"
+    env_file.write_text(
+        "\n".join([
+            "BETA6_EXTERNAL_AGENT_PROVIDER=openai_compatible",
+            "BETA6_EXTERNAL_AGENT_API_BASE_URL=https://external-agent.example/v1",
+            "BETA6_EXTERNAL_AGENT_MODEL=external-reviewer-model",
+            f"BETA6_EXTERNAL_AGENT_API_KEY={secret}",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    return env_file

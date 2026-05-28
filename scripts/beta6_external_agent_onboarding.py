@@ -13,6 +13,8 @@ import argparse
 import hashlib
 import json
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ INVITATION_VALIDATION_SCHEMA = "beta6-external-agent-invitation-validation:v1"
 INVITATION_WRITE_SCHEMA = "beta6-external-agent-invitation-write-report:v1"
 AGENT_CARD_SCHEMA = "beta6-external-agent-card:v1"
 AGENT_CARD_INTAKE_REPORT_SCHEMA = "beta6-external-agent-card-intake-report:v1"
+API_PROBE_REPORT_SCHEMA = "beta6-external-agent-api-probe-report:v1"
 REGISTRATION_REQUEST_SCHEMA = "beta6-external-agent-registration-request:v1"
 REGISTRATION_REQUEST_VALIDATION_SCHEMA = "beta6-external-agent-registration-request-validation:v1"
 REGISTRATION_REQUEST_WRITE_SCHEMA = "beta6-external-agent-registration-request-write-report:v1"
@@ -92,6 +95,14 @@ def main(argv: list[str] | None = None) -> int:
     agent_card.add_argument("--output", required=True)
     agent_card.add_argument("--report-output")
 
+    api_probe = subparsers.add_parser(
+        "probe-external-api-from-env",
+        help="probe a sanitized external Agent API card using local-only credentials",
+    )
+    api_probe.add_argument("--agent-card", required=True)
+    api_probe.add_argument("--env-file", required=True)
+    api_probe.add_argument("--output", required=True)
+
     register = subparsers.add_parser("record-registration", help="record observed external Agent registration")
     register.add_argument("--invitation", required=True)
     register.add_argument("--agent-card", required=True)
@@ -146,6 +157,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.report_output:
             _write_json(Path(args.report_output), report)
+    elif args.command == "probe-external-api-from-env":
+        report = probe_external_api_from_env(
+            agent_card_path=Path(args.agent_card),
+            env_file_path=Path(args.env_file),
+            output_path=Path(args.output),
+        )
     elif args.command == "record-registration":
         report = record_registration(
             invitation_path=Path(args.invitation),
@@ -457,6 +474,82 @@ def write_agent_card_from_env(
             "agent_card_intake_does_not_call_external_provider",
         ],
     }
+
+
+def probe_external_api_from_env(
+    *,
+    agent_card_path: Path,
+    env_file_path: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    card = _load_agent_card(agent_card_path, failures)
+    env = _read_env_file(env_file_path, failures)
+    base_url = _required_env(env, "BETA6_EXTERNAL_AGENT_API_BASE_URL", failures).rstrip("/")
+    model = _required_env(env, "BETA6_EXTERNAL_AGENT_MODEL", failures)
+    api_key = _required_env(env, "BETA6_EXTERNAL_AGENT_API_KEY", failures)
+    provider = _text(env.get("BETA6_EXTERNAL_AGENT_PROVIDER")) or "openai_compatible"
+    _reject_forbidden_text([base_url, model, api_key, provider], failures)
+    if not base_url.startswith("https://"):
+        failures.append("BETA6_EXTERNAL_AGENT_API_BASE_URL must use https://")
+    external_api = card.get("external_api") if isinstance(card.get("external_api"), dict) else {}
+    if external_api.get("base_url") != base_url:
+        failures.append("agent card external_api.base_url must match env file")
+    if external_api.get("model") != model:
+        failures.append("agent card external_api.model must match env file")
+    if external_api.get("provider") != provider:
+        failures.append("agent card external_api.provider must match env file")
+    if _file_contains_secret(agent_card_path, api_key):
+        failures.append("agent card must not contain API key bytes")
+
+    probe = _probe_models_endpoint(base_url=base_url, api_key=api_key, model=model) if not failures else {
+        "provider_probe_attempted": False,
+        "reachable": False,
+        "http_status": None,
+        "models_endpoint": None,
+        "requested_model_visible": None,
+        "model_count": None,
+        "error_class": None,
+    }
+    if probe.get("reachable") is not True:
+        failures.append("external Agent API models endpoint must be reachable")
+    if probe.get("http_status") != 200:
+        failures.append("external Agent API models endpoint must return HTTP 200")
+    if probe.get("requested_model_visible") is not True:
+        failures.append("external Agent model must be visible in provider models response")
+
+    report = {
+        "schema_version": API_PROBE_REPORT_SCHEMA,
+        "checked_at": _now(),
+        "passed": not failures,
+        "failure_reasons": failures,
+        "source_agent_card": _artifact_ref(agent_card_path) if agent_card_path.is_file() else None,
+        "credential_env_file": str(env_file_path.resolve()),
+        "api_key_present": bool(api_key),
+        "api_key_recorded": False,
+        "provider": provider,
+        "base_url": base_url,
+        "model": model,
+        "probe": probe,
+        "production_runtime_execution_allowed": False,
+        "production_receipt_write_allowed": False,
+        "h3_boundary": _h3_boundary(),
+        "non_claims": list(NON_CLAIMS) + [
+            "external_agent_api_probe_does_not_store_api_key",
+            "external_agent_api_probe_does_not_assign_or_execute_tasks",
+            "external_agent_api_probe_does_not_authorize_production_runtime",
+        ],
+    }
+    _write_json(output_path, report)
+    if _file_contains_secret(output_path, api_key):
+        output = _safe_read_json(output_path, [], "external Agent API probe report")
+        failures.append("external Agent API probe report must not contain API key bytes")
+        if isinstance(output, dict):
+            output["passed"] = False
+            output["failure_reasons"] = failures
+            _write_json(output_path, output)
+            report = output
+    return report
 
 
 def record_registration(
@@ -939,6 +1032,57 @@ def _file_contains_secret(path: Path, secret: str) -> bool:
     if not secret:
         return False
     return secret.encode("utf-8") in path.read_bytes()
+
+
+def _probe_models_endpoint(*, base_url: str, api_key: str, model: str) -> dict[str, Any]:
+    urls = [base_url.rstrip("/") + "/models"]
+    if not base_url.rstrip("/").endswith("/v1"):
+        urls.append(base_url.rstrip("/") + "/v1/models")
+    result: dict[str, Any] = {
+        "provider_probe_attempted": True,
+        "reachable": False,
+        "http_status": None,
+        "models_endpoint": None,
+        "requested_model_visible": None,
+        "model_count": None,
+        "error_class": None,
+    }
+    for url in urls:
+        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+        try:
+            with urllib.request.urlopen(request, timeout=12) as response:
+                body = response.read(512 * 1024)
+                model_ids = _extract_model_ids(body)
+                result.update(
+                    {
+                        "reachable": True,
+                        "http_status": response.status,
+                        "models_endpoint": url,
+                        "requested_model_visible": model in model_ids,
+                        "model_count": len(model_ids),
+                        "error_class": None,
+                    }
+                )
+                return result
+        except urllib.error.HTTPError as exc:
+            result.update({"http_status": exc.code, "models_endpoint": url, "error_class": "HTTPError"})
+            if exc.code not in (404, 405):
+                return result
+        except Exception as exc:  # noqa: BLE001 - operator-facing probe preserves failure class only.
+            result.update({"models_endpoint": url, "error_class": exc.__class__.__name__})
+            return result
+    return result
+
+
+def _extract_model_ids(body: bytes) -> list[str]:
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - malformed provider body means no visible models.
+        return []
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return []
+    return [item["id"] for item in data if isinstance(item, dict) and isinstance(item.get("id"), str)]
 
 
 def _required_text(value: Any, field: str) -> str:
