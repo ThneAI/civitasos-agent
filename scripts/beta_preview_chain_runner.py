@@ -41,6 +41,7 @@ from beta5_real_multivm_preview_prepare import write_real_multivm_preview_run
 from beta6_9_real_api_review_runner import DEFAULT_MAX_TOKENS
 from beta6_9_real_api_review_runner import run_real_api_review_chain
 from beta_deployment_preview_readiness import inspect_beta_deployment_preview_readiness
+from beta_external_provider_env_preflight import inspect_provider_envs
 from beta_multi_external_review_reconciliation import reconcile_multi_external_reviews
 
 CHAIN_SCHEMA = "beta-preview-chain-run-summary:v1"
@@ -150,6 +151,17 @@ def run_beta_preview_chain(
     output_root.mkdir(parents=True, exist_ok=True)
     review_root = output_root / "external_reviews"
     review_root.mkdir(parents=True, exist_ok=True)
+    env_files = [env_file, *additional_env_files]
+    provider_preflight_path = output_root / "beta_external_provider_env_preflight.json"
+    provider_preflight = inspect_provider_envs(
+        env_files=env_files,
+        output_path=provider_preflight_path,
+        min_providers=2 if require_distinct_providers else 1,
+        require_distinct_providers=require_distinct_providers,
+        probe_models=False,
+    )
+    if provider_preflight.get("passed") is not True:
+        raise ValueError(f"provider env preflight failed: {provider_preflight.get('failure_reasons')}")
 
     review_summaries = []
     primary_root = review_root / "reviewer_001"
@@ -260,6 +272,9 @@ def run_beta_preview_chain(
         "decision": "beta_preview_chain_passed",
         "run_root": str(output_root.resolve()),
         "review_summary_count": len(review_summaries),
+        "provider_env_preflight": _artifact_ref(provider_preflight_path),
+        "provider_identity_count": provider_preflight.get("unique_provider_identity_count"),
+        "require_distinct_providers": require_distinct_providers,
         "multi_external_review_observed": multi_review is not None,
         "multi_external_review": _artifact_ref(multi_review_path) if multi_review_path else None,
         "preview_summary": _artifact_ref(preview_summary_path),

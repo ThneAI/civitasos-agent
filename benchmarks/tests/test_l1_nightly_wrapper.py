@@ -78,6 +78,9 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'BETA_PREVIEW_CHAIN_RUN_ROOT="${BETA_PREVIEW_CHAIN_RUN_ROOT:-$RUNS_ROOT/beta_preview_chain}"' in text
     assert 'BETA_PREVIEW_CHAIN_ADDITIONAL_ENV_FILES="${BETA_PREVIEW_CHAIN_ADDITIONAL_ENV_FILES:-}"' in text
     assert 'BETA_PREVIEW_CHAIN_LOCAL_DEPLOY_RECEIPT="${BETA_PREVIEW_CHAIN_LOCAL_DEPLOY_RECEIPT:-$BETA5_REPEATABLE_PREVIEW_LOCAL_DEPLOY_RECEIPT_PATH}"' in text
+    assert 'RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT="${RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT:-0}"' in text
+    assert 'BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_MIN_PROVIDERS="${BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_MIN_PROVIDERS:-2}"' in text
+    assert 'BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_REQUIRE_DISTINCT_PROVIDERS="${BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_REQUIRE_DISTINCT_PROVIDERS:-1}"' in text
     assert 'RUN_BETA_DEPLOYMENT_PREVIEW_READINESS_CHECK="${RUN_BETA_DEPLOYMENT_PREVIEW_READINESS_CHECK:-0}"' in text
     assert 'BETA_DEPLOYMENT_PREVIEW_READINESS_BETA6_9_SUMMARY="${BETA_DEPLOYMENT_PREVIEW_READINESS_BETA6_9_SUMMARY:-$BETA6_9_REAL_API_REVIEW_RUN_ROOT/beta6_9_real_api_review_summary.json}"' in text
     assert 'BETA_DEPLOYMENT_PREVIEW_READINESS_OWNER_FEEDBACK_INDEX="${BETA_DEPLOYMENT_PREVIEW_READINESS_OWNER_FEEDBACK_INDEX:-$BETA6_9_REAL_API_REVIEW_FEEDBACK_INDEX}"' in text
@@ -242,6 +245,9 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert "requires BETA6_9_REAL_API_REVIEW_PR_REVIEW_EVIDENCE" in text
     assert "scripts/beta6_9_real_api_review_runner.py" in text
     assert '--model-max-tokens "$BETA6_9_REAL_API_REVIEW_MODEL_MAX_TOKENS"' in text
+    assert 'if [ "$RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT" = "1" ]; then' in text
+    assert "scripts/beta_external_provider_env_preflight.py" in text
+    assert '--env-file "$provider_env_file"' in text
     assert 'if [ "$RUN_BETA_PREVIEW_CHAIN_RUNNER" = "1" ]; then' in text
     assert "requires BETA_PREVIEW_CHAIN_LOCAL_DEPLOY_RECEIPT" in text
     assert "scripts/beta_preview_chain_runner.py" in text
@@ -286,6 +292,7 @@ def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
     assert "benchmarks/run_l1_contract_smoke.sh" in text
     assert "benchmarks/run_beta0_real_model_pilot.sh" in text
     assert "benchmarks/tests/test_beta_deployment_preview_readiness.py" in text
+    assert "benchmarks/tests/test_beta_external_provider_env_preflight.py" in text
     assert "benchmarks/tests/test_beta_multi_external_review_reconciliation.py" in text
     assert "benchmarks/tests/test_beta_preview_chain_runner.py" in text
     assert "benchmarks/tests/test_beta6_9_real_api_review_runner.py" in text

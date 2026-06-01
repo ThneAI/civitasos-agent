@@ -35,6 +35,18 @@ def test_beta_preview_chain_runner_orchestrates_multi_agent_preview_feedback_rea
     seed_feedback = tmp_path / "seed_feedback.json"
     seed_feedback.write_text('{"passed":true}\n', encoding="utf-8")
     seed_preview = _write_preview_summary(tmp_path / "seed_preview")
+    primary_env = _write_env(
+        tmp_path / "primary.env",
+        provider="fixture-provider-a",
+        base_url="https://fixture-provider-a.example/v1",
+        model="fixture-model-a",
+    )
+    second_env = _write_env(
+        tmp_path / "second.env",
+        provider="fixture-provider-b",
+        base_url="https://fixture-provider-b.example/v1",
+        model="fixture-model-b",
+    )
     pr_review = tmp_path / "pr_review.json"
     pr_review.write_text('{"review":"approved"}\n', encoding="utf-8")
     local_receipt = tmp_path / "local_receipt.json"
@@ -61,8 +73,8 @@ def test_beta_preview_chain_runner_orchestrates_multi_agent_preview_feedback_rea
 
     summary = module.run_beta_preview_chain(
         output_root=tmp_path / "chain",
-        env_file=tmp_path / "primary.env",
-        additional_env_files=[tmp_path / "second.env"],
+        env_file=primary_env,
+        additional_env_files=[second_env],
         additional_agent_ids=["external-agent-second"],
         seed_feedback_index=seed_feedback,
         seed_preview_summary=seed_preview,
@@ -90,6 +102,7 @@ def test_beta_preview_chain_runner_orchestrates_multi_agent_preview_feedback_rea
     assert summary["passed"] is True
     assert summary["decision"] == "beta_preview_chain_passed"
     assert summary["review_summary_count"] == 2
+    assert summary["provider_identity_count"] == 2
     assert summary["multi_external_review_observed"] is True
     readiness = json.loads(Path(summary["readiness"]["path"]).read_text(encoding="utf-8"))
     assert readiness["decision"] == "beta_preview_ready"
@@ -172,6 +185,22 @@ def _review_summary(agent_id: str) -> dict:
         "production_receipt_write_allowed": False,
         "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
     }
+
+
+def _write_env(path: Path, *, provider: str, base_url: str, model: str) -> Path:
+    path.write_text(
+        "\n".join(
+            [
+                f"BETA6_EXTERNAL_AGENT_PROVIDER={provider}",
+                f"BETA6_EXTERNAL_AGENT_API_BASE_URL={base_url}",
+                f"BETA6_EXTERNAL_AGENT_MODEL={model}",
+                "BETA6_EXTERNAL_AGENT_API_KEY=fixture-secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def _write_json(path: Path, payload: dict) -> Path:

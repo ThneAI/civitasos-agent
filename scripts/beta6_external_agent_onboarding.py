@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -434,9 +436,11 @@ def write_agent_card_from_env(
     api_key = _required_env(env, "BETA6_EXTERNAL_AGENT_API_KEY", failures)
     provider = _text(env.get("BETA6_EXTERNAL_AGENT_PROVIDER")) or "openai_compatible"
     _reject_forbidden_text([base_url, model, api_key, provider], failures)
+    _validate_api_base_url(base_url, env, failures)
     if failures:
         raise ValueError(f"external Agent card intake blocked: {failures}")
 
+    local_http_allowed = _env_flag(env, "BETA6_EXTERNAL_AGENT_ALLOW_LOCAL_HTTP")
     expected_card = request["expected_agent_card"]
     card = dict(expected_card)
     card["external_api"] = {
@@ -446,6 +450,8 @@ def write_agent_card_from_env(
         "credential_source": str(env_file_path.resolve()),
         "api_key_present": True,
         "api_key_redacted": True,
+        "local_http_allowed": local_http_allowed,
+        "transport_security": "https" if base_url.startswith("https://") else "local_http_opt_in",
     }
     card["non_claims"] = sorted(set(_string_list(card.get("non_claims")) + [
         "external_agent_api_key_is_local_only_and_not_recorded",
@@ -490,8 +496,7 @@ def probe_external_api_from_env(
     api_key = _required_env(env, "BETA6_EXTERNAL_AGENT_API_KEY", failures)
     provider = _text(env.get("BETA6_EXTERNAL_AGENT_PROVIDER")) or "openai_compatible"
     _reject_forbidden_text([base_url, model, api_key, provider], failures)
-    if not base_url.startswith("https://"):
-        failures.append("BETA6_EXTERNAL_AGENT_API_BASE_URL must use https://")
+    _validate_api_base_url(base_url, env, failures)
     external_api = card.get("external_api") if isinstance(card.get("external_api"), dict) else {}
     if external_api.get("base_url") != base_url:
         failures.append("agent card external_api.base_url must match env file")
@@ -897,6 +902,37 @@ def _reject_forbidden_text(values: list[str], failures: list[str]) -> None:
         if any(token in value for value in upper_values):
             failures.append(f"forbidden placeholder token found: {token}")
             return
+
+
+def _env_flag(env: dict[str, str], key: str) -> bool:
+    return _text(env.get(key)).lower() in {"1", "true", "yes", "on"}
+
+
+def _validate_api_base_url(base_url: str, env: dict[str, str], failures: list[str]) -> None:
+    parsed = urllib.parse.urlparse(base_url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and _env_flag(env, "BETA6_EXTERNAL_AGENT_ALLOW_LOCAL_HTTP"):
+        if _is_loopback_or_private_host(parsed.hostname):
+            return
+        failures.append("BETA6_EXTERNAL_AGENT_API_BASE_URL local HTTP opt-in only allows loopback/private hosts")
+        return
+    failures.append(
+        "BETA6_EXTERNAL_AGENT_API_BASE_URL must use https:// unless "
+        "BETA6_EXTERNAL_AGENT_ALLOW_LOCAL_HTTP=true and host is loopback/private"
+    )
+
+
+def _is_loopback_or_private_host(host: str | None) -> bool:
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private
 
 
 def _validate_no_merge_deploy_production(payload: dict[str, Any], failures: list[str]) -> None:

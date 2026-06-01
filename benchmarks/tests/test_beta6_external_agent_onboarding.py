@@ -368,6 +368,83 @@ def test_external_api_probe_blocks_invisible_model(tmp_path: Path, monkeypatch: 
     assert "external Agent model must be visible in provider models response" in report["failure_reasons"]
 
 
+def test_external_api_probe_allows_local_gpu_http_only_with_opt_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    invitation = _write_invitation(tmp_path)
+    request_path = tmp_path / "registration_request.json"
+    module.record_registration_request(
+        invitation_path=invitation,
+        output_path=request_path,
+        requester_id="external-agent-registrar-001",
+    )
+    env_file = tmp_path / ".env.beta6.external.local"
+    env_file.write_text(
+        "\n".join([
+            "BETA6_EXTERNAL_AGENT_PROVIDER=local_ollama_gpu",
+            "BETA6_EXTERNAL_AGENT_API_BASE_URL=http://127.0.0.1:11434/v1",
+            "BETA6_EXTERNAL_AGENT_MODEL=qwen3.6:latest",
+            "BETA6_EXTERNAL_AGENT_ALLOW_LOCAL_HTTP=true",
+            "BETA6_EXTERNAL_AGENT_API_KEY=local-ollama-loopback-token",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    agent_card = tmp_path / "agent_card.json"
+    module.write_agent_card_from_env(
+        registration_request_path=request_path,
+        env_file_path=env_file,
+        output_path=agent_card,
+    )
+    monkeypatch.setattr(
+        module,
+        "_probe_models_endpoint",
+        lambda *, base_url, api_key, model: {
+            "provider_probe_attempted": True,
+            "reachable": True,
+            "http_status": 200,
+            "models_endpoint": f"{base_url}/models",
+            "requested_model_visible": True,
+            "model_count": 1,
+            "error_class": None,
+        },
+    )
+
+    report = module.probe_external_api_from_env(
+        agent_card_path=agent_card,
+        env_file_path=env_file,
+        output_path=tmp_path / "api_probe.json",
+    )
+
+    assert report["passed"] is True
+    assert report["base_url"] == "http://127.0.0.1:11434/v1"
+
+
+def test_external_api_probe_blocks_public_http_even_with_opt_in(tmp_path: Path) -> None:
+    invitation = _write_invitation(tmp_path)
+    request_path = tmp_path / "registration_request.json"
+    module.record_registration_request(
+        invitation_path=invitation,
+        output_path=request_path,
+        requester_id="external-agent-registrar-001",
+    )
+    env_file = tmp_path / ".env.beta6.external.local"
+    env_file.write_text(
+        "\n".join([
+            "BETA6_EXTERNAL_AGENT_PROVIDER=bad_http_provider",
+            "BETA6_EXTERNAL_AGENT_API_BASE_URL=http://example.com/v1",
+            "BETA6_EXTERNAL_AGENT_MODEL=bad-model",
+            "BETA6_EXTERNAL_AGENT_ALLOW_LOCAL_HTTP=true",
+            "BETA6_EXTERNAL_AGENT_API_KEY=bad-secret",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="local HTTP opt-in only allows loopback/private hosts"):
+        module.write_agent_card_from_env(
+            registration_request_path=request_path,
+            env_file_path=env_file,
+            output_path=tmp_path / "agent_card.json",
+        )
+
+
 def test_beta6_readiness_accepts_beta5_feedback_index_with_followup(tmp_path: Path) -> None:
     index = _write_feedback_index(tmp_path, accepted=1, followup=1)
 
