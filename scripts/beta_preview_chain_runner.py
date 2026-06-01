@@ -43,6 +43,7 @@ from beta6_9_real_api_review_runner import run_real_api_review_chain
 from beta_deployment_preview_readiness import inspect_beta_deployment_preview_readiness
 from beta_external_provider_env_preflight import inspect_provider_envs
 from beta_multi_external_review_reconciliation import reconcile_multi_external_reviews
+from beta_preview_operator_handoff import write_beta_preview_operator_handoff
 
 CHAIN_SCHEMA = "beta-preview-chain-run-summary:v1"
 DEFAULT_NODES = (
@@ -288,7 +289,13 @@ def run_beta_preview_chain(
         "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
         "non_claims": list(NON_CLAIMS),
     }
-    _write_json(output_root / "beta_preview_chain_summary.json", summary)
+    summary_path = output_root / "beta_preview_chain_summary.json"
+    _write_json(summary_path, summary)
+    write_beta_preview_operator_handoff(
+        chain_summary_path=summary_path,
+        output_path=output_root / "beta_preview_operator_handoff.json",
+        roles={"operator": operator_id, "preview_owner": owner_id},
+    )
     return summary
 
 

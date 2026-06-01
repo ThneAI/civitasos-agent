@@ -110,6 +110,10 @@ def test_beta_preview_chain_runner_orchestrates_multi_agent_preview_feedback_rea
     owner_index = json.loads(Path(summary["owner_feedback_index"]["path"]).read_text(encoding="utf-8"))
     assert owner_index["packet_count"] == 3
     assert owner_index["verdict_counts"]["accepted"] == 2
+    handoff = json.loads((tmp_path / "chain" / "beta_preview_operator_handoff.json").read_text(encoding="utf-8"))
+    assert handoff["decision"] == "beta_preview_operator_handoff_ready"
+    assert handoff["roles"]["operator"] == "operator-cc"
+    assert handoff["handoff_boundary"]["production_runtime_execution_allowed"] is False
 
 
 def _write_owner_packet(root: Path, *, verdict: str) -> Path:
