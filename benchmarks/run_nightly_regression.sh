@@ -171,6 +171,7 @@ BETA_PREVIEW_CHAIN_MIN_OWNER_FEEDBACK_ACCEPTED_RATIO="${BETA_PREVIEW_CHAIN_MIN_O
 BETA_PREVIEW_CHAIN_MIN_SMOKE_CHECKS="${BETA_PREVIEW_CHAIN_MIN_SMOKE_CHECKS:-15}"
 BETA_PREVIEW_CHAIN_REQUIRE_DISTINCT_PROVIDERS="${BETA_PREVIEW_CHAIN_REQUIRE_DISTINCT_PROVIDERS:-0}"
 RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT="${RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT:-0}"
+RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ONLY="${RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ONLY:-0}"
 BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ENV_FILES="${BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ENV_FILES:-$BETA_PREVIEW_CHAIN_ENV_FILE $BETA_PREVIEW_CHAIN_ADDITIONAL_ENV_FILES}"
 BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_OUTPUT="${BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_OUTPUT:-$RUNS_ROOT/beta_external_provider_env_preflight.json}"
 BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_MIN_PROVIDERS="${BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_MIN_PROVIDERS:-2}"
@@ -231,6 +232,30 @@ validate_l1_contract_chain_preflight() {
       fi
     done
   fi
+}
+
+run_beta_external_provider_env_preflight() {
+  if [ -z "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ENV_FILES" ]; then
+    echo "Beta external provider env preflight requires BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ENV_FILES" >&2
+    exit 1
+  fi
+
+  local provider_env_file
+  local -a preflight_args=(
+    scripts/beta_external_provider_env_preflight.py
+    --output "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_OUTPUT"
+    --min-providers "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_MIN_PROVIDERS"
+  )
+  for provider_env_file in $BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ENV_FILES; do
+    preflight_args+=(--env-file "$provider_env_file")
+  done
+  if [ "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_REQUIRE_DISTINCT_PROVIDERS" = "1" ]; then
+    preflight_args+=(--require-distinct-providers)
+  fi
+  if [ "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_SKIP_MODEL_PROBE" = "1" ]; then
+    preflight_args+=(--skip-model-probe)
+  fi
+  "$PYTHON" "${preflight_args[@]}"
 }
 
 if [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
@@ -752,6 +777,12 @@ echo "  identity_on      : $CIVITASOS_IDENTITY_EMERGENCE_ENABLED"
 echo "  birth_sponsor    : $CIVITASOS_BIRTH_SPONSOR"
 echo "  birth_incubation : ${BENCHMARK_BIRTH_INCUBATION_EPOCHS} epochs"
 echo "════════════════════════════════════════════════════════════════"
+
+if [ "$RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ONLY" = "1" ]; then
+  run_beta_external_provider_env_preflight
+  echo "Beta external provider env preflight completed: $BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_OUTPUT"
+  exit 0
+fi
 
 # Bootstrap identities first so f1c_check doesn't fail on missing agent_ids.json.
 if [ ! -f "$RUNS_ROOT/agent_ids.json" ]; then
@@ -1919,25 +1950,7 @@ if [ "$RUN_BETA6_9_REAL_API_REVIEW_RUNNER" = "1" ]; then
 fi
 
 if [ "$RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT" = "1" ]; then
-  if [ -z "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ENV_FILES" ]; then
-    echo "RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT=1 requires BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ENV_FILES" >&2
-    exit 1
-  fi
-  BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ARGS=(
-    scripts/beta_external_provider_env_preflight.py
-    --output "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_OUTPUT"
-    --min-providers "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_MIN_PROVIDERS"
-  )
-  for provider_env_file in $BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ENV_FILES; do
-    BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ARGS+=(--env-file "$provider_env_file")
-  done
-  if [ "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_REQUIRE_DISTINCT_PROVIDERS" = "1" ]; then
-    BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ARGS+=(--require-distinct-providers)
-  fi
-  if [ "$BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_SKIP_MODEL_PROBE" = "1" ]; then
-    BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ARGS+=(--skip-model-probe)
-  fi
-  "$PYTHON" "${BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ARGS[@]}"
+  run_beta_external_provider_env_preflight
 fi
 
 if [ "$RUN_BETA_PREVIEW_CHAIN_RUNNER" = "1" ]; then
