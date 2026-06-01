@@ -82,6 +82,10 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'RUN_BETA_PREVIEW_OPERATOR_HANDOFF_CHECK_ONLY="${RUN_BETA_PREVIEW_OPERATOR_HANDOFF_CHECK_ONLY:-0}"' in text
     assert 'BETA_PREVIEW_OPERATOR_HANDOFF_CHAIN_SUMMARY="${BETA_PREVIEW_OPERATOR_HANDOFF_CHAIN_SUMMARY:-$BETA_PREVIEW_CHAIN_RUN_ROOT/beta_preview_chain_summary.json}"' in text
     assert 'BETA_PREVIEW_OPERATOR_HANDOFF_OUTPUT="${BETA_PREVIEW_OPERATOR_HANDOFF_OUTPUT:-$BETA_PREVIEW_CHAIN_RUN_ROOT/beta_preview_operator_handoff.json}"' in text
+    assert 'RUN_BETA_PREVIEW_EVIDENCE_INDEX="${RUN_BETA_PREVIEW_EVIDENCE_INDEX:-0}"' in text
+    assert 'RUN_BETA_PREVIEW_EVIDENCE_INDEX_ONLY="${RUN_BETA_PREVIEW_EVIDENCE_INDEX_ONLY:-0}"' in text
+    assert 'BETA_PREVIEW_EVIDENCE_INDEX_HANDOFF_PATHS="${BETA_PREVIEW_EVIDENCE_INDEX_HANDOFF_PATHS:-$BETA_PREVIEW_OPERATOR_HANDOFF_OUTPUT}"' in text
+    assert 'BETA_PREVIEW_EVIDENCE_INDEX_OUTPUT="${BETA_PREVIEW_EVIDENCE_INDEX_OUTPUT:-$RUNS_ROOT/beta_preview_cumulative_evidence_index.json}"' in text
     assert 'RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT="${RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT:-0}"' in text
     assert 'RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ONLY="${RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ONLY:-0}"' in text
     assert 'BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_MIN_PROVIDERS="${BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_MIN_PROVIDERS:-2}"' in text
@@ -267,6 +271,13 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_BETA_PREVIEW_OPERATOR_HANDOFF_CHECK" = "1" ]; then' in text
     assert "scripts/beta_preview_operator_handoff.py" in text
     assert '--chain-summary "$BETA_PREVIEW_OPERATOR_HANDOFF_CHAIN_SUMMARY"' in text
+    assert 'if [ "$RUN_BETA_PREVIEW_EVIDENCE_INDEX" = "1" ]; then' in text
+    assert 'if [ "$RUN_BETA_PREVIEW_EVIDENCE_INDEX_ONLY" = "1" ]; then' in text
+    assert "run_beta_preview_evidence_index()" in text
+    assert "Beta preview cumulative evidence index completed" in text
+    assert "scripts/beta_preview_handoff_signoff.py" in text
+    assert '--require-monitoring-signoff' in text
+    assert '--require-audit-signoff' in text
     assert 'if [ "$RUN_BETA_DEPLOYMENT_PREVIEW_READINESS_CHECK" = "1" ]; then' in text
     assert "scripts/beta_deployment_preview_readiness.py" in text
     assert '--multi-external-review "$BETA_DEPLOYMENT_PREVIEW_READINESS_MULTI_EXTERNAL_REVIEW"' in text
@@ -308,6 +319,7 @@ def test_l1_contract_smoke_ci_check_protects_fail_fast_surface() -> None:
     assert "benchmarks/tests/test_beta_deployment_preview_readiness.py" in text
     assert "benchmarks/tests/test_beta_external_provider_env_preflight.py" in text
     assert "benchmarks/tests/test_beta_multi_external_review_reconciliation.py" in text
+    assert "benchmarks/tests/test_beta_preview_handoff_signoff.py" in text
     assert "benchmarks/tests/test_beta_preview_operator_handoff.py" in text
     assert "benchmarks/tests/test_beta_preview_chain_runner.py" in text
     assert "benchmarks/tests/test_beta6_9_real_api_review_runner.py" in text
