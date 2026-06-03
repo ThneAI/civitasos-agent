@@ -41,6 +41,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--operator-id", default="local-operator-cc")
     parser.add_argument("--operator-authorization", default="current_chat_continue_request")
     parser.add_argument("--test-command", action="append", default=[])
+    parser.add_argument(
+        "--allowed-changed-file",
+        action="append",
+        default=[],
+        help="repo-relative frontend path allowed for this apply slice; defaults to the original FE-3 slice",
+    )
     args = parser.parse_args(argv)
 
     receipt = write_receipt(
@@ -50,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         operator_id=args.operator_id,
         operator_authorization=args.operator_authorization,
         test_commands=args.test_command,
+        allowed_changed_files=args.allowed_changed_file or None,
     )
     print(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if receipt.get("passed") is True else 1
@@ -63,6 +70,7 @@ def write_receipt(
     operator_id: str,
     operator_authorization: str,
     test_commands: list[str],
+    allowed_changed_files: list[str] | None = None,
 ) -> dict[str, Any]:
     frontend_root = frontend_root.resolve()
     output_root = output_root.resolve()
@@ -71,10 +79,11 @@ def write_receipt(
     fe26 = _read_json(source_fe26_summary, failures, "FE-2.6 summary")
     _validate_fe26(fe26, failures)
 
+    allowed_set = _allowed_files(allowed_changed_files, failures)
     changed_files = _changed_files(frontend_root)
-    allowed = sorted(ALLOWED_CHANGED_FILES)
-    unexpected = sorted(set(changed_files) - ALLOWED_CHANGED_FILES)
-    missing_expected = sorted(ALLOWED_CHANGED_FILES - set(changed_files))
+    allowed = sorted(allowed_set)
+    unexpected = sorted(set(changed_files) - allowed_set)
+    missing_expected = sorted(allowed_set - set(changed_files))
     if unexpected:
         failures.append(f"unexpected changed frontend files: {unexpected}")
     if missing_expected:
@@ -153,6 +162,27 @@ def _validate_fe26(fe26: Any, failures: list[str]) -> None:
     h3 = fe26.get("h3_boundary")
     if not isinstance(h3, dict) or h3.get("h3_remains_blocked") is not True:
         failures.append("FE-2.6 h3_boundary must keep H.3 blocked")
+
+
+def _allowed_files(paths: list[str] | None, failures: list[str]) -> set[str]:
+    if not paths:
+        return set(ALLOWED_CHANGED_FILES)
+    allowed: set[str] = set()
+    for raw in paths:
+        rel = str(raw or "").strip()
+        if not rel:
+            failures.append("allowed changed file must be non-empty")
+            continue
+        if rel.startswith("/") or ".." in Path(rel).parts:
+            failures.append(f"allowed changed file must be repo-relative and safe: {rel}")
+            continue
+        if not rel.startswith("src/"):
+            failures.append(f"allowed changed file must stay under src/: {rel}")
+            continue
+        allowed.add(rel)
+    if not allowed:
+        failures.append("allowed changed files must not be empty")
+    return allowed
 
 
 def _run_command(cwd: Path, command: str) -> dict[str, Any]:

@@ -90,6 +90,46 @@ def test_beta_fe3_apply_receipt_blocks_unexpected_file(tmp_path: Path) -> None:
     assert any("unexpected changed frontend files" in reason for reason in receipt["failure_reasons"])
 
 
+def test_beta_fe3_apply_receipt_accepts_custom_slice_allowlist(tmp_path: Path) -> None:
+    frontend = _frontend_repo(tmp_path / "frontend")
+    custom = frontend / "src/services/taskPoolApi.ts"
+    custom.parent.mkdir(parents=True, exist_ok=True)
+    custom.write_text("export const taskPoolApi = true;\n", encoding="utf-8")
+    fe26 = _write_fe26_summary(tmp_path / "fe26.json")
+
+    receipt = module.write_receipt(
+        frontend_root=frontend,
+        source_fe26_summary=fe26,
+        output_root=tmp_path / "receipt",
+        operator_id="operator",
+        operator_authorization="test authorization",
+        test_commands=["true"],
+        allowed_changed_files=["src/services/taskPoolApi.ts"],
+    )
+
+    assert receipt["passed"] is True
+    assert receipt["changed_files"] == ["src/services/taskPoolApi.ts"]
+    assert receipt["allowed_changed_files"] == ["src/services/taskPoolApi.ts"]
+
+
+def test_beta_fe3_apply_receipt_blocks_unsafe_custom_allowlist(tmp_path: Path) -> None:
+    frontend = _frontend_repo(tmp_path / "frontend")
+    fe26 = _write_fe26_summary(tmp_path / "fe26.json")
+
+    receipt = module.write_receipt(
+        frontend_root=frontend,
+        source_fe26_summary=fe26,
+        output_root=tmp_path / "receipt",
+        operator_id="operator",
+        operator_authorization="test authorization",
+        test_commands=["true"],
+        allowed_changed_files=["../outside.ts"],
+    )
+
+    assert receipt["passed"] is False
+    assert any("repo-relative and safe" in reason for reason in receipt["failure_reasons"])
+
+
 def _frontend_repo(path: Path) -> Path:
     for rel in module.ALLOWED_CHANGED_FILES | {"src/App.tsx"}:
         target = path / rel

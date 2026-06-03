@@ -59,6 +59,21 @@ def test_local_review_blocks_production_boundary_expansion() -> None:
     assert review["findings"]
 
 
+def test_local_review_accepts_task_pool_api_adapter_slice() -> None:
+    diff = "\n".join([
+        "diff --git a/src/services/apiClient.ts b/src/services/apiClient.ts",
+        "+import { createTaskPoolApi } from './taskPoolApi';",
+        "+export interface ApiResponse<T> { data?: T }",
+        "+export interface PoolTaskPostRequest { task_type: string }",
+        "+const apiClient = createTaskPoolApi();",
+    ])
+
+    review = module._local_review(diff)
+
+    assert review["verdict"] == "approved"
+    assert review["matched_profile"] == "task_pool_api_adapter"
+
+
 def test_parse_external_review_json_from_fenced_block() -> None:
     parsed = module._parse_review_json('```json\n{"verdict":"approved","risk_level":"low","findings":[],"summary":"ok"}\n```')
     assert parsed["verdict"] == "approved"

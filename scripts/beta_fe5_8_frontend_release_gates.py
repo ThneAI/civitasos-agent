@@ -475,10 +475,21 @@ def _validate_fe7(value: Any, failures: list[str]) -> None:
 
 def _local_review(diff: str) -> dict[str, Any]:
     findings: list[str] = []
-    required = ("TaskReadAdapter", "taskReadModel", "TaskPoolPanel")
-    for token in required:
-        if token not in diff:
-            findings.append(f"missing expected frontend slice token: {token}")
+    slice_profiles = {
+        "task_read_adapter": ("TaskReadAdapter", "taskReadModel", "TaskPoolPanel"),
+        "task_pool_api_adapter": ("taskPoolApi", "createTaskPoolApi", "PoolTaskPostRequest", "apiClient"),
+    }
+    profile_matches = {
+        name: all(token in diff for token in tokens)
+        for name, tokens in slice_profiles.items()
+    }
+    matched_profile = next((name for name, matched in profile_matches.items() if matched), "")
+    if not matched_profile:
+        profile_hints = [
+            f"{name}: missing {', '.join(token for token in tokens if token not in diff)}"
+            for name, tokens in slice_profiles.items()
+        ]
+        findings.append("diff does not match a known FE slice profile; " + "; ".join(profile_hints))
     forbidden = ("production_runtime_execution_allowed\": true", "production_receipt_write_allowed\": true", "deploy_allowed\": true")
     for token in forbidden:
         if token in diff:
@@ -489,8 +500,10 @@ def _local_review(diff: str) -> dict[str, Any]:
         "reviewer": "local-static-boundary-reviewer",
         "verdict": "approved" if not findings else "changes_requested",
         "risk_level": "low" if not findings else "medium",
+        "matched_profile": matched_profile,
+        "known_profiles": sorted(slice_profiles),
         "findings": findings,
-        "summary": "Local reviewer checks expected FE adapter slice and no deploy/production boundary expansion.",
+        "summary": "Local reviewer checks known FE slice profile and no deploy/production boundary expansion.",
     }
 
 
