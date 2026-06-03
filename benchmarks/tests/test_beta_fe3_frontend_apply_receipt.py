@@ -112,6 +112,27 @@ def test_beta_fe3_apply_receipt_accepts_custom_slice_allowlist(tmp_path: Path) -
     assert receipt["allowed_changed_files"] == ["src/services/taskPoolApi.ts"]
 
 
+def test_beta_fe3_apply_receipt_accepts_fe12_mediation_summary(tmp_path: Path) -> None:
+    frontend = _frontend_repo(tmp_path / "frontend")
+    custom = frontend / "src/components/taskPoolPresentation.ts"
+    custom.parent.mkdir(parents=True, exist_ok=True)
+    custom.write_text("export const statusColor = () => '#fff';\n", encoding="utf-8")
+    fe12 = _write_fe12_summary(tmp_path / "fe12.json")
+
+    receipt = module.write_receipt(
+        frontend_root=frontend,
+        source_fe26_summary=fe12,
+        output_root=tmp_path / "receipt",
+        operator_id="operator",
+        operator_authorization="test authorization",
+        test_commands=["true"],
+        allowed_changed_files=["src/components/taskPoolPresentation.ts"],
+    )
+
+    assert receipt["passed"] is True
+    assert receipt["source_mediation_schema"] == "beta-fe12-four-agent-frontend-mediation-summary:v1"
+
+
 def test_beta_fe3_apply_receipt_blocks_unsafe_custom_allowlist(tmp_path: Path) -> None:
     frontend = _frontend_repo(tmp_path / "frontend")
     fe26 = _write_fe26_summary(tmp_path / "fe26.json")
@@ -154,6 +175,25 @@ def _write_fe26_summary(path: Path) -> Path:
         "decision": "beta_fe26_agent_runner_mediation_passed",
         "mediation_level": "civitasos_agent_runner_claim_generate_deliver",
         "generation_after_claim_observed_count": 3,
+        "boundary": {"frontend_code_modified": False},
+        "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_fe12_summary(path: Path) -> Path:
+    payload = {
+        "schema_version": "beta-fe12-four-agent-frontend-mediation-summary:v1",
+        "passed": True,
+        "decision": "beta_fe12_four_agent_frontend_mediation_passed",
+        "patch_slice_id": "task_pool_presentation_extraction",
+        "task_receipt_count": 4,
+        "claim_observed_count": 4,
+        "generation_after_claim_observed_count": 4,
+        "delivery_observed_count": 4,
+        "safe_next_step": "prepare_bounded_fe3_apply_for_task_pool_presentation_extraction",
+        "selected_plan": {"slice_id": "task_pool_presentation_extraction"},
         "boundary": {"frontend_code_modified": False},
         "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
     }

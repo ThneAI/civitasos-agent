@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write a Beta-FE-3 frontend apply receipt.
 
-This gate consumes a passed FE-2.6 Agent-runner mediation summary, inspects the
+This gate consumes a passed Agent-runner mediation summary, inspects the
 frontend worktree diff, runs supplied verification commands, and writes a
 fail-closed receipt. It does not commit, push, merge, deploy, run production, or
 write production receipts.
@@ -19,6 +19,7 @@ from typing import Any
 
 RECEIPT_SCHEMA = "beta-fe3-frontend-apply-receipt:v1"
 FE26_SCHEMA = "beta-fe26-agent-runner-mediation-summary:v1"
+FE12_SCHEMA = "beta-fe12-four-agent-frontend-mediation-summary:v1"
 ALLOWED_CHANGED_FILES = {
     "src/adapters/taskReadModel.ts",
     "src/adapters/TaskReadAdapter.ts",
@@ -76,8 +77,8 @@ def write_receipt(
     output_root = output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
-    fe26 = _read_json(source_fe26_summary, failures, "FE-2.6 summary")
-    _validate_fe26(fe26, failures)
+    source_summary = _read_json(source_fe26_summary, failures, "Agent-runner mediation summary")
+    _validate_source_mediation(source_summary, failures)
 
     allowed_set = _allowed_files(allowed_changed_files, failures)
     changed_files = _changed_files(frontend_root)
@@ -116,6 +117,8 @@ def write_receipt(
         "failure_reasons": failures,
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
+        "source_mediation_schema": source_summary.get("schema_version") if isinstance(source_summary, dict) else None,
+        "source_mediation_summary": _artifact_ref(source_fe26_summary),
         "source_fe26_summary": _artifact_ref(source_fe26_summary),
         "frontend_root": str(frontend_root),
         "frontend_head": _git_text(frontend_root, ["rev-parse", "--short", "HEAD"]).strip(),
@@ -142,26 +145,61 @@ def write_receipt(
     return receipt
 
 
-def _validate_fe26(fe26: Any, failures: list[str]) -> None:
-    if not isinstance(fe26, dict):
-        failures.append("FE-2.6 summary must be an object")
+def _validate_source_mediation(summary: Any, failures: list[str]) -> None:
+    if not isinstance(summary, dict):
+        failures.append("Agent-runner mediation summary must be an object")
         return
-    if fe26.get("schema_version") != FE26_SCHEMA:
-        failures.append(f"FE-2.6 schema_version must be {FE26_SCHEMA}")
-    if fe26.get("passed") is not True:
+    schema = summary.get("schema_version")
+    if schema == FE26_SCHEMA:
+        _validate_fe26(summary, failures)
+    elif schema == FE12_SCHEMA:
+        _validate_fe12(summary, failures)
+    else:
+        failures.append(f"source mediation schema_version must be {FE26_SCHEMA} or {FE12_SCHEMA}")
+
+
+def _validate_fe26(summary: dict[str, Any], failures: list[str]) -> None:
+    if summary.get("passed") is not True:
         failures.append("FE-2.6 summary must be passed")
-    if fe26.get("decision") != "beta_fe26_agent_runner_mediation_passed":
+    if summary.get("decision") != "beta_fe26_agent_runner_mediation_passed":
         failures.append("FE-2.6 decision must be beta_fe26_agent_runner_mediation_passed")
-    if fe26.get("mediation_level") != "civitasos_agent_runner_claim_generate_deliver":
+    if summary.get("mediation_level") != "civitasos_agent_runner_claim_generate_deliver":
         failures.append("FE-2.6 mediation_level must prove claim-generate-deliver")
-    if int(fe26.get("generation_after_claim_observed_count") or 0) < 3:
+    if int(summary.get("generation_after_claim_observed_count") or 0) < 3:
         failures.append("FE-2.6 must observe at least 3 generation-after-claim receipts")
-    boundary = fe26.get("boundary")
+    _validate_common_boundaries(summary, failures, "FE-2.6")
+
+
+def _validate_fe12(summary: dict[str, Any], failures: list[str]) -> None:
+    if summary.get("passed") is not True:
+        failures.append("FE-12 summary must be passed")
+    if summary.get("decision") != "beta_fe12_four_agent_frontend_mediation_passed":
+        failures.append("FE-12 decision must be beta_fe12_four_agent_frontend_mediation_passed")
+    if summary.get("patch_slice_id") != "task_pool_presentation_extraction":
+        failures.append("FE-12 patch_slice_id must be task_pool_presentation_extraction")
+    selected = summary.get("selected_plan") if isinstance(summary.get("selected_plan"), dict) else {}
+    if selected.get("slice_id") != "task_pool_presentation_extraction":
+        failures.append("FE-12 selected_plan.slice_id must be task_pool_presentation_extraction")
+    if int(summary.get("task_receipt_count") or 0) < 4:
+        failures.append("FE-12 must include 4 task receipts")
+    if int(summary.get("claim_observed_count") or 0) < 4:
+        failures.append("FE-12 must observe 4 claims")
+    if int(summary.get("generation_after_claim_observed_count") or 0) < 4:
+        failures.append("FE-12 must observe 4 generation-after-claim receipts")
+    if int(summary.get("delivery_observed_count") or 0) < 4:
+        failures.append("FE-12 must observe 4 deliveries")
+    if summary.get("safe_next_step") != "prepare_bounded_fe3_apply_for_task_pool_presentation_extraction":
+        failures.append("FE-12 safe_next_step must authorize bounded FE-3 preparation for this slice")
+    _validate_common_boundaries(summary, failures, "FE-12")
+
+
+def _validate_common_boundaries(summary: dict[str, Any], failures: list[str], label: str) -> None:
+    boundary = summary.get("boundary")
     if not isinstance(boundary, dict) or boundary.get("frontend_code_modified") is not False:
-        failures.append("FE-2.6 boundary must not have modified frontend code")
-    h3 = fe26.get("h3_boundary")
+        failures.append(f"{label} boundary must not have modified frontend code")
+    h3 = summary.get("h3_boundary")
     if not isinstance(h3, dict) or h3.get("h3_remains_blocked") is not True:
-        failures.append("FE-2.6 h3_boundary must keep H.3 blocked")
+        failures.append(f"{label} h3_boundary must keep H.3 blocked")
 
 
 def _allowed_files(paths: list[str] | None, failures: list[str]) -> set[str]:

@@ -86,6 +86,28 @@ def test_beta_fe26_allowlist_records_excluded_participants(tmp_path: Path) -> No
     assert summary["participant_allowlist"] == ["deepseek-api-agent", "hermes-cli-agent", "local-gpu-agent"]
 
 
+def test_beta_fe26_accepts_custom_expected_patch_slice(tmp_path: Path) -> None:
+    packet_path = _write_fe2_packet(tmp_path / "fe2_packet.json", tmp_path)
+    payload = json.loads(packet_path.read_text(encoding="utf-8"))
+    payload["patch_slice_id"] = "task_pool_presentation_extraction"
+    packet_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    summary = module.run_mediation(
+        client=FakeClient(),
+        fe2_packet_summary_path=packet_path,
+        output_root=tmp_path / "run",
+        generators={
+            "deepseek-api-agent": FakeGenerator(),
+            "hermes-cli-agent": FakeGenerator(),
+            "local-gpu-agent": FakeGenerator(),
+        },
+        expected_patch_slice_id="task_pool_presentation_extraction",
+    )
+
+    assert summary["passed"] is True
+    assert summary["expected_patch_slice_id"] == "task_pool_presentation_extraction"
+
+
 def test_beta_fe26_blocks_missing_runner_generator(tmp_path: Path) -> None:
     packet_path = _write_fe2_packet(tmp_path / "fe2_packet.json", tmp_path)
 

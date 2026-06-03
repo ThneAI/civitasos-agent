@@ -303,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--participant", action="append", default=[], help="optional participant allowlist; defaults to all FE-2 packet participants")
     parser.add_argument("--confirm-deliveries", action="store_true")
     parser.add_argument("--demo-login-agent-id", default="beta_fe26_runner_mediation")
+    parser.add_argument("--expected-patch-slice-id", default="task_read_adapter_extraction")
     args = parser.parse_args(argv)
 
     generators = _parse_runner_specs(args.runner_spec)
@@ -315,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
         participant_allowlist=args.participant or None,
         backend_url=args.backend_url,
         confirm_deliveries=bool(args.confirm_deliveries),
+        expected_patch_slice_id=args.expected_patch_slice_id,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if summary.get("passed") is True else 1
@@ -329,11 +331,12 @@ def run_mediation(
     participant_allowlist: list[str] | None = None,
     backend_url: str = DEFAULT_BACKEND_URL,
     confirm_deliveries: bool = False,
+    expected_patch_slice_id: str = "task_read_adapter_extraction",
 ) -> dict[str, Any]:
     failures: list[str] = []
     output_root.mkdir(parents=True, exist_ok=True)
     fe2_packet = _read_json(fe2_packet_summary_path, failures, "FE-2 packet summary")
-    _validate_fe2_packet(fe2_packet, failures)
+    _validate_fe2_packet(fe2_packet, failures, expected_patch_slice_id)
     if not generators:
         failures.append("at least one Agent runner generator must be configured")
     selected_participant_ids: list[str] = []
@@ -417,6 +420,7 @@ def run_mediation(
         "delivery_observed_count": sum(1 for receipt in receipts if receipt.get("delivery_observed") is True),
         "challenge_window_observed_count": sum(1 for receipt in receipts if receipt.get("challenge_window_observed") is True),
         "confirm_deliveries": confirm_deliveries,
+        "expected_patch_slice_id": expected_patch_slice_id,
         "boundary": _boundary(),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),
@@ -595,7 +599,7 @@ def _delivery_output(
     }
 
 
-def _validate_fe2_packet(packet: Any, failures: list[str]) -> None:
+def _validate_fe2_packet(packet: Any, failures: list[str], expected_patch_slice_id: str = "task_read_adapter_extraction") -> None:
     if not isinstance(packet, dict):
         failures.append("FE-2 packet summary must be an object")
         return
@@ -605,8 +609,8 @@ def _validate_fe2_packet(packet: Any, failures: list[str]) -> None:
         failures.append("FE-2 packet must be passed")
     if packet.get("decision") != "beta_fe2_patch_proposal_packet_ready":
         failures.append("FE-2 packet must be patch-proposal-packet-ready")
-    if packet.get("patch_slice_id") != "task_read_adapter_extraction":
-        failures.append("FE-2 patch_slice_id must be task_read_adapter_extraction")
+    if expected_patch_slice_id and packet.get("patch_slice_id") != expected_patch_slice_id:
+        failures.append(f"FE-2 patch_slice_id must be {expected_patch_slice_id}")
     _validate_boundary(packet.get("collaboration_boundary"), failures, "FE-2 collaboration_boundary")
     h3 = packet.get("h3_boundary")
     if not isinstance(h3, dict) or h3.get("h3_remains_blocked") is not True or h3.get("h3_production_readiness_claimed") is not False:

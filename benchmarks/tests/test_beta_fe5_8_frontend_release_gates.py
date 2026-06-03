@@ -74,6 +74,22 @@ def test_local_review_accepts_task_pool_api_adapter_slice() -> None:
     assert review["matched_profile"] == "task_pool_api_adapter"
 
 
+def test_local_review_accepts_task_pool_presentation_slice() -> None:
+    diff = "\n".join([
+        "diff --git a/src/components/TaskPoolPanel.tsx b/src/components/TaskPoolPanel.tsx",
+        "+import { operatorFollowUp, wakeTraceDetail } from './taskPoolPresentation';",
+        "diff --git a/src/components/taskPoolPresentation.ts b/src/components/taskPoolPresentation.ts",
+        "+export const operatorFollowUp = () => null;",
+        "+export const wakeTraceDetail = () => 'not observed';",
+        "+const TaskPoolPanel = 'boundary context';",
+    ])
+
+    review = module._local_review(diff)
+
+    assert review["verdict"] == "approved"
+    assert review["matched_profile"] == "task_pool_presentation"
+
+
 def test_parse_external_review_json_from_fenced_block() -> None:
     parsed = module._parse_review_json('```json\n{"verdict":"approved","risk_level":"low","findings":[],"summary":"ok"}\n```')
     assert parsed["verdict"] == "approved"

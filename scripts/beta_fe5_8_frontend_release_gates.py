@@ -478,6 +478,7 @@ def _local_review(diff: str) -> dict[str, Any]:
     slice_profiles = {
         "task_read_adapter": ("TaskReadAdapter", "taskReadModel", "TaskPoolPanel"),
         "task_pool_api_adapter": ("taskPoolApi", "createTaskPoolApi", "PoolTaskPostRequest", "apiClient"),
+        "task_pool_presentation": ("taskPoolPresentation", "operatorFollowUp", "wakeTraceDetail", "TaskPoolPanel"),
     }
     profile_matches = {
         name: all(token in diff for token in tokens)
@@ -519,7 +520,7 @@ def _external_review(env_file: Path, pr: dict[str, Any], diff: str, failures: li
     prompt = (
         "Review this CivitasOS frontend PR diff. Return only JSON with keys: "
         "verdict ('approved' or 'changes_requested'), risk_level ('low','medium','high'), findings (array), summary (string). "
-        "Approve only if the change is limited to task read adapter/UI integration and does not expand deploy/production authority.\n\n"
+        "Approve only if the change is limited to a bounded frontend adapter/presentation helper slice and does not expand deploy/production authority.\n\n"
         f"PR: {json.dumps(pr, ensure_ascii=False)}\n\nDIFF:\n{diff}"
     )
     payload = {
