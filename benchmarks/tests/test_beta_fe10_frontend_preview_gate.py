@@ -59,6 +59,34 @@ def test_fe10_preview_gate_checks_frontend_and_backend_read_models(tmp_path: Pat
     assert report["boundary"]["deploy_allowed"] is False
 
 
+def test_fe10_preview_gate_prefers_service_token_when_secret_supplied(tmp_path: Path) -> None:
+    frontend = _server(_FrontendHandler)
+    backend = _server(_BackendHandler)
+    fe9 = _write_fe9_receipt(tmp_path / "fe9.json")
+
+    report = module.run_preview_gate(
+        source_fe9_receipt=fe9,
+        frontend_root=tmp_path,
+        output_root=tmp_path / "out",
+        frontend_url=frontend.url,
+        backend_url=backend.url,
+        auth_mode="service-token",
+        service_token_secret="test-secret",
+        service_id="preview-service",
+        service_token_scopes=["pool:read", "audit:read"],
+        demo_login_agent_id="tester",
+        operator_id="operator",
+        operator_authorization="test",
+    )
+
+    frontend.close()
+    backend.close()
+    assert report["passed"] is True
+    assert report["backend_auth"]["auth_method"] == "service_token"
+    assert report["backend_auth"]["token"] == "<redacted>"
+    assert report["backend_auth"]["scopes"] == ["pool:read", "audit:read"]
+
+
 def test_fe10_preview_gate_blocks_failed_fe9(tmp_path: Path) -> None:
     frontend = _server(_FrontendHandler)
     backend = _server(_BackendHandler)
@@ -121,6 +149,19 @@ class _BackendHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         if self.path == "/api/v1/auth/demo-login":
             self._json(200, {"token": "preview-token", "auth_method": "demo_login"})
+        elif self.path == "/api/v1/auth/service-token":
+            self._json(200, {
+                "success": True,
+                "data": {
+                    "token": "service-preview-token",
+                    "auth_method": "service_token",
+                    "service_id": "preview-service",
+                    "scopes": ["pool:read", "audit:read"],
+                    "production_allowed": False,
+                    "evidence_allowed": False,
+                },
+                "token": "service-preview-token",
+            })
         else:
             self._json(404, {"error": "not found"})
 

@@ -18,7 +18,9 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     fe7.add_argument("--operator-id", default="local-operator-cc")
     fe7.add_argument("--operator-authorization", default="current_chat_fe7_review_reconciliation_request")
     fe7.add_argument("--max-diff-chars", type=int, default=24000)
+    fe7.add_argument("--additional-reviewer-spec", action="append", default=[], help="reviewer_id=openai-env:/path or reviewer_id=command:argv")
 
     fe8 = sub.add_parser("fe8-merge", help="consume FE-7 reconciliation and merge the PR")
     fe8.add_argument("--source-fe7-reconciliation", required=True)
@@ -113,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             operator_id=args.operator_id,
             operator_authorization=args.operator_authorization,
             max_diff_chars=args.max_diff_chars,
+            additional_reviewer_specs=args.additional_reviewer_spec,
         )
     elif args.command == "fe8-merge":
         report = run_fe8_merge(
@@ -298,7 +302,7 @@ def run_fe6_pr(*, source_fe5_receipt: Path, frontend_root: Path, output_root: Pa
     return receipt
 
 
-def run_fe7_review(*, source_fe6_receipt: Path, frontend_root: Path, output_root: Path, external_env_file: Path, operator_decision: str, operator_id: str, operator_authorization: str, max_diff_chars: int) -> dict[str, Any]:
+def run_fe7_review(*, source_fe6_receipt: Path, frontend_root: Path, output_root: Path, external_env_file: Path, operator_decision: str, operator_id: str, operator_authorization: str, max_diff_chars: int, additional_reviewer_specs: list[str] | None = None) -> dict[str, Any]:
     frontend_root = frontend_root.resolve()
     output_root = output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -319,12 +323,26 @@ def run_fe7_review(*, source_fe6_receipt: Path, frontend_root: Path, output_root
     _write_json(output_root / "beta_fe7_local_agent_review.json", local_review)
     external_review = _external_review(external_env_file, pr, diff, failures)
     _write_json(output_root / "beta_fe7_external_agent_review.json", external_review)
+    additional_reviews = _additional_agent_reviews(
+        specs=additional_reviewer_specs or [],
+        pr=pr,
+        diff=diff,
+        output_root=output_root,
+        failures=failures,
+    )
     if local_review.get("verdict") != "approved":
         failures.append("local Agent review must approve")
     if external_review.get("verdict") != "approved":
         failures.append("external Agent review must approve")
+    for review in additional_reviews:
+        if review.get("verdict") != "approved":
+            failures.append(f"additional Agent review must approve: {review.get('reviewer_id')}")
     if operator_decision != "ready_to_merge":
         failures.append("operator_decision must be ready_to_merge")
+    additional_verdicts = {
+        str(review.get("reviewer_id")): review.get("verdict")
+        for review in additional_reviews
+    }
 
     receipt = {
         "schema_version": FE7_RECEIPT_SCHEMA,
@@ -339,12 +357,23 @@ def run_fe7_review(*, source_fe6_receipt: Path, frontend_root: Path, output_root
         "commit_id": fe6.get("commit_id") if isinstance(fe6, dict) else None,
         "local_agent_review": _artifact_ref(output_root / "beta_fe7_local_agent_review.json"),
         "external_agent_review": _artifact_ref(output_root / "beta_fe7_external_agent_review.json"),
+        "additional_agent_reviews": [
+            _artifact_ref(output_root / f"beta_fe7_{_safe_file_token(str(review.get('reviewer_id')))}_agent_review.json")
+            for review in additional_reviews
+        ],
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
         "operator_decision": operator_decision,
         "review_reconciliation": {
             "local_verdict": local_review.get("verdict"),
             "external_verdict": external_review.get("verdict"),
+            "additional_verdicts": additional_verdicts,
+            "additional_review_count": len(additional_reviews),
+            "all_agent_verdicts": {
+                "local-static-boundary-reviewer": local_review.get("verdict"),
+                "external-api-reviewer": external_review.get("verdict"),
+                **additional_verdicts,
+            },
             "merge_ready": not failures,
         },
         "diff": {"source": "gh pr diff", "captured_chars": len(diff), "truncated_at": max_diff_chars},
@@ -356,6 +385,145 @@ def run_fe7_review(*, source_fe6_receipt: Path, frontend_root: Path, output_root
     }
     _write_json(output_root / "beta_fe7_frontend_review_reconciliation.json", receipt)
     return receipt
+
+
+def _additional_agent_reviews(*, specs: list[str], pr: dict[str, Any], diff: str, output_root: Path, failures: list[str]) -> list[dict[str, Any]]:
+    reviews: list[dict[str, Any]] = []
+    for spec in specs:
+        try:
+            reviewer_id, mode, arg = _parse_reviewer_spec(spec)
+            review = _run_direct_reviewer(reviewer_id=reviewer_id, mode=mode, arg=arg, pr=pr, diff=diff)
+        except Exception as exc:
+            reviewer_id = spec.partition("=")[0] or "unknown-reviewer"
+            failures.append(f"additional Agent review failed: {reviewer_id}: {exc}")
+            review = {
+                "schema_version": "beta-fe7-direct-agent-review:v1",
+                "checked_at": _now(),
+                "reviewer_id": reviewer_id,
+                "runner_kind": "unknown",
+                "passed": False,
+                "verdict": "blocked",
+                "risk_level": "unknown",
+                "findings": [str(exc)],
+                "summary": "additional reviewer failed",
+                "api_key_recorded": False,
+                "raw_response_sha256": None,
+                "raw_response_excerpt": "",
+            }
+        path = output_root / f"beta_fe7_{_safe_file_token(str(review.get('reviewer_id')))}_agent_review.json"
+        _write_json(path, review)
+        reviews.append(review)
+    return reviews
+
+
+def _parse_reviewer_spec(value: str) -> tuple[str, str, str]:
+    reviewer_id, sep, spec = value.partition("=")
+    if not sep or not reviewer_id.strip() or not spec.strip():
+        raise ValueError("reviewer spec must be reviewer_id=openai-env:/path or reviewer_id=command:argv")
+    mode, mode_sep, arg = spec.partition(":")
+    if not mode_sep or not arg.strip():
+        raise ValueError(f"reviewer spec missing mode argument: {value}")
+    if mode not in {"openai-env", "command"}:
+        raise ValueError(f"unsupported reviewer spec mode {mode!r}")
+    return reviewer_id.strip(), mode, arg.strip()
+
+
+def _run_direct_reviewer(*, reviewer_id: str, mode: str, arg: str, pr: dict[str, Any], diff: str) -> dict[str, Any]:
+    prompt = (
+        "Review this CivitasOS frontend PR diff. Return only JSON with keys: "
+        "verdict ('approved' or 'changes_requested'), risk_level ('low','medium','high'), findings (array), summary (string). "
+        "Approve only if the change is limited to a bounded frontend adapter/presentation/app-shell helper slice and does not expand deploy/production authority.\n\n"
+        f"Reviewer: {reviewer_id}\nPR: {json.dumps(pr, ensure_ascii=False)}\n\nDIFF:\n{diff}"
+    )
+    if mode == "openai-env":
+        raw_text, raw_report = _run_openai_reviewer(reviewer_id, Path(arg), prompt)
+        runner_kind = "openai_compatible"
+    else:
+        raw_text, raw_report = _run_command_reviewer(reviewer_id, arg, prompt)
+        runner_kind = "command"
+    parsed = _parse_review_json(raw_text)
+    if not parsed and raw_text:
+        parsed = {
+            "verdict": "approved" if "approved" in raw_text.lower() and "changes_requested" not in raw_text.lower() else "changes_requested",
+            "risk_level": "medium",
+            "findings": ["direct reviewer returned non-JSON content"],
+            "summary": raw_text[:1000],
+        }
+    verdict = _text(parsed.get("verdict")) if parsed else "blocked"
+    return {
+        "schema_version": "beta-fe7-direct-agent-review:v1",
+        "checked_at": _now(),
+        "reviewer_id": reviewer_id,
+        "runner_kind": runner_kind,
+        "passed": verdict == "approved",
+        "verdict": verdict,
+        "risk_level": parsed.get("risk_level") if parsed else "unknown",
+        "findings": parsed.get("findings") if parsed else ["direct reviewer returned no parseable verdict"],
+        "summary": parsed.get("summary") if parsed else "blocked",
+        "raw_report": raw_report,
+        "api_key_recorded": False,
+        "raw_response_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest() if raw_text else None,
+        "raw_response_excerpt": raw_text[:1000],
+    }
+
+
+def _run_openai_reviewer(reviewer_id: str, env_file: Path, prompt: str) -> tuple[str, dict[str, Any]]:
+    env = _read_env(env_file, [])
+    base_url = (_text(env.get("BETA6_EXTERNAL_AGENT_API_BASE_URL")) or _text(env.get("LLM_BASE_URL"))).rstrip("/")
+    model = _text(env.get("BETA6_EXTERNAL_AGENT_MODEL")) or _text(env.get("AGENT_LLM"))
+    api_key = _text(env.get("BETA6_EXTERNAL_AGENT_API_KEY")) or _text(env.get("LLM_API_KEY"))
+    if not base_url or not model:
+        raise ValueError(f"reviewer env missing base URL or model: {env_file}")
+    endpoint = base_url.rstrip("/")
+    if not endpoint.endswith("/chat/completions"):
+        endpoint = f"{endpoint}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a strict CivitasOS release review Agent."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": 900,
+    }
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(endpoint, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            status = response.status
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{reviewer_id} HTTP {exc.code}: {detail}") from exc
+    raw_text = str(body.get("choices", [{}])[0].get("message", {}).get("content", ""))
+    return raw_text, {
+        "status": status,
+        "model": model,
+        "env_file": str(env_file.resolve()),
+        "api_key_recorded": False,
+        "content_chars": len(raw_text),
+    }
+
+
+def _run_command_reviewer(reviewer_id: str, command: str, prompt: str) -> tuple[str, dict[str, Any]]:
+    env = os.environ.copy()
+    env.setdefault("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "0")
+    argv = [prompt if part == "{prompt}" else part for part in shlex.split(command)]
+    stdin = None if "{prompt}" in command else prompt
+    result = subprocess.run(argv, input=stdin, text=True, capture_output=True, check=False, timeout=180, env=env)
+    if result.returncode != 0:
+        raise RuntimeError(f"{reviewer_id} command exited {result.returncode}; stderr={result.stderr[:500]}")
+    raw_text = result.stdout.strip()
+    if not raw_text:
+        raise RuntimeError(f"{reviewer_id} command returned empty stdout; stderr={result.stderr[:500]}")
+    return raw_text, {
+        "command": argv,
+        "returncode": result.returncode,
+        "stderr_excerpt": result.stderr[:1000],
+        "content_chars": len(raw_text),
+    }
 
 
 def run_fe8_merge(*, source_fe7_reconciliation: Path, frontend_root: Path, output_root: Path, merge_method: str, delete_branch: bool, operator_id: str, operator_authorization: str) -> dict[str, Any]:
@@ -718,6 +886,11 @@ def _sha256(path: Path) -> str:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _safe_file_token(value: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return token.strip("._") or "reviewer"
 
 
 def _now() -> str:

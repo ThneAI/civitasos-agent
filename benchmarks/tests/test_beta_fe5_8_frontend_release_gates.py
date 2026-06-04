@@ -90,6 +90,28 @@ def test_local_review_accepts_task_pool_presentation_slice() -> None:
     assert review["matched_profile"] == "task_pool_presentation"
 
 
+def test_additional_agent_review_command_spec_records_approved(tmp_path: Path) -> None:
+    reviewer = tmp_path / "reviewer.py"
+    reviewer.write_text(
+        "import json\n"
+        "print(json.dumps({'verdict':'approved','risk_level':'low','findings':[],'summary':'ok'}))\n",
+        encoding="utf-8",
+    )
+
+    reviews = module._additional_agent_reviews(
+        specs=[f"claude-cli-agent=command:{sys.executable} {reviewer}"],
+        pr={"number": 1, "url": "https://example.test/pr/1"},
+        diff="+ taskPoolPresentation\n",
+        output_root=tmp_path,
+        failures=[],
+    )
+
+    assert len(reviews) == 1
+    assert reviews[0]["reviewer_id"] == "claude-cli-agent"
+    assert reviews[0]["verdict"] == "approved"
+    assert (tmp_path / "beta_fe7_claude-cli-agent_agent_review.json").is_file()
+
+
 def test_parse_external_review_json_from_fenced_block() -> None:
     parsed = module._parse_review_json('```json\n{"verdict":"approved","risk_level":"low","findings":[],"summary":"ok"}\n```')
     assert parsed["verdict"] == "approved"

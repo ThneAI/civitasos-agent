@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import urllib.error
 import urllib.request
@@ -49,6 +50,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--frontend-url", required=True)
     parser.add_argument("--backend-url", required=True)
+    parser.add_argument("--auth-mode", choices=("auto", "bearer-token", "service-token", "demo-login"), default="auto")
+    parser.add_argument("--bearer-token")
+    parser.add_argument("--bearer-token-file")
+    parser.add_argument("--service-token-secret")
+    parser.add_argument("--service-id", default="beta_fe10_preview_gate")
+    parser.add_argument("--service-token-scope", action="append", default=[])
     parser.add_argument("--demo-login-agent-id", default="beta_fe10_preview_gate")
     parser.add_argument("--operator-id", default="local-operator-cc")
     parser.add_argument("--operator-authorization", default="current_chat_fe10_preview_gate_request")
@@ -59,6 +66,12 @@ def main(argv: list[str] | None = None) -> int:
         output_root=Path(args.output_root),
         frontend_url=args.frontend_url,
         backend_url=args.backend_url,
+        auth_mode=args.auth_mode,
+        bearer_token=args.bearer_token,
+        bearer_token_file=Path(args.bearer_token_file) if args.bearer_token_file else None,
+        service_token_secret=args.service_token_secret,
+        service_id=args.service_id,
+        service_token_scopes=args.service_token_scope,
         demo_login_agent_id=args.demo_login_agent_id,
         operator_id=args.operator_id,
         operator_authorization=args.operator_authorization,
@@ -74,9 +87,15 @@ def run_preview_gate(
     output_root: Path,
     frontend_url: str,
     backend_url: str,
-    demo_login_agent_id: str,
-    operator_id: str,
-    operator_authorization: str,
+    auth_mode: str = "auto",
+    bearer_token: str | None = None,
+    bearer_token_file: Path | None = None,
+    service_token_secret: str | None = None,
+    service_id: str = "beta_fe10_preview_gate",
+    service_token_scopes: list[str] | None = None,
+    demo_login_agent_id: str = "beta_fe10_preview_gate",
+    operator_id: str = "local-operator-cc",
+    operator_authorization: str = "current_chat_fe10_preview_gate_request",
 ) -> dict[str, Any]:
     frontend_root = frontend_root.resolve()
     output_root = output_root.resolve()
@@ -100,9 +119,18 @@ def run_preview_gate(
         backend_checks.append({"name": "healthz", "url": f"{backend_url}/healthz", **health})
         if health.get("status_code") != 200:
             failures.append("backend /healthz must return 200")
-        auth_report = _demo_login(backend_url, demo_login_agent_id)
+        auth_report = _resolve_auth(
+            backend_url=backend_url,
+            auth_mode=auth_mode,
+            bearer_token=bearer_token,
+            bearer_token_file=bearer_token_file,
+            service_token_secret=service_token_secret,
+            service_id=service_id,
+            service_token_scopes=service_token_scopes or [],
+            demo_login_agent_id=demo_login_agent_id,
+        )
         if auth_report.get("passed") is not True:
-            failures.append("backend demo-login token bootstrap failed for preview smoke")
+            failures.append(f"backend auth bootstrap failed for preview smoke: {auth_report.get('auth_method') or auth_mode}")
         token = str(auth_report.get("token") or "")
         auth_report["token"] = "<redacted>" if token else ""
         for name, method, path, requires_auth in READ_ENDPOINTS:
@@ -184,6 +212,97 @@ def _demo_login(backend_url: str, agent_id: str) -> dict[str, Any]:
         return {"passed": False, "status_code": status, "error": "invalid JSON", "token_recorded": False}
     token = str(body.get("token") or body.get("data", {}).get("token") or "") if isinstance(body, dict) else ""
     return {"passed": bool(token), "status_code": status, "token": token, "token_recorded": False, "auth_method": body.get("auth_method") if isinstance(body, dict) else None}
+
+
+def _resolve_auth(
+    *,
+    backend_url: str,
+    auth_mode: str,
+    bearer_token: str | None,
+    bearer_token_file: Path | None,
+    service_token_secret: str | None,
+    service_id: str,
+    service_token_scopes: list[str],
+    demo_login_agent_id: str,
+) -> dict[str, Any]:
+    token = _configured_bearer_token(bearer_token, bearer_token_file)
+    if auth_mode in {"auto", "bearer-token"} and token:
+        return {
+            "passed": True,
+            "status_code": None,
+            "token": token,
+            "token_recorded": False,
+            "auth_method": "bearer_token",
+            "source": "argument_env_or_file",
+        }
+    if auth_mode == "bearer-token":
+        return {"passed": False, "status_code": None, "token_recorded": False, "auth_method": "bearer_token", "error": "missing bearer token"}
+    secret = service_token_secret or os.getenv("CIVITASOS_FE10_SERVICE_TOKEN_SECRET") or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
+    if auth_mode in {"auto", "service-token"} and secret:
+        return _service_token(
+            backend_url=backend_url,
+            service_id=service_id,
+            secret=secret,
+            scopes=service_token_scopes or _default_service_token_scopes(),
+        )
+    if auth_mode == "service-token":
+        return {"passed": False, "status_code": None, "token_recorded": False, "auth_method": "service_token", "error": "missing service token secret"}
+    return _demo_login(backend_url, demo_login_agent_id)
+
+
+def _configured_bearer_token(bearer_token: str | None, bearer_token_file: Path | None) -> str:
+    if bearer_token:
+        return bearer_token.strip()
+    env_token = os.getenv("CIVITASOS_FE10_BEARER_TOKEN") or os.getenv("CIVITASOS_BEARER_TOKEN")
+    if env_token:
+        return env_token.strip()
+    if bearer_token_file and bearer_token_file.is_file():
+        return bearer_token_file.read_text(encoding="utf-8").strip()
+    env_file = os.getenv("CIVITASOS_FE10_BEARER_TOKEN_FILE")
+    if env_file and Path(env_file).is_file():
+        return Path(env_file).read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _service_token(*, backend_url: str, service_id: str, secret: str, scopes: list[str]) -> dict[str, Any]:
+    payload = json.dumps({"service_id": service_id, "secret": secret, "scopes": scopes}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{backend_url}/api/v1/auth/service-token",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        return {"passed": False, "status_code": exc.code, "error": raw[:500], "token_recorded": False, "auth_method": "service_token"}
+    except Exception as exc:
+        return {"passed": False, "status_code": None, "error": str(exc), "token_recorded": False, "auth_method": "service_token"}
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"passed": False, "status_code": status, "error": "invalid JSON", "token_recorded": False, "auth_method": "service_token"}
+    data = body.get("data") if isinstance(body, dict) else {}
+    token = str(body.get("token") or data.get("token") or "") if isinstance(data, dict) else ""
+    return {
+        "passed": bool(token),
+        "status_code": status,
+        "token": token,
+        "token_recorded": False,
+        "auth_method": "service_token",
+        "service_id": data.get("service_id") if isinstance(data, dict) else service_id,
+        "scopes": data.get("scopes") if isinstance(data, dict) else scopes,
+        "production_allowed": data.get("production_allowed") if isinstance(data, dict) else False,
+        "evidence_allowed": data.get("evidence_allowed") if isinstance(data, dict) else False,
+    }
+
+
+def _default_service_token_scopes() -> list[str]:
+    raw = os.getenv("CIVITASOS_FE10_SERVICE_TOKEN_SCOPES", "pool:read,audit:read")
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def _http_json(url: str, headers: dict[str, str] | None, method: str = "GET") -> dict[str, Any]:

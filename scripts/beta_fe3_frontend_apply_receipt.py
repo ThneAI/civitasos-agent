@@ -20,6 +20,7 @@ from typing import Any
 RECEIPT_SCHEMA = "beta-fe3-frontend-apply-receipt:v1"
 FE26_SCHEMA = "beta-fe26-agent-runner-mediation-summary:v1"
 FE12_SCHEMA = "beta-fe12-four-agent-frontend-mediation-summary:v1"
+FE_ORCHESTRATION_SCHEMA = "beta-fe-four-agent-frontend-orchestration-summary:v1"
 ALLOWED_CHANGED_FILES = {
     "src/adapters/taskReadModel.ts",
     "src/adapters/TaskReadAdapter.ts",
@@ -154,8 +155,10 @@ def _validate_source_mediation(summary: Any, failures: list[str]) -> None:
         _validate_fe26(summary, failures)
     elif schema == FE12_SCHEMA:
         _validate_fe12(summary, failures)
+    elif schema == FE_ORCHESTRATION_SCHEMA:
+        _validate_four_agent_orchestration(summary, failures)
     else:
-        failures.append(f"source mediation schema_version must be {FE26_SCHEMA} or {FE12_SCHEMA}")
+        failures.append(f"source mediation schema_version must be {FE26_SCHEMA}, {FE12_SCHEMA}, or {FE_ORCHESTRATION_SCHEMA}")
 
 
 def _validate_fe26(summary: dict[str, Any], failures: list[str]) -> None:
@@ -193,6 +196,30 @@ def _validate_fe12(summary: dict[str, Any], failures: list[str]) -> None:
     _validate_common_boundaries(summary, failures, "FE-12")
 
 
+def _validate_four_agent_orchestration(summary: dict[str, Any], failures: list[str]) -> None:
+    if summary.get("passed") is not True:
+        failures.append("four-Agent orchestration summary must be passed")
+    if summary.get("decision") != "beta_fe_four_agent_orchestration_passed":
+        failures.append("four-Agent orchestration decision must be beta_fe_four_agent_orchestration_passed")
+    patch_slice_id = _text(summary.get("patch_slice_id"))
+    if not patch_slice_id:
+        failures.append("four-Agent orchestration patch_slice_id must be non-empty")
+    selected = summary.get("selected_plan") if isinstance(summary.get("selected_plan"), dict) else {}
+    if _text(selected.get("slice_id")) != patch_slice_id:
+        failures.append("four-Agent orchestration selected_plan.slice_id must match patch_slice_id")
+    if int(summary.get("task_receipt_count") or 0) < 4:
+        failures.append("four-Agent orchestration must include 4 task receipts")
+    if int(summary.get("claim_observed_count") or 0) < 4:
+        failures.append("four-Agent orchestration must observe 4 claims")
+    if int(summary.get("generation_after_claim_observed_count") or 0) < 4:
+        failures.append("four-Agent orchestration must observe 4 generation-after-claim receipts")
+    if int(summary.get("delivery_observed_count") or 0) < 4:
+        failures.append("four-Agent orchestration must observe 4 deliveries")
+    if _text(summary.get("safe_next_step")) == "operator_review_required_before_any_apply":
+        failures.append("four-Agent orchestration safe_next_step must authorize bounded FE-3 preparation")
+    _validate_common_boundaries(summary, failures, "four-Agent orchestration")
+
+
 def _validate_common_boundaries(summary: dict[str, Any], failures: list[str], label: str) -> None:
     boundary = summary.get("boundary")
     if not isinstance(boundary, dict) or boundary.get("frontend_code_modified") is not False:
@@ -200,6 +227,10 @@ def _validate_common_boundaries(summary: dict[str, Any], failures: list[str], la
     h3 = summary.get("h3_boundary")
     if not isinstance(h3, dict) or h3.get("h3_remains_blocked") is not True:
         failures.append(f"{label} h3_boundary must keep H.3 blocked")
+
+
+def _text(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
 
 
 def _allowed_files(paths: list[str] | None, failures: list[str]) -> set[str]:
