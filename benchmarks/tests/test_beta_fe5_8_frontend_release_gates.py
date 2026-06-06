@@ -52,6 +52,84 @@ def test_fe5_push_consumes_fe4_receipt_and_pushes_bounded_branch(tmp_path: Path)
     assert not _git(repo, "status", "--short")
 
 
+def test_fe6_resolves_relative_body_file_before_gh(tmp_path: Path, monkeypatch) -> None:
+    repo, _remote = _frontend_repo_with_remote(tmp_path)
+    commit_id = _git(repo, "rev-parse", "HEAD")
+    _run(["git", "push", "origin", f"{commit_id}:refs/heads/beta-fe/test-adapter"], repo)
+    fe5 = tmp_path / "fe5.json"
+    fe5.write_text(
+        json.dumps({
+            "schema_version": module.FE5_RECEIPT_SCHEMA,
+            "passed": True,
+            "decision": "beta_fe5_frontend_push_receipt_passed",
+            "commit_id": commit_id,
+            "remote": "origin",
+            "target_branch": "beta-fe/test-adapter",
+            "remote_branch_after_head": commit_id,
+            "boundary": {
+                "frontend_code_modified": True,
+                "apply_allowed": True,
+                "commit_allowed": True,
+                "push_allowed": True,
+                "pr_allowed": False,
+                "review_allowed": False,
+                "merge_allowed": False,
+                "deploy_allowed": False,
+                "production_runtime_execution_allowed": False,
+                "production_receipt_write_allowed": False,
+            },
+            "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
+        }),
+        encoding="utf-8",
+    )
+    body = tmp_path / "draft_pr_body.md"
+    body.write_text("bounded PR body\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, list[str]] = {}
+
+    def fake_gh(_cwd: Path, *args: str):
+        captured["args"] = list(args)
+        return {
+            "argv": ["gh", *args],
+            "returncode": 0,
+            "stdout": "https://example.test/pr/1\n",
+            "stderr": "",
+        }
+
+    def fake_gh_json(_cwd: Path, _failures: list[str], *args: str):
+        if args[:2] == ("pr", "list"):
+            return []
+        return {
+            "number": 1,
+            "url": "https://example.test/pr/1",
+            "isDraft": True,
+            "state": "OPEN",
+            "headRefName": "beta-fe/test-adapter",
+            "headRefOid": commit_id,
+            "baseRefName": "main",
+            "title": "test adapter",
+        }
+
+    monkeypatch.setattr(module, "_gh", fake_gh)
+    monkeypatch.setattr(module, "_gh_json", fake_gh_json)
+
+    report = module.run_fe6_pr(
+        source_fe5_receipt=fe5,
+        frontend_root=repo,
+        output_root=tmp_path / "out",
+        github_repo="example/frontend",
+        base_branch="main",
+        title="test adapter",
+        body_file=Path("draft_pr_body.md"),
+        operator_id="operator",
+        operator_authorization="test",
+    )
+
+    assert report["passed"] is True
+    body_arg = captured["args"][captured["args"].index("--body-file") + 1]
+    assert body_arg == str(body.resolve())
+
+
 def test_local_review_blocks_production_boundary_expansion() -> None:
     diff = '+ const deploy_allowed = "deploy_allowed\\": true";\n'
     review = module._local_review(diff)

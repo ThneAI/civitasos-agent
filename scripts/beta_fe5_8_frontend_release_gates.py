@@ -224,6 +224,7 @@ def run_fe5_push(*, source_fe4_receipt: Path, frontend_root: Path, output_root: 
 def run_fe6_pr(*, source_fe5_receipt: Path, frontend_root: Path, output_root: Path, github_repo: str, base_branch: str, title: str, body_file: Path, operator_id: str, operator_authorization: str) -> dict[str, Any]:
     frontend_root = frontend_root.resolve()
     output_root = output_root.resolve()
+    body_file = body_file.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
     fe5 = _read_json(source_fe5_receipt, failures, "FE-5 push receipt")
