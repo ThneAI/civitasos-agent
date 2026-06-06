@@ -309,6 +309,134 @@ def test_parse_external_review_json_from_fenced_block() -> None:
     assert parsed["verdict"] == "approved"
 
 
+def test_fe8_blocks_before_ready_when_live_head_drifted(tmp_path: Path, monkeypatch) -> None:
+    repo, _remote = _frontend_repo_with_remote(tmp_path)
+    commit_id = _git(repo, "rev-parse", "HEAD")
+    fe7 = _write_fe7_receipt(tmp_path / "fe7.json", commit_id)
+    gh_calls: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(module, "_remote_head", lambda *_args: commit_id)
+    monkeypatch.setattr(
+        module,
+        "_gh_json",
+        lambda *_args: {
+            "number": 4,
+            "url": "https://example.test/pr/4",
+            "isDraft": True,
+            "state": "OPEN",
+            "headRefName": "beta-fe/test-adapter",
+            "headRefOid": "drifted-head",
+            "baseRefName": "main",
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [],
+        },
+    )
+
+    def fake_gh(_cwd: Path, *args: str):
+        gh_calls.append(args)
+        return {"argv": ["gh", *args], "returncode": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(module, "_gh", fake_gh)
+
+    report = module.run_fe8_merge(
+        source_fe7_reconciliation=fe7,
+        frontend_root=repo,
+        output_root=tmp_path / "out",
+        merge_method="rebase",
+        delete_branch=False,
+        operator_id="operator",
+        operator_authorization="test-fe8-authorization",
+    )
+
+    assert report["passed"] is False
+    assert "live PR headRefOid must match FE-7" in report["failure_reasons"]
+    assert report["boundary"]["merge_allowed"] is False
+    assert report["git_actions_performed"]["merge"] is False
+    assert gh_calls == []
+
+
+def test_fe8_ready_failure_does_not_attempt_merge(tmp_path: Path, monkeypatch) -> None:
+    repo, _remote = _frontend_repo_with_remote(tmp_path)
+    commit_id = _git(repo, "rev-parse", "HEAD")
+    fe7 = _write_fe7_receipt(tmp_path / "fe7.json", commit_id)
+    gh_calls: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(module, "_remote_head", lambda *_args: commit_id)
+    monkeypatch.setattr(module, "_gh_json", lambda *_args: _live_pr(commit_id, is_draft=True))
+
+    def fake_gh(_cwd: Path, *args: str):
+        gh_calls.append(args)
+        return {"argv": ["gh", *args], "returncode": 1, "stdout": "", "stderr": "ready failed"}
+
+    monkeypatch.setattr(module, "_gh", fake_gh)
+
+    report = module.run_fe8_merge(
+        source_fe7_reconciliation=fe7,
+        frontend_root=repo,
+        output_root=tmp_path / "out",
+        merge_method="rebase",
+        delete_branch=False,
+        operator_id="operator",
+        operator_authorization="test-fe8-authorization",
+    )
+
+    assert report["passed"] is False
+    assert report["boundary"]["merge_allowed"] is False
+    assert report["git_actions_performed"]["merge"] is False
+    assert len(gh_calls) == 1
+    assert gh_calls[0][:2] == ("pr", "ready")
+
+
+def test_fe8_binds_remote_base_to_merge_commit(tmp_path: Path, monkeypatch) -> None:
+    repo, _remote = _frontend_repo_with_remote(tmp_path)
+    commit_id = _git(repo, "rev-parse", "HEAD")
+    merge_commit = "f" * 40
+    fe7 = _write_fe7_receipt(tmp_path / "fe7.json", commit_id)
+    live_responses = iter([
+        _live_pr(commit_id, is_draft=True),
+        _live_pr(commit_id, is_draft=False),
+        {
+            "number": 4,
+            "url": "https://example.test/pr/4",
+            "state": "MERGED",
+            "mergedAt": "2026-06-06T00:00:00Z",
+            "mergeCommit": {"oid": merge_commit},
+            "headRefName": "beta-fe/test-adapter",
+            "baseRefName": "main",
+        },
+    ])
+    remote_heads = iter([commit_id, merge_commit])
+
+    monkeypatch.setattr(module, "_remote_head", lambda *_args: next(remote_heads))
+    monkeypatch.setattr(module, "_gh_json", lambda *_args: next(live_responses))
+    monkeypatch.setattr(
+        module,
+        "_gh",
+        lambda _cwd, *args: {
+            "argv": ["gh", *args],
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    report = module.run_fe8_merge(
+        source_fe7_reconciliation=fe7,
+        frontend_root=repo,
+        output_root=tmp_path / "out",
+        merge_method="rebase",
+        delete_branch=False,
+        operator_id="operator",
+        operator_authorization="test-fe8-authorization",
+    )
+
+    assert report["passed"] is True
+    assert report["base_branch_after_head"] == merge_commit
+    assert report["pr"]["mergeCommit"]["oid"] == merge_commit
+    assert report["boundary"]["merge_allowed"] is True
+    assert report["git_actions_performed"]["merge"] is True
+
+
 def _frontend_repo_with_remote(tmp_path: Path) -> tuple[Path, Path]:
     remote = tmp_path / "remote.git"
     _run(["git", "init", "--bare", str(remote)], tmp_path)
@@ -344,6 +472,47 @@ def _write_fe4_receipt(path: Path, repo: Path, commit_id: str) -> Path:
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _write_fe7_receipt(path: Path, commit_id: str) -> Path:
+    payload = {
+        "schema_version": module.FE7_RECEIPT_SCHEMA,
+        "passed": True,
+        "decision": "beta_fe7_frontend_review_reconciliation_passed",
+        "github_repo": "example/frontend",
+        "operator_decision": "ready_to_merge",
+        "review_reconciliation": {
+            "local_verdict": "approved",
+            "external_verdict": "approved",
+            "merge_ready": True,
+        },
+        "pr": {
+            "number": 4,
+            "url": "https://example.test/pr/4",
+            "isDraft": True,
+            "state": "OPEN",
+            "headRefName": "beta-fe/test-adapter",
+            "headRefOid": commit_id,
+            "baseRefName": "main",
+        },
+        "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _live_pr(commit_id: str, *, is_draft: bool) -> dict[str, object]:
+    return {
+        "number": 4,
+        "url": "https://example.test/pr/4",
+        "isDraft": is_draft,
+        "state": "OPEN",
+        "headRefName": "beta-fe/test-adapter",
+        "headRefOid": commit_id,
+        "baseRefName": "main",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [],
+    }
 
 
 def _run(argv: list[str], cwd: Path) -> None:

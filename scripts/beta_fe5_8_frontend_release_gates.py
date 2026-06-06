@@ -552,37 +552,81 @@ def run_fe8_merge(*, source_fe7_reconciliation: Path, frontend_root: Path, outpu
     failures: list[str] = []
     fe7 = _read_json(source_fe7_reconciliation, failures, "FE-7 review reconciliation")
     _validate_fe7(fe7, failures)
+    _validate_operator_authorization(operator_id, operator_authorization, failures)
     pr = fe7.get("pr") if isinstance(fe7, dict) else {}
     github_repo = _text(fe7.get("github_repo")) if isinstance(fe7, dict) else ""
     pr_number = str(pr.get("number", "")) if isinstance(pr, dict) else ""
     base_branch = _text(pr.get("baseRefName")) if isinstance(pr, dict) else ""
+    if not github_repo:
+        failures.append("FE-7 github_repo is required")
+    if not pr_number or not base_branch:
+        failures.append("FE-7 PR number and base branch are required")
     remote_before = _remote_head(frontend_root, "origin", base_branch, failures) if base_branch else None
     ready_run = None
     merge_run = None
+    live_before: dict[str, Any] = {}
+    live_ready: dict[str, Any] = {}
+    merge_authorized = False
     if not failures:
-        current = _gh_json(frontend_root, failures, "pr", "view", pr_number, "--repo", github_repo, "--json", "isDraft,state,number,url") or {}
-        if isinstance(current, dict) and current.get("isDraft") is True:
+        live_before = _gh_json(
+            frontend_root,
+            failures,
+            "pr",
+            "view",
+            pr_number,
+            "--repo",
+            github_repo,
+            "--json",
+            "isDraft,state,number,url,headRefName,headRefOid,baseRefName,mergeable,statusCheckRollup",
+        ) or {}
+        _validate_fe8_live_pr(live_before, pr, failures, expect_draft=True)
+    if not failures:
+        if live_before.get("isDraft") is True:
             ready_run = _gh(frontend_root, "pr", "ready", pr_number, "--repo", github_repo)
             if ready_run["returncode"] != 0:
-                failures.append("gh pr ready failed")
+                failures.append(f"gh pr ready failed: {ready_run.get('stderr', '')}")
+    if not failures:
+        live_ready = _gh_json(
+            frontend_root,
+            failures,
+            "pr",
+            "view",
+            pr_number,
+            "--repo",
+            github_repo,
+            "--json",
+            "isDraft,state,number,url,headRefName,headRefOid,baseRefName,mergeable,statusCheckRollup",
+        ) or {}
+        _validate_fe8_live_pr(live_ready, pr, failures, expect_draft=False)
+    if not failures:
+        merge_authorized = True
         argv = ["pr", "merge", pr_number, "--repo", github_repo, f"--{merge_method}"]
         if delete_branch:
             argv.append("--delete-branch")
         merge_run = _gh(frontend_root, *argv)
         if merge_run["returncode"] != 0:
-            failures.append("gh pr merge failed")
+            failures.append(f"gh pr merge failed: {merge_run.get('stderr', '')}")
     merged = {}
     remote_after = remote_before
-    if not failures:
+    merge_performed = bool(merge_run and merge_run.get("returncode") == 0)
+    if merge_performed:
         merged = _gh_json(frontend_root, failures, "pr", "view", pr_number, "--repo", github_repo, "--json", "number,url,state,mergedAt,mergeCommit,headRefName,baseRefName") or {}
         if not isinstance(merged, dict):
             failures.append("gh pr view after merge must return object")
             merged = {}
         if merged.get("state") != "MERGED":
             failures.append("PR state must be MERGED after FE-8")
+        if merged.get("headRefName") != pr.get("headRefName") or merged.get("baseRefName") != base_branch:
+            failures.append("merged PR refs must remain bound to FE-7")
+        merge_commit = merged.get("mergeCommit") if isinstance(merged.get("mergeCommit"), dict) else {}
+        merge_commit_oid = _text(merge_commit.get("oid"))
+        if not merge_commit_oid:
+            failures.append("merged PR must expose mergeCommit.oid")
         remote_after = _remote_head(frontend_root, "origin", base_branch, failures) if base_branch else None
         if remote_after == remote_before:
             failures.append("base branch remote head must advance after merge")
+        if merge_commit_oid and remote_after != merge_commit_oid:
+            failures.append("base branch remote head must equal GitHub mergeCommit.oid")
     receipt = {
         "schema_version": FE8_RECEIPT_SCHEMA,
         "checked_at": _now(),
@@ -597,12 +641,14 @@ def run_fe8_merge(*, source_fe7_reconciliation: Path, frontend_root: Path, outpu
         "base_branch": base_branch,
         "base_branch_before_head": remote_before,
         "base_branch_after_head": remote_after,
+        "pr_before": live_before,
+        "pr_ready": live_ready,
         "ready": ready_run,
         "merge": merge_run,
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
-        "git_actions_performed": {"commit": True, "push": True, "pr": True, "merge": not failures, "deploy": False},
-        "boundary": _boundary(merge_allowed=True),
+        "git_actions_performed": {"commit": True, "push": True, "pr": True, "merge": merge_performed, "deploy": False},
+        "boundary": _boundary(merge_allowed=merge_authorized),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),
     }
@@ -658,6 +704,68 @@ def _validate_fe7(value: Any, failures: list[str]) -> None:
     if rec.get("local_verdict") != "approved" or rec.get("external_verdict") != "approved" or rec.get("merge_ready") is not True:
         failures.append("FE-7 reconciliation must have approved local/external verdicts")
     _validate_h3(value, "FE-7", failures)
+
+
+def _validate_operator_authorization(operator_id: str, operator_authorization: str, failures: list[str]) -> None:
+    if not _text(operator_id):
+        failures.append("operator_id is required")
+    authorization = _text(operator_authorization)
+    if not authorization:
+        failures.append("operator_authorization is required")
+    if any(token in authorization.upper() for token in ("TODO", "REPLACE_ME", "PLACEHOLDER")):
+        failures.append("operator_authorization must not be a placeholder")
+
+
+def _validate_fe8_live_pr(
+    current: Any,
+    expected: Any,
+    failures: list[str],
+    *,
+    expect_draft: bool,
+) -> None:
+    if not isinstance(current, dict) or not isinstance(expected, dict):
+        failures.append("live and FE-7 PR records must be objects")
+        return
+    expected_number = expected.get("number")
+    expected_refs = {
+        "headRefName": _text(expected.get("headRefName")),
+        "headRefOid": _text(expected.get("headRefOid")),
+        "baseRefName": _text(expected.get("baseRefName")),
+    }
+    if not expected_number or not all(expected_refs.values()):
+        failures.append("FE-7 PR record must bind number, headRefName, headRefOid, and baseRefName")
+        return
+    if current.get("number") != expected_number:
+        failures.append("live PR number must match FE-7")
+    if current.get("state") != "OPEN":
+        failures.append("live PR state must be OPEN before merge")
+    if current.get("isDraft") is not expect_draft:
+        failures.append(f"live PR isDraft must be {str(expect_draft).lower()}")
+    for field, expected_value in expected_refs.items():
+        if _text(current.get(field)) != expected_value:
+            failures.append(f"live PR {field} must match FE-7")
+    mergeable = _text(current.get("mergeable"))
+    if mergeable and mergeable != "MERGEABLE":
+        failures.append(f"live PR mergeable must be MERGEABLE, got {mergeable}")
+    checks = current.get("statusCheckRollup")
+    if checks is None:
+        return
+    if not isinstance(checks, list):
+        failures.append("live PR statusCheckRollup must be a list")
+        return
+    for check in checks:
+        if not isinstance(check, dict):
+            failures.append("live PR status check must be an object")
+            continue
+        status = _text(check.get("status")).upper()
+        conclusion = _text(check.get("conclusion")).upper()
+        state = _text(check.get("state")).upper()
+        if status and status != "COMPLETED":
+            failures.append(f"live PR status check is not completed: {status}")
+        if conclusion and conclusion not in {"SUCCESS", "NEUTRAL", "SKIPPED"}:
+            failures.append(f"live PR status check conclusion blocks merge: {conclusion}")
+        if state and state not in {"SUCCESS", "NEUTRAL", "SKIPPED"}:
+            failures.append(f"live PR status context blocks merge: {state}")
 
 
 def _local_review(diff: str) -> dict[str, Any]:
