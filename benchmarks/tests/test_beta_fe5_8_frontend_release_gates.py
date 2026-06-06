@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib import request
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
@@ -166,6 +167,77 @@ def test_local_review_accepts_task_pool_presentation_slice() -> None:
 
     assert review["verdict"] == "approved"
     assert review["matched_profile"] == "task_pool_presentation"
+
+
+def test_local_review_accepts_app_shell_panel_registry_slice() -> None:
+    diff = "\n".join([
+        "diff --git a/src/App.tsx b/src/App.tsx",
+        "+import AppShell from './app/AppShell';",
+        "diff --git a/src/app/AppShell.tsx b/src/app/AppShell.tsx",
+        "+export interface AppShellProps extends PanelRenderContext {}",
+        "diff --git a/src/app/panelRegistry.ts b/src/app/panelRegistry.ts",
+        "+export const PANEL_REGISTRY = [];",
+        "diff --git a/src/app/panelRegistry.test.ts b/src/app/panelRegistry.test.ts",
+        "+describe('panelRegistry', () => {});",
+    ])
+
+    review = module._local_review(diff)
+
+    assert review["verdict"] == "approved"
+    assert review["matched_profile"] == "app_shell_panel_registry"
+
+
+def test_external_review_accepts_shared_llm_env_keys(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / "external.env"
+    env_file.write_text(
+        "LLM_BASE_URL=https://example.test/v1\n"
+        "AGENT_LLM=openai:review-model\n"
+        "LLM_API_KEY=secret-not-recorded\n",
+        encoding="utf-8",
+    )
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{
+                    "message": {
+                        "content": json.dumps({
+                            "verdict": "approved",
+                            "risk_level": "low",
+                            "findings": [],
+                            "summary": "bounded app shell",
+                        }),
+                    },
+                }],
+            }).encode()
+
+    def fake_urlopen(req: request.Request, timeout: int):
+        assert req.full_url == "https://example.test/v1/chat/completions"
+        assert timeout == 90
+        assert req.headers["Authorization"] == "Bearer secret-not-recorded"
+        return FakeResponse()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    failures: list[str] = []
+    review = module._external_review(
+        env_file,
+        {"number": 4},
+        "+ bounded AppShell PANEL_REGISTRY PanelRenderContext panelRegistry\n",
+        failures,
+    )
+
+    assert failures == []
+    assert review["verdict"] == "approved"
+    assert review["model"] == "review-model"
+    assert review["api_key_recorded"] is False
 
 
 def test_additional_agent_review_command_spec_records_approved(tmp_path: Path) -> None:

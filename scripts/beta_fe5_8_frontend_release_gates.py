@@ -489,7 +489,7 @@ def _run_direct_reviewer(*, reviewer_id: str, mode: str, arg: str, pr: dict[str,
 def _run_openai_reviewer(reviewer_id: str, env_file: Path, prompt: str) -> tuple[str, dict[str, Any]]:
     env = _read_env(env_file, [])
     base_url = (_text(env.get("BETA6_EXTERNAL_AGENT_API_BASE_URL")) or _text(env.get("LLM_BASE_URL"))).rstrip("/")
-    model = _text(env.get("BETA6_EXTERNAL_AGENT_MODEL")) or _text(env.get("AGENT_LLM"))
+    model = _normalize_model(_text(env.get("BETA6_EXTERNAL_AGENT_MODEL")) or _text(env.get("AGENT_LLM")))
     api_key = _text(env.get("BETA6_EXTERNAL_AGENT_API_KEY")) or _text(env.get("LLM_API_KEY"))
     if not base_url or not model:
         raise ValueError(f"reviewer env missing base URL or model: {env_file}")
@@ -666,6 +666,7 @@ def _local_review(diff: str) -> dict[str, Any]:
         "task_read_adapter": ("TaskReadAdapter", "taskReadModel", "TaskPoolPanel"),
         "task_pool_api_adapter": ("taskPoolApi", "createTaskPoolApi", "PoolTaskPostRequest", "apiClient"),
         "task_pool_presentation": ("taskPoolPresentation", "operatorFollowUp", "wakeTraceDetail", "TaskPoolPanel"),
+        "app_shell_panel_registry": ("AppShell", "PANEL_REGISTRY", "PanelRenderContext", "panelRegistry"),
     }
     profile_matches = {
         name: all(token in diff for token in tokens)
@@ -698,16 +699,17 @@ def _local_review(diff: str) -> dict[str, Any]:
 def _external_review(env_file: Path, pr: dict[str, Any], diff: str, failures: list[str]) -> dict[str, Any]:
     env = _read_env(env_file, failures)
     provider = _text(env.get("BETA6_EXTERNAL_AGENT_PROVIDER")) or "openai_compatible"
-    base_url = _text(env.get("BETA6_EXTERNAL_AGENT_API_BASE_URL")).rstrip("/")
-    model = _text(env.get("BETA6_EXTERNAL_AGENT_MODEL"))
-    api_key = _text(env.get("BETA6_EXTERNAL_AGENT_API_KEY"))
+    base_url = (_text(env.get("BETA6_EXTERNAL_AGENT_API_BASE_URL")) or _text(env.get("LLM_BASE_URL"))).rstrip("/")
+    model = _normalize_model(_text(env.get("BETA6_EXTERNAL_AGENT_MODEL")) or _text(env.get("AGENT_LLM")))
+    api_key = _text(env.get("BETA6_EXTERNAL_AGENT_API_KEY")) or _text(env.get("LLM_API_KEY"))
     if not base_url or not model or not api_key:
         failures.append("external env must include API base URL, model, and API key")
         return {"schema_version": "beta-fe7-external-agent-review:v1", "passed": False, "verdict": "blocked", "failure_reasons": ["missing external API config"]}
     prompt = (
         "Review this CivitasOS frontend PR diff. Return only JSON with keys: "
         "verdict ('approved' or 'changes_requested'), risk_level ('low','medium','high'), findings (array), summary (string). "
-        "Approve only if the change is limited to a bounded frontend adapter/presentation helper slice and does not expand deploy/production authority.\n\n"
+        "Approve only if the change is limited to a bounded frontend adapter, presentation, or app-shell helper slice "
+        "and does not expand deploy/production authority.\n\n"
         f"PR: {json.dumps(pr, ensure_ascii=False)}\n\nDIFF:\n{diff}"
     )
     payload = {
@@ -731,6 +733,10 @@ def _external_review(env_file: Path, pr: dict[str, Any], diff: str, failures: li
         with urllib.request.urlopen(request, timeout=90) as response:
             api_payload = json.loads(response.read().decode("utf-8"))
         raw_text = str(api_payload.get("choices", [{}])[0].get("message", {}).get("content", ""))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        api_failure = f"HTTP {exc.code}: {detail[:1000]}"
+        failures.append(f"external Agent API call failed: {api_failure}")
     except Exception as exc:  # fail closed but keep evidence
         api_failure = str(exc)
         failures.append(f"external Agent API call failed: {exc}")
@@ -905,6 +911,14 @@ def _sha256(path: Path) -> str:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalize_model(model: str) -> str:
+    normalized = _text(model)
+    for prefix in ("openai:", "anthropic:", "litellm:"):
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):]
+    return normalized
 
 
 def _safe_file_token(value: str) -> str:
