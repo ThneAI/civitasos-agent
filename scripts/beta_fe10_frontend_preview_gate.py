@@ -11,14 +11,17 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 FE9_SCHEMA = "beta-fe9-frontend-post-merge-smoke-receipt:v1"
 RECEIPT_SCHEMA = "beta-fe10-frontend-preview-receipt:v1"
@@ -103,11 +106,13 @@ def run_preview_gate(
     failures: list[str] = []
     fe9 = _read_json(source_fe9_receipt, failures, "FE-9 post-merge smoke receipt")
     _validate_fe9(fe9, failures)
+    _validate_operator_authorization(operator_id, operator_authorization, failures)
+    _validate_frontend_checkout(frontend_root, fe9, failures)
     frontend_url = frontend_url.rstrip("/")
     backend_url = backend_url.rstrip("/")
-    if not frontend_url.startswith(("http://127.0.0.1", "http://localhost", "http://192.168.", "http://10.", "http://172.")):
+    if not _is_private_preview_url(frontend_url):
         failures.append("frontend_url must be local/private preview URL")
-    if not backend_url.startswith(("http://127.0.0.1", "http://localhost", "http://192.168.", "http://10.", "http://172.")):
+    if not _is_private_preview_url(backend_url):
         failures.append("backend_url must be local/private preview URL")
 
     frontend_checks = [] if failures else _check_frontend(frontend_url, failures)
@@ -131,6 +136,7 @@ def run_preview_gate(
         )
         if auth_report.get("passed") is not True:
             failures.append(f"backend auth bootstrap failed for preview smoke: {auth_report.get('auth_method') or auth_mode}")
+        _validate_auth_boundary(auth_report, failures)
         token = str(auth_report.get("token") or "")
         auth_report["token"] = "<redacted>" if token else ""
         for name, method, path, requires_auth in READ_ENDPOINTS:
@@ -344,9 +350,77 @@ def _validate_fe9(value: Any, failures: list[str]) -> None:
     commands = value.get("verification_commands")
     if not isinstance(commands, list) or not commands or not all(isinstance(item, dict) and item.get("returncode") == 0 for item in commands):
         failures.append("FE-9 verification commands must all pass")
+    boundary = value.get("boundary") if isinstance(value.get("boundary"), dict) else {}
+    if boundary.get("post_merge_smoke_allowed") is not True:
+        failures.append("FE-9 boundary.post_merge_smoke_allowed must be true")
+    for field in ("deploy_allowed", "production_runtime_execution_allowed", "production_receipt_write_allowed"):
+        if boundary.get(field) is not False:
+            failures.append(f"FE-9 boundary.{field} must be false")
     h3 = value.get("h3_boundary") if isinstance(value.get("h3_boundary"), dict) else {}
     if h3.get("h3_remains_blocked") is not True or h3.get("h3_production_readiness_claimed") is not False:
         failures.append("FE-9 must keep H.3 blocked")
+
+
+def _validate_operator_authorization(operator_id: str, operator_authorization: str, failures: list[str]) -> None:
+    if not str(operator_id or "").strip():
+        failures.append("operator_id is required")
+    authorization = str(operator_authorization or "").strip()
+    if not authorization:
+        failures.append("operator_authorization is required")
+    if any(token in authorization.upper() for token in ("TODO", "REPLACE_ME", "PLACEHOLDER")):
+        failures.append("operator_authorization must not be a placeholder")
+
+
+def _validate_frontend_checkout(frontend_root: Path, fe9: Any, failures: list[str]) -> None:
+    if not isinstance(fe9, dict):
+        return
+    recorded_root = str(fe9.get("frontend_root") or "").strip()
+    if not recorded_root:
+        failures.append("FE-9 frontend_root is required")
+    elif Path(recorded_root).resolve() != frontend_root:
+        failures.append("frontend_root must match FE-9 frontend_root")
+    expected_head = str(fe9.get("merge_commit") or "").strip()
+    head = _git_text(frontend_root, failures, "rev-parse", "HEAD").strip()
+    if expected_head and head != expected_head:
+        failures.append("frontend HEAD must match FE-9 merge commit")
+    status = _git_text(frontend_root, failures, "status", "--porcelain").splitlines()
+    if status:
+        failures.append("frontend worktree must be clean before preview")
+    if not (frontend_root / "build" / "index.html").is_file():
+        failures.append("frontend build/index.html must exist before preview")
+
+
+def _is_private_preview_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme != "http" or not parsed.hostname or parsed.username or parsed.password:
+            return False
+        host = parsed.hostname.rstrip(".").lower()
+        if host == "localhost":
+            return True
+        address = ipaddress.ip_address(host)
+        return address.is_loopback or address.is_private
+    except (ValueError, TypeError):
+        return False
+
+
+def _validate_auth_boundary(auth_report: Any, failures: list[str]) -> None:
+    if not isinstance(auth_report, dict):
+        failures.append("backend auth report must be an object")
+        return
+    if auth_report.get("auth_method") != "service_token":
+        return
+    if auth_report.get("production_allowed") is not False:
+        failures.append("service token must set production_allowed=false")
+    if auth_report.get("evidence_allowed") is not False:
+        failures.append("service token must set evidence_allowed=false")
+
+
+def _git_text(repo: Path, failures: list[str], *args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=repo, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        failures.append(f"git {' '.join(args)} failed: {result.stderr}")
+    return result.stdout
 
 
 def _boundary() -> dict[str, bool]:

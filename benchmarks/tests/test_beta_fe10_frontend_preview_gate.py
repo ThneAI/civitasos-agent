@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,11 +29,12 @@ module = _load("beta_fe10_frontend_preview_gate", SCRIPTS / "beta_fe10_frontend_
 def test_fe10_preview_gate_checks_frontend_and_backend_read_models(tmp_path: Path) -> None:
     frontend = _server(_FrontendHandler)
     backend = _server(_BackendHandler)
-    fe9 = _write_fe9_receipt(tmp_path / "fe9.json")
+    frontend_root = _frontend_repo(tmp_path / "frontend")
+    fe9 = _write_fe9_receipt(tmp_path / "fe9.json", frontend_root)
 
     report = module.run_preview_gate(
         source_fe9_receipt=fe9,
-        frontend_root=tmp_path,
+        frontend_root=frontend_root,
         output_root=tmp_path / "out",
         frontend_url=frontend.url,
         backend_url=backend.url,
@@ -62,11 +64,12 @@ def test_fe10_preview_gate_checks_frontend_and_backend_read_models(tmp_path: Pat
 def test_fe10_preview_gate_prefers_service_token_when_secret_supplied(tmp_path: Path) -> None:
     frontend = _server(_FrontendHandler)
     backend = _server(_BackendHandler)
-    fe9 = _write_fe9_receipt(tmp_path / "fe9.json")
+    frontend_root = _frontend_repo(tmp_path / "frontend")
+    fe9 = _write_fe9_receipt(tmp_path / "fe9.json", frontend_root)
 
     report = module.run_preview_gate(
         source_fe9_receipt=fe9,
-        frontend_root=tmp_path,
+        frontend_root=frontend_root,
         output_root=tmp_path / "out",
         frontend_url=frontend.url,
         backend_url=backend.url,
@@ -90,11 +93,12 @@ def test_fe10_preview_gate_prefers_service_token_when_secret_supplied(tmp_path: 
 def test_fe10_preview_gate_blocks_failed_fe9(tmp_path: Path) -> None:
     frontend = _server(_FrontendHandler)
     backend = _server(_BackendHandler)
-    fe9 = _write_fe9_receipt(tmp_path / "fe9.json", passed=False)
+    frontend_root = _frontend_repo(tmp_path / "frontend")
+    fe9 = _write_fe9_receipt(tmp_path / "fe9.json", frontend_root, passed=False)
 
     report = module.run_preview_gate(
         source_fe9_receipt=fe9,
-        frontend_root=tmp_path,
+        frontend_root=frontend_root,
         output_root=tmp_path / "out",
         frontend_url=frontend.url,
         backend_url=backend.url,
@@ -109,6 +113,39 @@ def test_fe10_preview_gate_blocks_failed_fe9(tmp_path: Path) -> None:
     assert any("FE-9 receipt must be passed" in reason for reason in report["failure_reasons"])
     assert report["frontend_checks"] == []
     assert report["backend_read_model_checks"] == []
+
+
+def test_fe10_rejects_hostname_prefix_spoof(tmp_path: Path) -> None:
+    frontend_root = _frontend_repo(tmp_path / "frontend")
+    fe9 = _write_fe9_receipt(tmp_path / "fe9.json", frontend_root)
+
+    report = module.run_preview_gate(
+        source_fe9_receipt=fe9,
+        frontend_root=frontend_root,
+        output_root=tmp_path / "out",
+        frontend_url="http://127.0.0.1.example.test:3001",
+        backend_url="http://localhost.example.test:8099",
+        operator_id="operator",
+        operator_authorization="test",
+    )
+
+    assert report["passed"] is False
+    assert report["failure_reasons"].count("frontend_url must be local/private preview URL") == 1
+    assert report["failure_reasons"].count("backend_url must be local/private preview URL") == 1
+
+
+def test_fe10_service_token_boundary_rejects_production_capability() -> None:
+    failures: list[str] = []
+    module._validate_auth_boundary(
+        {
+            "auth_method": "service_token",
+            "production_allowed": True,
+            "evidence_allowed": False,
+        },
+        failures,
+    )
+
+    assert failures == ["service token must set production_allowed=false"]
 
 
 class _FrontendHandler(BaseHTTPRequestHandler):
@@ -193,16 +230,44 @@ def _server(handler) -> _Server:
     return _Server(handler)
 
 
-def _write_fe9_receipt(path: Path, passed: bool = True) -> Path:
+def _write_fe9_receipt(path: Path, frontend_root: Path, passed: bool = True) -> Path:
+    commit_id = _git(frontend_root, "rev-parse", "HEAD")
     payload = {
         "schema_version": "beta-fe9-frontend-post-merge-smoke-receipt:v1",
         "passed": passed,
         "decision": "beta_fe9_frontend_post_merge_smoke_passed" if passed else "blocked",
-        "merge_commit": "abc123",
-        "remote_head": "abc123",
-        "local_head": "abc123",
+        "frontend_root": str(frontend_root),
+        "merge_commit": commit_id,
+        "remote_head": commit_id,
+        "local_head": commit_id,
         "verification_commands": [{"returncode": 0}],
+        "boundary": {
+            "post_merge_smoke_allowed": True,
+            "deploy_allowed": False,
+            "production_runtime_execution_allowed": False,
+            "production_receipt_write_allowed": False,
+        },
         "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _frontend_repo(path: Path) -> Path:
+    (path / "build").mkdir(parents=True)
+    (path / "build" / "index.html").write_text('<div id="root"></div>\n', encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "baseline"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return path
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+    return result.stdout.strip()
