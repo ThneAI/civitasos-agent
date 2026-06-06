@@ -182,6 +182,57 @@ def test_beta_fe26_model_normalization_preserves_colon_model_names() -> None:
     assert module._normalize_model("gemma4:26b") == "gemma4:26b"
 
 
+def test_beta_fe26_parses_ollama_native_runner_spec() -> None:
+    generators = module._parse_runner_specs(["local-gpu-agent=ollama-native:qwen3.6:latest"])
+
+    generator = generators["local-gpu-agent"]
+    assert isinstance(generator, module.OllamaNativeGenerator)
+    assert generator.reviewer.model == "qwen3.6:latest"
+
+
+def test_beta_fe26_ollama_native_generator_records_structured_review() -> None:
+    class FakeReviewer:
+        model = "qwen3.6:latest"
+
+        def review_patch_proposal(self, prompt):
+            assert "claimed task prompt" in prompt
+            return module.OllamaReviewResult(
+                payload={
+                    "verdict": "proceed",
+                    "allowed_files_only": True,
+                    "reviewed_files": ["src/App.tsx"],
+                    "findings": [],
+                    "tests": ["npm test"],
+                    "summary": "bounded",
+                },
+                raw_text='{"verdict":"proceed"}',
+                report={"runner_kind": "ollama_native_reviewer", "attempt_count": 1},
+            )
+
+    generator = module.OllamaNativeGenerator(model="unused", reviewer=FakeReviewer())
+    result = generator.generate(
+        participant_id="local-gpu-agent",
+        prompt="claimed task prompt",
+        task_id="task-1",
+        claimed_task={"status": "Claimed", "claimed_by": "did:worker"},
+        worker={"did": "did:worker"},
+    )
+
+    assert result.runner_kind == "ollama_native_reviewer"
+    assert result.content.startswith("Patch proposal verdict: proceed")
+    assert result.raw_report["review_payload"]["allowed_files_only"] is True
+    assert result.raw_report["generated_after_claim"] is True
+
+
+def test_beta_fe26_run_alias_suffix_uses_full_run_path(tmp_path: Path) -> None:
+    first = module._run_alias_suffix(tmp_path / "run-a" / "mediation")
+    second = module._run_alias_suffix(tmp_path / "run-b" / "mediation")
+
+    assert first != second
+    assert len(first) == 16
+    assert len(second) == 16
+
+
 class FakeGenerator:
     def __init__(self) -> None:
         self.seen_claimed_task_statuses: list[str] = []

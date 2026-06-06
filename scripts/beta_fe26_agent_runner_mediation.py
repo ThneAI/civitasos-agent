@@ -26,6 +26,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+try:
+    from beta_fe_ollama_native_reviewer import OllamaNativeReviewer, OllamaReviewResult, patch_review_as_text
+except ModuleNotFoundError:
+    from scripts.beta_fe_ollama_native_reviewer import OllamaNativeReviewer, OllamaReviewResult, patch_review_as_text
+
 SUMMARY_SCHEMA = "beta-fe26-agent-runner-mediation-summary:v1"
 TASK_RECEIPT_SCHEMA = "beta-fe26-agent-runner-task-receipt:v1"
 GENERATION_SCHEMA = "beta-fe26-agent-runner-generation:v1"
@@ -238,6 +243,51 @@ class OpenAiCompatibleGenerator:
         )
 
 
+class OllamaNativeGenerator:
+    def __init__(
+        self,
+        *,
+        model: str,
+        base_url: str | None = None,
+        reviewer: OllamaNativeReviewer | None = None,
+    ) -> None:
+        self.reviewer = reviewer or OllamaNativeReviewer(model=model, base_url=base_url)
+
+    def generate(
+        self,
+        *,
+        participant_id: str,
+        prompt: str,
+        task_id: str,
+        claimed_task: dict[str, Any],
+        worker: dict[str, Any],
+    ) -> GenerationResult:
+        result = self.reviewer.review_patch_proposal(prompt)
+        content = patch_review_as_text(result.payload)
+        return GenerationResult(
+            participant_id=participant_id,
+            runner_kind="ollama_native_reviewer",
+            content=content,
+            raw_report={
+                "schema_version": GENERATION_SCHEMA,
+                "participant_id": participant_id,
+                "runner_kind": "ollama_native_reviewer",
+                "task_id": task_id,
+                "claimed_task_status": claimed_task.get("status"),
+                "claimed_by": claimed_task.get("claimed_by"),
+                "worker_did": worker.get("did"),
+                "model": self.reviewer.model,
+                "content_chars": len(content),
+                "generated_after_claim": True,
+                "review_payload": result.payload,
+                "review_report": result.report,
+                "boundary": _boundary(),
+                "h3_boundary": _h3_boundary(),
+                "non_claims": list(NON_CLAIMS),
+            },
+        )
+
+
 class CommandGenerator:
     def __init__(self, *, command: str, timeout_secs: int = 180) -> None:
         self.command = command
@@ -299,7 +349,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend-url", default=DEFAULT_BACKEND_URL)
     parser.add_argument("--fe2-packet-summary", required=True)
     parser.add_argument("--output-root", required=True)
-    parser.add_argument("--runner-spec", action="append", default=[], help="participant=openai-env:/path/to/env or participant=command:argv")
+    parser.add_argument(
+        "--runner-spec",
+        action="append",
+        default=[],
+        help="participant=openai-env:/path, participant=ollama-native:model, or participant=command:argv",
+    )
     parser.add_argument("--participant", action="append", default=[], help="optional participant allowlist; defaults to all FE-2 packet participants")
     parser.add_argument("--confirm-deliveries", action="store_true")
     parser.add_argument("--demo-login-agent-id", default="beta_fe26_runner_mediation")
@@ -354,7 +409,7 @@ def run_mediation(
         raise ValueError(f"Beta-FE-2.6 runner mediation blocked: {failures}")
 
     client.healthz()
-    alias_suffix = _safe_alias(output_root.name)[-20:]
+    alias_suffix = _run_alias_suffix(output_root)
     requester = _quickstart_agent(
         client,
         alias=f"{DEFAULT_REQUESTER_ALIAS}_{alias_suffix}",
@@ -713,16 +768,23 @@ def _parse_runner_specs(values: list[str]) -> dict[str, AgentResponseGenerator]:
     for value in values:
         participant_id, sep, spec = value.partition("=")
         if not sep or not participant_id.strip() or not spec.strip():
-            raise ValueError("runner spec must be participant_id=openai-env:/path or participant_id=command:argv")
+            raise ValueError(
+                "runner spec must be participant_id=openai-env:/path, "
+                "participant_id=ollama-native:model, or participant_id=command:argv"
+            )
         mode, mode_sep, arg = spec.partition(":")
         if not mode_sep or not arg.strip():
             raise ValueError(f"runner spec missing mode argument: {value}")
         if mode == "openai-env":
             generators[participant_id.strip()] = OpenAiCompatibleGenerator(env_file=Path(arg.strip()))
+        elif mode == "ollama-native":
+            generators[participant_id.strip()] = OllamaNativeGenerator(model=arg.strip())
         elif mode == "command":
             generators[participant_id.strip()] = CommandGenerator(command=arg.strip())
         else:
-            raise ValueError(f"unsupported runner spec mode {mode!r}; expected openai-env or command")
+            raise ValueError(
+                f"unsupported runner spec mode {mode!r}; expected openai-env, ollama-native, or command"
+            )
     return generators
 
 
@@ -837,6 +899,10 @@ def _h3_boundary() -> dict[str, bool]:
 
 def _safe_alias(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in value).strip("_")[:48] or "beta_fe26_runner"
+
+
+def _run_alias_suffix(output_root: Path) -> str:
+    return hashlib.sha256(str(output_root.resolve()).encode("utf-8")).hexdigest()[:16]
 
 
 def _now() -> str:

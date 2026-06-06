@@ -112,6 +112,48 @@ def test_additional_agent_review_command_spec_records_approved(tmp_path: Path) -
     assert (tmp_path / "beta_fe7_claude-cli-agent_agent_review.json").is_file()
 
 
+def test_additional_agent_review_ollama_native_spec_records_approved(tmp_path: Path, monkeypatch) -> None:
+    class FakeResult:
+        payload = {
+            "verdict": "approved",
+            "risk_level": "low",
+            "allowed_files_only": True,
+            "production_boundary_preserved": True,
+            "reviewed_files": [
+                "src/App.tsx",
+                "src/app/AppShell.tsx",
+                "src/app/panelRegistry.test.ts",
+                "src/app/panelRegistry.ts",
+            ],
+            "findings": [],
+            "summary": "bounded release",
+        }
+        report = {"runner_kind": "ollama_native_reviewer", "attempt_count": 1}
+
+    class FakeReviewer:
+        def __init__(self, *, model):
+            assert model == "qwen3.6:latest"
+
+        def review_release(self, prompt):
+            assert "DIFF:" in prompt
+            return FakeResult()
+
+    monkeypatch.setattr(module, "OllamaNativeReviewer", FakeReviewer)
+    failures = []
+    reviews = module._additional_agent_reviews(
+        specs=["local-gpu-agent=ollama-native:qwen3.6:latest"],
+        pr={"number": 1, "url": "https://example.test/pr/1"},
+        diff="+ bounded app shell helper\n",
+        output_root=tmp_path,
+        failures=failures,
+    )
+
+    assert failures == []
+    assert reviews[0]["runner_kind"] == "ollama_native_reviewer"
+    assert reviews[0]["verdict"] == "approved"
+    assert reviews[0]["passed"] is True
+
+
 def test_parse_external_review_json_from_fenced_block() -> None:
     parsed = module._parse_review_json('```json\n{"verdict":"approved","risk_level":"low","findings":[],"summary":"ok"}\n```')
     assert parsed["verdict"] == "approved"

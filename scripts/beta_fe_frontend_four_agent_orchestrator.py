@@ -20,7 +20,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import beta_fe26_agent_runner_mediation as fe26
+try:
+    import beta_fe26_agent_runner_mediation as fe26
+except ModuleNotFoundError:
+    from scripts import beta_fe26_agent_runner_mediation as fe26
 
 PACKET_SCHEMA = "beta-fe2-frontend-patch-proposal-packet:v1"
 SUMMARY_SCHEMA = "beta-fe-four-agent-frontend-orchestration-summary:v1"
@@ -147,7 +150,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend-url", default=fe26.DEFAULT_BACKEND_URL)
     parser.add_argument("--frontend-root", required=True)
     parser.add_argument("--output-root", required=True)
-    parser.add_argument("--runner-spec", action="append", default=[], help="participant=openai-env:/path or participant=command:argv")
+    parser.add_argument(
+        "--runner-spec",
+        action="append",
+        default=[],
+        help="participant=openai-env:/path, participant=ollama-native:model, or participant=command:argv",
+    )
     parser.add_argument("--confirm-deliveries", action="store_true")
     parser.add_argument("--demo-login-agent-id", default="beta_fe_four_agent_orchestrator")
     args = parser.parse_args(argv)
@@ -256,7 +264,8 @@ def write_packet(*, scenario: FrontendScenario, frontend_root: Path, output_root
     prompt_refs: dict[str, Any] = {}
     for participant_id, role, focus in REQUIRED_PARTICIPANTS:
         prompt_path = prompts_dir / f"{participant_id}.prompt.txt"
-        prompt_path.write_text(_prompt_text(participant_id, role, focus, context, brief), encoding="utf-8")
+        participant_context = _participant_context(participant_id, scenario, context)
+        prompt_path.write_text(_prompt_text(participant_id, role, focus, participant_context, brief), encoding="utf-8")
         prompt_refs[participant_id] = _artifact_ref(prompt_path)
     packet = {
         "schema_version": PACKET_SCHEMA,
@@ -454,6 +463,39 @@ This is a CivitasOS-mediated task. You will only respond after your worker ident
 
 --- CONTEXT ---
 {context}
+"""
+
+
+def _participant_context(participant_id: str, scenario: FrontendScenario, full_context: str) -> str:
+    if participant_id != "local-gpu-agent":
+        return full_context
+    state = "\n".join(f"- {item}" for item in scenario.current_state)
+    allowed = "\n".join(f"- `{item}`" for item in scenario.allowed_files)
+    forbidden = "\n".join(f"- {item}" for item in scenario.forbidden_changes)
+    return f"""# {scenario.title} Local Verification Context
+
+Target slice:
+
+`{scenario.patch_slice_id}`
+
+Current state:
+
+{state}
+
+Candidate allowed files:
+
+{allowed}
+
+Forbidden changes:
+
+{forbidden}
+
+Verification focus:
+
+- Confirm the proposal is limited to the candidate allowed files.
+- Require focused unit tests plus build and rollback checks.
+- Reject recommendations that introduce routes, new providers, backend contracts, deploy flags, or visual redesign.
+- Do not infer new behavior from unrelated source excerpts; this local reviewer receives no raw implementation excerpts.
 """
 
 

@@ -36,6 +36,11 @@ def test_orchestrator_fe13_packet_targets_app_shell_decomposition(tmp_path: Path
     assert packet["collaboration_boundary"]["apply_allowed"] is False
     assert "src/App.tsx" in packet["frontend_snapshot"]["focus_file_lines"]
     assert Path(packet["brief_ref"]["path"]).is_file()
+    local_prompt = Path(packet["agent_prompt_refs"]["local-gpu-agent"]["path"]).read_text(encoding="utf-8")
+    assert "Candidate allowed files:" in local_prompt
+    assert "src/app/panelRegistry.ts" in local_prompt
+    assert "## src/contexts/AuthContext.tsx" not in local_prompt
+    assert "this local reviewer receives no raw implementation excerpts" in local_prompt
 
 
 def test_orchestrator_reconciliation_records_selected_plan(tmp_path: Path) -> None:

@@ -26,6 +26,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from beta_fe_ollama_native_reviewer import OllamaNativeReviewer
+except ModuleNotFoundError:
+    from scripts.beta_fe_ollama_native_reviewer import OllamaNativeReviewer
+
 FE4_RECEIPT_SCHEMA = "beta-fe4-frontend-commit-receipt:v1"
 FE5_RECEIPT_SCHEMA = "beta-fe5-frontend-push-receipt:v1"
 FE6_RECEIPT_SCHEMA = "beta-fe6-frontend-draft-pr-receipt:v1"
@@ -72,7 +77,12 @@ def main(argv: list[str] | None = None) -> int:
     fe7.add_argument("--operator-id", default="local-operator-cc")
     fe7.add_argument("--operator-authorization", default="current_chat_fe7_review_reconciliation_request")
     fe7.add_argument("--max-diff-chars", type=int, default=24000)
-    fe7.add_argument("--additional-reviewer-spec", action="append", default=[], help="reviewer_id=openai-env:/path or reviewer_id=command:argv")
+    fe7.add_argument(
+        "--additional-reviewer-spec",
+        action="append",
+        default=[],
+        help="reviewer_id=openai-env:/path, reviewer_id=ollama-native:model, or reviewer_id=command:argv",
+    )
 
     fe8 = sub.add_parser("fe8-merge", help="consume FE-7 reconciliation and merge the PR")
     fe8.add_argument("--source-fe7-reconciliation", required=True)
@@ -419,11 +429,14 @@ def _additional_agent_reviews(*, specs: list[str], pr: dict[str, Any], diff: str
 def _parse_reviewer_spec(value: str) -> tuple[str, str, str]:
     reviewer_id, sep, spec = value.partition("=")
     if not sep or not reviewer_id.strip() or not spec.strip():
-        raise ValueError("reviewer spec must be reviewer_id=openai-env:/path or reviewer_id=command:argv")
+        raise ValueError(
+            "reviewer spec must be reviewer_id=openai-env:/path, "
+            "reviewer_id=ollama-native:model, or reviewer_id=command:argv"
+        )
     mode, mode_sep, arg = spec.partition(":")
     if not mode_sep or not arg.strip():
         raise ValueError(f"reviewer spec missing mode argument: {value}")
-    if mode not in {"openai-env", "command"}:
+    if mode not in {"openai-env", "ollama-native", "command"}:
         raise ValueError(f"unsupported reviewer spec mode {mode!r}")
     return reviewer_id.strip(), mode, arg.strip()
 
@@ -438,6 +451,11 @@ def _run_direct_reviewer(*, reviewer_id: str, mode: str, arg: str, pr: dict[str,
     if mode == "openai-env":
         raw_text, raw_report = _run_openai_reviewer(reviewer_id, Path(arg), prompt)
         runner_kind = "openai_compatible"
+    elif mode == "ollama-native":
+        result = OllamaNativeReviewer(model=arg).review_release(prompt)
+        raw_text = json.dumps(result.payload, ensure_ascii=False, sort_keys=True)
+        raw_report = result.report
+        runner_kind = "ollama_native_reviewer"
     else:
         raw_text, raw_report = _run_command_reviewer(reviewer_id, arg, prompt)
         runner_kind = "command"
