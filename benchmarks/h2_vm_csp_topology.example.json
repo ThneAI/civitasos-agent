@@ -1,0 +1,17 @@
+{
+  "core": {
+    "ssh_alias": "vm1",
+    "address": "192.168.56.4"
+  },
+  "csp": {
+    "ssh_alias": "vm2",
+    "address": "192.168.56.5"
+  },
+  "agent": {
+    "ssh_alias": "vm3",
+    "address": "192.168.56.6"
+  },
+  "backend_port": 8099,
+  "csp_port": 8200,
+  "remote_root": "civitasos-h2"
+}

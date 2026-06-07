@@ -32,6 +32,39 @@ def test_nightly_wrapper_wires_h2_value_calibration_closure() -> None:
     assert '--min-backend-sourced-repeated-outcome-pattern-count "$H2_VALUE_CLOSURE_MIN_BACKEND_SOURCED_REPEATED_OUTCOME_PATTERN_COUNT"' in text
     assert '--require-repeated-outcome-event-kind "$event_kind"' in text
     assert '--require-backend-sourced-repeated-outcome-event-kind "$event_kind"' in text
+    assert (
+        '--delayed-consequence-evidence-report '
+        '"$H2_VALUE_CLOSURE_DELAYED_CONSEQUENCE_EVIDENCE_REPORT"'
+    ) in text
+
+
+def test_nightly_wrapper_runs_only_opt_in_vm_csp_smoke() -> None:
+    wrapper = Path(__file__).resolve().parents[1] / "run_nightly_regression.sh"
+    text = wrapper.read_text(encoding="utf-8")
+
+    assert 'RUN_H2_VM_CSP_SMOKE="${RUN_H2_VM_CSP_SMOKE:-0}"' in text
+    assert 'if [ "$RUN_H2_VM_CSP_SMOKE" = "1" ]; then' in text
+    assert "-m benchmarks.h2_vm_csp_soak smoke" in text
+    assert "-m benchmarks.h2_vm_csp_soak stop" in text
+    assert "-m benchmarks.h2_vm_csp_soak cleanup" in text
+    assert "-m benchmarks.h2_vm_csp_soak soak" not in text
+
+
+def test_nightly_wrapper_wires_h2_qualification_and_semantic_checkers() -> None:
+    wrapper = Path(__file__).resolve().parents[1] / "run_nightly_regression.sh"
+    text = wrapper.read_text(encoding="utf-8")
+
+    assert (
+        'RUN_H2_VM_CSP_QUALIFICATION_CHECK='
+        '"${RUN_H2_VM_CSP_QUALIFICATION_CHECK:-0}"'
+    ) in text
+    assert "-m benchmarks.h2_vm_csp_qualification_check" in text
+    assert (
+        'RUN_H2_DELAYED_CONSEQUENCE_EVIDENCE_CHECK='
+        '"${RUN_H2_DELAYED_CONSEQUENCE_EVIDENCE_CHECK:-0}"'
+    ) in text
+    assert "-m benchmarks.h2_delayed_consequence_evidence_check" in text
+    assert '--owner-id "$H2_MULTI_AGENT_OWNER_ID"' in text
 
 
 def test_nightly_wrapper_wires_h3_goal_generator_skeleton() -> None:

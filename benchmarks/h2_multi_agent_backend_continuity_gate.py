@@ -68,6 +68,7 @@ def run_gate(
     backend_binary: Path | None = None,
     overwrite: bool = False,
     min_delay_seconds: float = 0.02,
+    owner_id: str = "controlled-pilot-owner",
 ) -> dict[str, Any]:
     agent_root = Path(__file__).resolve().parents[1]
     workspace = agent_root.parent
@@ -136,6 +137,7 @@ def run_gate(
         report = _evaluate_gate(
             run_root=run_root,
             backend_url=sandbox.base_url,
+            owner_id=owner_id,
             identities=identities,
             tasks=tasks,
             phase1_processes=phase1_processes,
@@ -303,9 +305,16 @@ def _phase_seed(
     runner._memory.remember(  # noqa: SLF001
         "identity_iem_state",
         {
+            "schema_version": "iem:v1",
             "identity_id": agent.agent_id,
             "relation_peer": requester_id,
             "history": ["failure:pre_restart_delivery_concern"],
+            "expectation_vector": {},
+            "precision_vector": {},
+            "desire_vector": {},
+            "domain_weight_matrix": {},
+            "drift_parameters": {},
+            "relation_expectation_matrix": {},
         },
     )
     asyncio.run(runner._shutdown_cleanup())  # noqa: SLF001
@@ -418,6 +427,7 @@ def _phase_recover(
     task_id: str,
     requester_id: str,
 ) -> None:
+    from civitasos_runtime.iem_anchor import build_iem_anchor, iem_state_hash
     from civitasos_runtime.memory import HybridMemory
     from civitasos_runtime.models import TickContext
     from civitasos_runtime.relation_expectation import apply_relation_matrix_expectation
@@ -488,6 +498,41 @@ def _phase_recover(
     after = update.get("expectation", {}) if isinstance(update, dict) else {}
     action_bias = ctx.action_bias.get("relation", {}).get(relation_key, {})
     updates = [_jsonable(asdict(item)) for item in ctx.expectation_updates]
+    prior_iem = dict(iem_state) if isinstance(iem_state, dict) else {}
+    relation_matrix = dict(prior_iem.get("relation_expectation_matrix") or {})
+    relation_matrix[relation_key] = update
+    updated_iem = dict(prior_iem)
+    updated_iem["schema_version"] = str(updated_iem.get("schema_version") or "iem:v1")
+    updated_iem["identity_id"] = str(agent.agent_id)
+    updated_iem["relation_expectation_matrix"] = relation_matrix
+    updated_iem["last_delayed_outcome_event_id"] = str(event.get("event_id") or "")
+    update_log = memory.recall("expectation_update_log")
+    if not isinstance(update_log, list):
+        update_log = []
+    update_log = [*update_log, *updates]
+    anchor = build_iem_anchor(
+        identity_id=str(agent.agent_id),
+        state=updated_iem,
+        update_log=update_log,
+    )
+    anchor_payload = _jsonable(asdict(anchor))
+    memory.remember("expectation_update_log", update_log)
+    memory.remember("identity_iem_state", updated_iem)
+    memory.remember("identity_iem_anchor", anchor_payload)
+    iem_update = {
+        "before_state_hash": iem_state_hash(prior_iem),
+        "after_state_hash": iem_state_hash(updated_iem),
+        "relation_key": relation_key,
+        "relation_entry_persisted": relation_matrix.get(relation_key) == update,
+        "anchor": anchor_payload,
+    }
+    authorization_change = {
+        "before": _authorization_profile(prior),
+        "after": _authorization_profile(after),
+    }
+    authorization_change["changed"] = (
+        authorization_change["before"] != authorization_change["after"]
+    )
     memory.remember(
         "h2_backend_delayed_consequence_state",
         {
@@ -496,6 +541,8 @@ def _phase_recover(
             "after": after,
             "action_bias": action_bias,
             "expectation_updates": updates,
+            "iem_update": iem_update,
+            "authorization_change": authorization_change,
         },
     )
     asyncio.run(runner._shutdown_cleanup())  # noqa: SLF001
@@ -522,6 +569,8 @@ def _phase_recover(
                 "action_bias": action_bias,
                 "expectation_updates": updates,
             },
+            "iem_update": iem_update,
+            "authorization_change": authorization_change,
             "phase_finished_at": _now(),
         },
     )
@@ -531,6 +580,7 @@ def _evaluate_gate(
     *,
     run_root: Path,
     backend_url: str,
+    owner_id: str,
     identities: dict[str, dict[str, Any]],
     tasks: dict[str, str],
     phase1_processes: dict[str, dict[str, Any]],
@@ -562,6 +612,8 @@ def _evaluate_gate(
         after = update.get("after") or {}
         action_bias = update.get("action_bias") or {}
         expectation_updates = update.get("expectation_updates") or []
+        iem_update = phase2.get("iem_update") or {}
+        authorization_change = phase2.get("authorization_change") or {}
         prefix = f"{worker}_"
         _check(checks, failures, prefix + "separate_processes", phase1.get("pid") != phase2.get("pid"))
         _check(checks, failures, prefix + "separate_runtime_instances", phase1.get("runtime_instance_id") != phase2.get("runtime_instance_id"))
@@ -576,6 +628,45 @@ def _evaluate_gate(
         _check(checks, failures, prefix + "event_matches_task", event.get("task_id") == tasks[worker])
         _check(checks, failures, prefix + "event_after_shutdown", _timestamp(event.get("observed_at")) > _timestamp(shutdown.get("shutdown_at")))
         _check(checks, failures, prefix + "consequence_applied", phase2.get("consequence_applied") is True)
+        _check(
+            checks,
+            failures,
+            prefix + "iem_state_changed",
+            bool(iem_update.get("before_state_hash"))
+            and iem_update.get("before_state_hash") != iem_update.get("after_state_hash"),
+        )
+        _check(
+            checks,
+            failures,
+            prefix + "relation_persisted_in_iem",
+            iem_update.get("relation_entry_persisted") is True,
+        )
+        _check(
+            checks,
+            failures,
+            prefix + "iem_anchor_matches_state",
+            (iem_update.get("anchor") or {}).get("state_hash")
+            == iem_update.get("after_state_hash"),
+        )
+        _check(
+            checks,
+            failures,
+            prefix + "authorization_profile_changed",
+            authorization_change.get("changed") is True,
+        )
+        _check(
+            checks,
+            failures,
+            prefix + "authorization_matches_action_bias",
+            (authorization_change.get("after") or {}).get("verification_level")
+            == action_bias.get("verification_level")
+            and _float(
+                (authorization_change.get("after") or {}).get(
+                    "required_stake_multiplier"
+                )
+            )
+            == _float(action_bias.get("required_stake_multiplier")),
+        )
         _check(
             checks,
             failures,
@@ -602,6 +693,8 @@ def _evaluate_gate(
             "observed_at": event.get("observed_at"),
             "shutdown_at": shutdown.get("shutdown_at"),
             "relation_update": update,
+            "iem_update": iem_update,
+            "authorization_change": authorization_change,
         }
 
     return {
@@ -611,6 +704,8 @@ def _evaluate_gate(
         "failure_reasons": failures,
         "run_root": str(run_root),
         "backend_url": backend_url,
+        "owner_id": owner_id,
+        "evidence_class": "controlled_pilot_backend",
         "identities": identities,
         "tasks": tasks,
         "phase1_processes": phase1_processes,
@@ -627,6 +722,28 @@ def _evaluate_gate(
     }
 
 
+def _authorization_profile(vector: dict[str, Any]) -> dict[str, Any]:
+    trust = _float(vector.get("expected_trust"))
+    betrayal_risk = _float(vector.get("expected_betrayal_risk"))
+    verification_level = "baseline"
+    if betrayal_risk >= 0.40 or trust < 0.55:
+        verification_level = "strict"
+    elif betrayal_risk >= 0.25 or trust < 0.65:
+        verification_level = "elevated"
+    multiplier = round(1.0 + betrayal_risk * 2.0 + max(0.0, 0.70 - trust), 3)
+    decision = {
+        "baseline": "standard_claim_allowed",
+        "elevated": "elevated_verification_required",
+        "strict": "operator_review_required",
+    }[verification_level]
+    return {
+        "decision": decision,
+        "verification_level": verification_level,
+        "required_stake_multiplier": multiplier,
+        "direct_match_allowed": betrayal_risk < 0.75,
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-root", type=Path, required=True)
@@ -634,6 +751,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--backend-binary", type=Path)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--min-delay-seconds", type=float, default=0.02)
+    parser.add_argument("--owner-id", default="controlled-pilot-owner")
     parser.add_argument("--phase", choices=("seed", "recover"), help=argparse.SUPPRESS)
     parser.add_argument("--worker", choices=tuple(WORKER_CASES), help=argparse.SUPPRESS)
     parser.add_argument("--backend-url", help=argparse.SUPPRESS)
@@ -664,6 +782,7 @@ def main() -> None:
         backend_binary=args.backend_binary,
         overwrite=args.overwrite,
         min_delay_seconds=args.min_delay_seconds,
+        owner_id=args.owner_id,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     raise SystemExit(0 if report["passed"] else 3)

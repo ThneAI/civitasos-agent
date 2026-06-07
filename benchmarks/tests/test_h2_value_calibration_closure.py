@@ -132,6 +132,42 @@ def test_h2_value_calibration_closure_fails_on_boundary_regression(tmp_path: Pat
     assert report["checks"]["normative_local_mutation_forbidden"] is False
 
 
+def test_h2_value_calibration_closure_can_require_cross_day_semantic_evidence(
+    tmp_path: Path,
+) -> None:
+    value_report = _write_value_report(
+        tmp_path,
+        repeated_patterns=[
+            _pattern(
+                "post_delivery_dispute",
+                sources=[BACKEND_REPEATED_PATTERN_SOURCE],
+            )
+        ],
+    )
+    semantic_report = tmp_path / "h2_delayed_consequence_evidence_check.json"
+    semantic_report.write_text(
+        json.dumps(
+            {
+                "schema_version": "h2-delayed-consequence-evidence-check:v1",
+                "passed": False,
+                "h3_readiness": {"ready": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_h2_value_calibration_closure(
+        value_report_path=value_report,
+        agent_root=tmp_path,
+        delayed_consequence_evidence_path=semantic_report,
+    )
+
+    assert report["passed"] is False
+    assert report["checks"]["delayed_consequence_evidence_passed"] is False
+    assert report["checks"]["delayed_consequence_h3_readiness"] is False
+    assert report["h3_goal_generator_readiness"]["ready"] is False
+
+
 def _write_value_report(
     tmp_path: Path,
     *,

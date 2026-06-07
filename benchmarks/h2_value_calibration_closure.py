@@ -29,6 +29,9 @@ STANDARD_REQUIRED_REPEATED_OUTCOME_EVENT_KINDS = [
     "governance_rollback",
     "economic_deviation",
 ]
+DELAYED_CONSEQUENCE_EVIDENCE_SCHEMA_VERSION = (
+    "h2-delayed-consequence-evidence-check:v1"
+)
 
 
 def build_h2_value_calibration_closure(
@@ -40,6 +43,7 @@ def build_h2_value_calibration_closure(
     min_backend_sourced_repeated_outcome_pattern_count: int = 1,
     required_repeated_outcome_event_kinds: list[str] | None = None,
     required_backend_sourced_repeated_outcome_event_kinds: list[str] | None = None,
+    delayed_consequence_evidence_path: Path | None = None,
 ) -> dict[str, Any]:
     value_report_path = _resolve_path(value_report_path, agent_root)
     required_repeated_outcome_event_kinds = _normalize_event_kinds(
@@ -54,6 +58,7 @@ def build_h2_value_calibration_closure(
     metrics: dict[str, Any] = {}
     value_checks: dict[str, Any] = {}
     value_thresholds: dict[str, Any] = {}
+    delayed_consequence_evidence: dict[str, Any] = {}
 
     if value_report is None:
         _fail(checks, failures, "value_report_present", f"missing H2 value calibration report: {value_report_path}")
@@ -71,6 +76,37 @@ def build_h2_value_calibration_closure(
         value_checks = _object(value_report.get("checks"))
         value_thresholds = _object(value_report.get("thresholds"))
         _require_value_boundary_checks(value_checks, checks=checks, failures=failures)
+
+    if delayed_consequence_evidence_path is not None:
+        delayed_consequence_evidence_path = _resolve_path(
+            delayed_consequence_evidence_path,
+            agent_root,
+        )
+        delayed_consequence_evidence = (
+            _read_json(delayed_consequence_evidence_path, failures) or {}
+        )
+        _require_equal(
+            "delayed_consequence_evidence_schema_version",
+            delayed_consequence_evidence.get("schema_version"),
+            DELAYED_CONSEQUENCE_EVIDENCE_SCHEMA_VERSION,
+            checks=checks,
+            failures=failures,
+        )
+        _require_bool(
+            "delayed_consequence_evidence_passed",
+            delayed_consequence_evidence.get("passed") is True,
+            checks=checks,
+            failures=failures,
+        )
+        _require_bool(
+            "delayed_consequence_h3_readiness",
+            _object(delayed_consequence_evidence.get("h3_readiness")).get("ready")
+            is True,
+            checks=checks,
+            failures=failures,
+        )
+    else:
+        checks["delayed_consequence_evidence_not_required"] = True
 
     repeated_event_kinds = _event_kinds(metrics.get("repeated_outcome_event_kinds"))
     backend_sourced_event_kinds = _backend_sourced_event_kinds(metrics)
@@ -135,6 +171,11 @@ def build_h2_value_calibration_closure(
         "passed": passed,
         "failure_reasons": failures,
         "value_report_path": str(value_report_path),
+        "delayed_consequence_evidence_path": (
+            str(delayed_consequence_evidence_path)
+            if delayed_consequence_evidence_path is not None
+            else None
+        ),
         "thresholds": {
             "min_value_calibration_trace_coverage_ratio": min_value_calibration_trace_coverage_ratio,
             "min_repeated_outcome_pattern_count": min_repeated_outcome_pattern_count,
@@ -155,6 +196,7 @@ def build_h2_value_calibration_closure(
             "backend_sourced_repeated_outcome_event_kinds": backend_sourced_event_kinds,
             "missing_repeated_outcome_event_kinds": missing_repeated_event_kinds,
             "missing_backend_sourced_repeated_outcome_event_kinds": missing_backend_sourced_event_kinds,
+            "delayed_consequence_evidence": delayed_consequence_evidence,
         },
         "h3_goal_generator_readiness": {
             "ready": passed,
@@ -172,6 +214,7 @@ def build_h2_value_calibration_closure(
             "llm_training_allowed": False,
             "normative_local_mutation_allowed": False,
             "seed_patterns_count_as_h3_backend_readiness": False,
+            "cross_day_delayed_consequence_required_when_configured": True,
         },
         "non_claims": [
             "does_not_claim_complete_long_term_value_learning",
@@ -340,6 +383,7 @@ def main() -> int:
     parser.add_argument("--require-backend-sourced-repeated-outcome-event-kind", action="append", default=[])
     parser.add_argument("--require-standard-repeated-outcome-event-kinds", action="store_true")
     parser.add_argument("--require-standard-backend-sourced-repeated-outcome-event-kinds", action="store_true")
+    parser.add_argument("--delayed-consequence-evidence-report", default="")
     args = parser.parse_args()
 
     required_repeated = list(args.require_repeated_outcome_event_kind)
@@ -357,6 +401,11 @@ def main() -> int:
         min_backend_sourced_repeated_outcome_pattern_count=args.min_backend_sourced_repeated_outcome_pattern_count,
         required_repeated_outcome_event_kinds=required_repeated,
         required_backend_sourced_repeated_outcome_event_kinds=required_backend,
+        delayed_consequence_evidence_path=(
+            Path(args.delayed_consequence_evidence_report)
+            if args.delayed_consequence_evidence_report
+            else None
+        ),
     )
     text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output:

@@ -31,6 +31,7 @@ def test_h2_multi_agent_backend_continuity_gate(tmp_path: Path) -> None:
     assert report["passed"] is True
     assert report["failure_reasons"] == []
     assert all(report["checks"].values())
+    assert report["owner_id"] == "controlled-pilot-owner"
     assert {
         worker: summary["event_kind"]
         for worker, summary in report["worker_summaries"].items()
@@ -44,6 +45,16 @@ def test_h2_multi_agent_backend_continuity_gate(tmp_path: Path) -> None:
         update = report["worker_summaries"][worker]["relation_update"]
         assert update["after"]["expected_trust"] < update["before"]["expected_trust"]
         assert update["action_bias"]["verification_level"] in {"elevated", "strict"}
+        summary = report["worker_summaries"][worker]
+        assert summary["iem_update"]["relation_entry_persisted"] is True
+        assert summary["iem_update"]["before_state_hash"] != summary["iem_update"][
+            "after_state_hash"
+        ]
+        assert summary["authorization_change"]["changed"] is True
+        assert summary["authorization_change"]["after"]["decision"] in {
+            "elevated_verification_required",
+            "operator_review_required",
+        }
 
 
 def test_h2_multi_agent_backend_continuity_gate_refuses_overwrite(
