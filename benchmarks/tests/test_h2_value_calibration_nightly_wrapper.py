@@ -83,6 +83,12 @@ def test_nightly_wrapper_wires_h2_h3_read_only_readiness_chain() -> None:
     assert "-m benchmarks.h3_read_only_goal_proposal_gate" in text
     assert '--h2-evidence-report "$H3_READ_ONLY_H2_EVIDENCE_REPORT"' in text
     assert (
+        'RUN_H3_OPERATOR_REVIEW_RECONCILIATION_GATE='
+        '"${RUN_H3_OPERATOR_REVIEW_RECONCILIATION_GATE:-0}"'
+    ) in text
+    assert "-m benchmarks.h3_operator_review_reconciliation_gate reconcile" in text
+    assert "H3_OPERATOR_REVIEW_PACKET is required" in text
+    assert (
         'RUN_H2_H3_READINESS_SUMMARY='
         '"${RUN_H2_H3_READINESS_SUMMARY:-$RUN_H2_DELAYED_CONSEQUENCE_EVIDENCE_CHECK}"'
     ) in text
