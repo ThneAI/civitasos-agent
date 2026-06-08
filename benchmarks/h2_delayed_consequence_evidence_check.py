@@ -12,13 +12,39 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 SCHEMA_VERSION = "h2-delayed-consequence-evidence-check:v1"
 SOURCE_SCHEMA_VERSION = "h2-multi-agent-backend-continuity-gate:v1"
+SOURCE_EVIDENCE_CLASS = "controlled_pilot_backend"
+ALLOWED_EVENT_KINDS = {
+    "settlement_confirmed",
+    "post_delivery_dispute",
+    "post_delivery_failure",
+}
+NEGATIVE_EVENT_KINDS = {
+    "post_delivery_dispute",
+    "post_delivery_failure",
+}
+VERIFICATION_LEVEL_RANK = {
+    "baseline": 0,
+    "elevated": 1,
+    "strict": 2,
+}
+MATURITY_CHECKS = {
+    "minimum_owner_count",
+    "minimum_task_count",
+    "minimum_observation_days",
+    "minimum_observation_span_seconds",
+    "minimum_iem_change_ratio",
+    "minimum_relation_change_ratio",
+    "minimum_authorization_change_count",
+    "negative_outcomes_change_authorization",
+    "minimum_normative_blocked_ratio",
+}
 
 
 def check_delayed_consequence_evidence(
@@ -33,28 +59,54 @@ def check_delayed_consequence_evidence(
     min_relation_change_ratio: float = 1.0,
     min_authorization_change_count: int = 2,
     min_normative_blocked_ratio: float = 1.0,
+    max_future_skew_seconds: float = 300.0,
+    checked_at: datetime | None = None,
 ) -> dict[str, Any]:
+    checked_at = _as_utc(checked_at or datetime.now(timezone.utc))
     failures: list[str] = []
     checks: dict[str, bool] = {}
     records: list[dict[str, Any]] = []
     report_refs: list[dict[str, Any]] = []
+    resolved_paths = [_resolve(path, agent_root) for path in source_reports]
+    _require(
+        checks,
+        failures,
+        "source_report_paths_unique",
+        len(resolved_paths) == len(set(resolved_paths)),
+    )
+    source_owner_ids: list[str] = []
     for source_path in source_reports:
         path = _resolve(source_path, agent_root)
         report = _read_json(path, failures)
         if report is None:
             continue
-        report_refs.append({"path": str(path), "sha256": _sha256(path)})
+        report_sha256 = _sha256(path)
+        report_refs.append({"path": str(path), "sha256": report_sha256})
         if report.get("schema_version") != SOURCE_SCHEMA_VERSION:
             failures.append(f"unexpected source schema: {path}")
             continue
         if report.get("passed") is not True:
             failures.append(f"source report did not pass: {path}")
             continue
+        if report.get("evidence_class") != SOURCE_EVIDENCE_CLASS:
+            failures.append(f"unexpected source evidence_class: {path}")
+            continue
         owner_id = str(report.get("owner_id") or "").strip()
         if not owner_id:
             failures.append(f"source report missing owner_id: {path}")
             continue
-        records.extend(_records_from_report(report, path=path, owner_id=owner_id))
+        source_owner_ids.append(owner_id)
+        records.extend(
+            _records_from_report(
+                report,
+                path=path,
+                report_sha256=report_sha256,
+                owner_id=owner_id,
+                checked_at=checked_at,
+                max_future_skew_seconds=max_future_skew_seconds,
+                failures=failures,
+            )
+        )
 
     owners = sorted({record["owner_id"] for record in records})
     tasks = sorted({record["task_id"] for record in records if record["task_id"]})
@@ -72,12 +124,11 @@ def check_delayed_consequence_evidence(
     iem_change_count = sum(record["iem_changed"] for record in records)
     relation_change_count = sum(record["relation_changed"] for record in records)
     authorization_change_count = sum(record["authorization_changed"] for record in records)
-    negative_authorization_change_count = sum(
-        record["authorization_changed"]
-        for record in records
-        if record["event_kind"] in {"post_delivery_dispute", "post_delivery_failure"}
-    )
+    negative_authorization_change_count = sum(record["negative_authorization_strengthened"] for record in records)
     normative_blocked_count = sum(record["normative_local_update_blocked"] for record in records)
+    record_ids = [record["record_id"] for record in records]
+    task_ids = [record["task_id"] for record in records if record["task_id"]]
+    source_hashes = [ref["sha256"] for ref in report_refs]
 
     metrics = {
         "source_report_count": len(report_refs),
@@ -97,9 +148,34 @@ def check_delayed_consequence_evidence(
             normative_blocked_count,
             len(records),
         ),
+        "record_integrity_pass_count": sum(record["evidence_integrity_passed"] for record in records),
+        "record_integrity_pass_ratio": _ratio(
+            sum(record["evidence_integrity_passed"] for record in records),
+            len(records),
+        ),
     }
     _require(checks, failures, "source_reports_present", bool(report_refs))
+    _require(
+        checks,
+        failures,
+        "source_report_hashes_unique",
+        len(source_hashes) == len(set(source_hashes)),
+    )
+    _require(
+        checks,
+        failures,
+        "source_owner_ids_unique",
+        len(source_owner_ids) == len(set(source_owner_ids)),
+    )
     _require(checks, failures, "records_present", bool(records))
+    _require(checks, failures, "record_ids_unique", len(record_ids) == len(set(record_ids)))
+    _require(checks, failures, "task_ids_unique", len(task_ids) == len(set(task_ids)))
+    _require(
+        checks,
+        failures,
+        "record_evidence_integrity",
+        bool(records) and all(record["evidence_integrity_passed"] for record in records),
+    )
     _require(checks, failures, "minimum_owner_count", len(owners) >= min_owner_count)
     _require(checks, failures, "minimum_task_count", len(tasks) >= min_task_count)
     _require(
@@ -146,10 +222,22 @@ def check_delayed_consequence_evidence(
         >= min_normative_blocked_ratio,
     )
 
-    passed = not failures and all(checks.values())
+    maturity_failures = [failure for failure in failures if failure in MATURITY_CHECKS]
+    integrity_failures = [failure for failure in failures if failure not in MATURITY_CHECKS]
+    integrity_passed = not integrity_failures
+    maturity_passed = not maturity_failures
+    passed = integrity_passed and maturity_passed and all(checks.values())
     return {
         "schema_version": SCHEMA_VERSION,
+        "checked_at": checked_at.isoformat(),
         "passed": passed,
+        "integrity_passed": integrity_passed,
+        "maturity_passed": maturity_passed,
+        "failure_class": (
+            "none"
+            if passed
+            else ("evidence_integrity" if not integrity_passed else "evidence_maturity")
+        ),
         "failure_reasons": failures,
         "thresholds": {
             "min_owner_count": min_owner_count,
@@ -160,6 +248,7 @@ def check_delayed_consequence_evidence(
             "min_relation_change_ratio": min_relation_change_ratio,
             "min_authorization_change_count": min_authorization_change_count,
             "min_normative_blocked_ratio": min_normative_blocked_ratio,
+            "max_future_skew_seconds": max_future_skew_seconds,
         },
         "checks": checks,
         "metrics": metrics,
@@ -195,7 +284,11 @@ def _records_from_report(
     report: dict[str, Any],
     *,
     path: Path,
+    report_sha256: str,
     owner_id: str,
+    checked_at: datetime,
+    max_future_skew_seconds: float,
+    failures: list[str],
 ) -> list[dict[str, Any]]:
     checks = _object(report.get("checks"))
     records: list[dict[str, Any]] = []
@@ -206,32 +299,112 @@ def _records_from_report(
         after = _object(relation.get("after"))
         iem = _object(summary.get("iem_update"))
         authorization = _object(summary.get("authorization_change"))
+        authorization_before = _object(authorization.get("before"))
+        authorization_after = _object(authorization.get("after"))
+        action_bias = _object(relation.get("action_bias"))
+        task_id = str(summary.get("task_id") or "").strip()
+        agent_id = str(summary.get("agent_id") or "").strip()
+        event_kind = str(summary.get("event_kind") or "").strip()
+        observed_at = _timestamp(summary.get("observed_at"))
+        shutdown_at = _timestamp(summary.get("shutdown_at"))
+        required_checks = {
+            name: checks.get(f"{worker}_{name}") is True
+            for name in (
+                "event_after_shutdown",
+                "event_from_backend",
+                "event_matches_task",
+                "expected_event_kind",
+                "iem_anchor_matches_state",
+                "iem_state_changed",
+                "relation_persisted_in_iem",
+                "authorization_profile_changed",
+                "authorization_matches_action_bias",
+                "normative_local_update_blocked",
+            )
+        }
+        relation_changed = before != after and bool(before) and bool(after)
+        iem_changed = (
+            bool(iem.get("before_state_hash"))
+            and iem.get("before_state_hash") != iem.get("after_state_hash")
+            and iem.get("relation_entry_persisted") is True
+            and _object(iem.get("anchor")).get("state_hash") == iem.get("after_state_hash")
+        )
+        authorization_changed = (
+            authorization.get("changed") is True
+            and bool(authorization_before)
+            and bool(authorization_after)
+            and authorization_before != authorization_after
+        )
+        authorization_matches_action_bias = _authorization_matches_action_bias(
+            authorization_after,
+            action_bias,
+        )
+        negative_authorization_strengthened = (
+            event_kind in NEGATIVE_EVENT_KINDS
+            and authorization_changed
+            and _authorization_strengthened(authorization_before, authorization_after)
+        )
+        timestamp_complete = observed_at is not None and shutdown_at is not None
+        event_after_shutdown = bool(
+            timestamp_complete and observed_at is not None and shutdown_at is not None and observed_at > shutdown_at
+        )
+        timestamp_not_future = bool(
+            observed_at is not None
+            and observed_at <= checked_at + timedelta(seconds=max_future_skew_seconds)
+        )
+        integrity = {
+            "agent_id_present": bool(agent_id),
+            "task_id_present": bool(task_id),
+            "event_kind_allowed": event_kind in ALLOWED_EVENT_KINDS,
+            "timestamps_complete": timestamp_complete,
+            "event_after_shutdown": event_after_shutdown,
+            "observed_at_not_future": timestamp_not_future,
+            "relation_key_present": bool(relation.get("relation_key")),
+            "relation_changed": relation_changed,
+            "iem_changed_and_anchored": iem_changed,
+            "authorization_changed": authorization_changed,
+            "authorization_matches_action_bias": authorization_matches_action_bias,
+            "negative_authorization_strengthened": (
+                negative_authorization_strengthened
+                if event_kind in NEGATIVE_EVENT_KINDS
+                else True
+            ),
+            "source_worker_checks_passed": all(required_checks.values()),
+            "reports_present": summary.get("reports_present") is True,
+        }
+        evidence_integrity_passed = all(integrity.values())
+        if not evidence_integrity_passed:
+            failed_integrity = sorted(name for name, passed in integrity.items() if not passed)
+            failures.append(
+                f"source record integrity failed {path}:{worker}: {','.join(failed_integrity)}"
+            )
         records.append(
             {
-                "record_id": f"{path.name}:{worker}:{summary.get('task_id')}",
+                "record_id": f"{report_sha256[:16]}:{worker}:{task_id}",
                 "source_report": str(path),
+                "source_report_sha256": report_sha256,
                 "owner_id": owner_id,
                 "worker": worker,
-                "agent_id": str(summary.get("agent_id") or ""),
-                "task_id": str(summary.get("task_id") or ""),
-                "event_kind": str(summary.get("event_kind") or ""),
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "event_kind": event_kind,
                 "observed_at": summary.get("observed_at"),
+                "shutdown_at": summary.get("shutdown_at"),
                 "relation_key": relation.get("relation_key"),
-                "relation_changed": before != after and bool(before) and bool(after),
-                "iem_changed": (
-                    bool(iem.get("before_state_hash"))
-                    and iem.get("before_state_hash") != iem.get("after_state_hash")
-                    and iem.get("relation_entry_persisted") is True
-                    and _object(iem.get("anchor")).get("state_hash")
-                    == iem.get("after_state_hash")
-                ),
-                "authorization_before": authorization.get("before"),
-                "authorization_after": authorization.get("after"),
-                "authorization_changed": authorization.get("changed") is True,
+                "relation_changed": relation_changed,
+                "iem_changed": iem_changed,
+                "authorization_before": authorization_before,
+                "authorization_after": authorization_after,
+                "authorization_changed": authorization_changed,
+                "negative_authorization_strengthened": negative_authorization_strengthened,
+                "authorization_matches_action_bias": authorization_matches_action_bias,
                 "normative_local_update_blocked": checks.get(
                     f"{worker}_normative_local_update_blocked"
                 )
                 is True,
+                "required_source_checks": required_checks,
+                "integrity_checks": integrity,
+                "evidence_integrity_passed": evidence_integrity_passed,
             }
         )
     return records
@@ -260,6 +433,54 @@ def _timestamp(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _authorization_matches_action_bias(
+    authorization_after: dict[str, Any],
+    action_bias: dict[str, Any],
+) -> bool:
+    if not authorization_after or not action_bias:
+        return False
+    return all(
+        authorization_after.get(field) == action_bias.get(field)
+        for field in (
+            "verification_level",
+            "required_stake_multiplier",
+            "direct_match_allowed",
+        )
+    )
+
+
+def _authorization_strengthened(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> bool:
+    before_level = VERIFICATION_LEVEL_RANK.get(str(before.get("verification_level") or ""), -1)
+    after_level = VERIFICATION_LEVEL_RANK.get(str(after.get("verification_level") or ""), -1)
+    before_stake = _float(before.get("required_stake_multiplier"))
+    after_stake = _float(after.get("required_stake_multiplier"))
+    direct_match_restricted = (
+        before.get("direct_match_allowed") is True
+        and after.get("direct_match_allowed") is False
+    )
+    return (
+        after_level > before_level
+        or (before_stake is not None and after_stake is not None and after_stake > before_stake)
+        or direct_match_restricted
+    )
+
+
+def _float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _require(
@@ -314,7 +535,9 @@ def main() -> int:
         encoding="utf-8",
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0 if report["passed"] else 2
+    if report["passed"]:
+        return 0
+    return 3 if report["failure_class"] == "evidence_integrity" else 2
 
 
 if __name__ == "__main__":

@@ -67,6 +67,28 @@ def test_nightly_wrapper_wires_h2_qualification_and_semantic_checkers() -> None:
     assert '--owner-id "$H2_MULTI_AGENT_OWNER_ID"' in text
 
 
+def test_nightly_wrapper_wires_h2_h3_read_only_readiness_chain() -> None:
+    wrapper = Path(__file__).resolve().parents[1] / "run_nightly_regression.sh"
+    text = wrapper.read_text(encoding="utf-8")
+
+    assert (
+        'H2_DELAYED_CONSEQUENCE_REQUIRE_READY='
+        '"${H2_DELAYED_CONSEQUENCE_REQUIRE_READY:-0}"'
+    ) in text
+    assert 'if [ "$H2_DELAYED_STATUS" -eq 3 ]; then' in text
+    assert (
+        'RUN_H3_READ_ONLY_GOAL_PROPOSAL_GATE='
+        '"${RUN_H3_READ_ONLY_GOAL_PROPOSAL_GATE:-0}"'
+    ) in text
+    assert "-m benchmarks.h3_read_only_goal_proposal_gate" in text
+    assert '--h2-evidence-report "$H3_READ_ONLY_H2_EVIDENCE_REPORT"' in text
+    assert (
+        'RUN_H2_H3_READINESS_SUMMARY='
+        '"${RUN_H2_H3_READINESS_SUMMARY:-$RUN_H2_DELAYED_CONSEQUENCE_EVIDENCE_CHECK}"'
+    ) in text
+    assert "-m benchmarks.h2_h3_readiness_summary" in text
+
+
 def test_nightly_wrapper_wires_h3_goal_generator_skeleton() -> None:
     wrapper = Path(__file__).resolve().parents[1] / "run_nightly_regression.sh"
     text = wrapper.read_text(encoding="utf-8")
