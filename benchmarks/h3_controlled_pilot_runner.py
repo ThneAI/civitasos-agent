@@ -26,7 +26,16 @@ from benchmarks.h3_controlled_pilot_execution_preflight_gate import (
 SCHEMA_VERSION = "h3-controlled-pilot-runner:v1"
 CONSUMPTION_SCHEMA_VERSION = "h3-controlled-pilot-authorization-consumption:v1"
 POST_RUN_RECEIPT_SCHEMA_VERSION = "h3-controlled-pilot-post-run-receipt:v1"
-TASK_SCHEMA_VERSION = "h3-successful-relation-conditions-pilot-task:v1"
+TASK_SCHEMA_VERSION = "h3-relation-evidence-analysis-pilot-task:v2"
+LEGACY_TASK_SCHEMA_VERSION = "h3-successful-relation-conditions-pilot-task:v1"
+SUPPORTED_PROPOSAL_TASK_KINDS = {
+    "review_conditions_for_preserving_successful_relations": (
+        "successful_relation_conditions_analysis"
+    ),
+    "validate_relation_learning_replication": (
+        "relation_learning_replication_analysis"
+    ),
+}
 AGENT_ROLES = (
     "relation_evidence_analyst",
     "counterexample_challenger",
@@ -368,8 +377,7 @@ def _validate_inputs(
     matches = [
         item
         for item in drafts
-        if item.get("proposal_kind")
-        == "review_conditions_for_preserving_successful_relations"
+        if item.get("proposal_kind") in SUPPORTED_PROPOSAL_TASK_KINDS
     ]
     _require(checks, failures, "authorized_bounded_draft_unique", len(matches) == 1)
     return matches[0] if len(matches) == 1 else {}
@@ -384,22 +392,34 @@ def _build_task(
     profile: str,
 ) -> dict[str, Any]:
     evidence_refs = _objects(_object(draft.get("source_binding")).get("evidence_refs"))
+    task_evidence_refs = [
+        {
+            "record_id": item.get("record_id"),
+            "task_id": item.get("task_id"),
+            "source_report_sha256": item.get("source_report_sha256"),
+        }
+        for item in evidence_refs
+    ]
     evidence_snapshots = _load_evidence_snapshots(
-        evidence_refs=evidence_refs,
+        evidence_refs=task_evidence_refs,
         evidence_report_paths=evidence_report_paths,
         agent_root=agent_root,
     )
     return {
         "schema_version": TASK_SCHEMA_VERSION,
         "task_id": f"h3-controlled-task:{_canonical_sha256(draft)[:20]}",
-        "task_kind": "successful_relation_conditions_analysis",
+        "task_kind": SUPPORTED_PROPOSAL_TASK_KINDS[str(draft["proposal_kind"])],
+        "proposal_kind": draft.get("proposal_kind"),
         "title": draft.get("title"),
         "objective": draft.get("objective"),
         "hypotheses": draft.get("hypotheses"),
         "failure_conditions": draft.get("failure_conditions"),
         "success_metrics": draft.get("success_metrics"),
         "stop_conditions": draft.get("stop_conditions"),
-        "evidence_refs": evidence_refs,
+        "negative_control_checks": _object(
+            draft.get("source_binding")
+        ).get("negative_control_checks", {}),
+        "evidence_refs": task_evidence_refs,
         "evidence_snapshots": evidence_snapshots,
         "source_bounded_plan_report": _artifact_ref(bounded_file),
         "required_agent_roles": list(AGENT_ROLES),
@@ -470,28 +490,112 @@ def _load_evidence_snapshots(
 def _compact_worker_summary(record: dict[str, Any]) -> dict[str, Any]:
     relation = _object(record.get("relation_update"))
     iem = _object(record.get("iem_update"))
+    expectation_updates = _objects(relation.get("expectation_updates"))
+    full_provenance = next(
+        (
+            _object(_object(item.get("update_params")).get("delta_provenance"))
+            for item in expectation_updates
+            if _object(_object(item.get("update_params")).get("delta_provenance"))
+        ),
+        {},
+    )
+    provenance = _compact_learning_provenance(full_provenance)
     return {
-        "agent_id": record.get("agent_id"),
         "task_id": record.get("task_id"),
         "event_kind": record.get("event_kind"),
         "observed_at": record.get("observed_at"),
-        "authorization_change": record.get("authorization_change"),
+        "authorization_changed": _object(
+            record.get("authorization_change")
+        ).get("changed"),
         "relation_update": {
             "before": relation.get("before"),
             "after": relation.get("after"),
-            "action_bias": relation.get("action_bias"),
+            "action_bias": _compact_action_bias(
+                _object(relation.get("action_bias"))
+            ),
+            "learning_provenance": provenance,
             "normative_guard_observed": any(
                 item.get("parameter_name") == "normative_relation"
                 and item.get("local_update_blocked") is True
-                for item in _objects(relation.get("expectation_updates"))
+                for item in expectation_updates
             ),
         },
         "iem_update": {
-            "before_state_hash": iem.get("before_state_hash"),
-            "after_state_hash": iem.get("after_state_hash"),
             "relation_entry_persisted": iem.get("relation_entry_persisted"),
-            "relation_key": iem.get("relation_key"),
         },
+    }
+
+
+def _compact_learning_provenance(value: dict[str, Any]) -> dict[str, Any]:
+    components = [
+        {
+            key: item.get(key)
+            for key in (
+                "outcome_kind",
+                "task_kind",
+                "provider",
+                "owner_id",
+                "risk_class",
+                "confidence",
+                "risk_weight",
+                "history_adaptation",
+                "surprise_weight",
+                "effective_weight",
+                "upstream_event_id",
+            )
+        }
+        for item in _objects(value.get("components"))
+    ]
+    compact = {
+        key: value.get(key)
+        for key in (
+            "schema_version",
+            "prior_sample_count",
+            "sample_count",
+            "identity_neutral_dimensions",
+            "raw_deltas",
+            "bounded_deltas",
+            "applied_deltas",
+            "per_step_abs_caps",
+        )
+    }
+    source_event_ids = [
+        str(item) for item in value.get("source_event_ids", []) if str(item)
+    ]
+    duplicate_ids = [
+        str(item)
+        for item in value.get("duplicate_source_event_ids", [])
+        if str(item)
+    ]
+    compact.update(
+        {
+            "source_event_count": len(source_event_ids),
+            "source_event_id_sha256": [
+                hashlib.sha256(item.encode("utf-8")).hexdigest()
+                for item in source_event_ids
+            ],
+            "duplicate_source_event_count": len(duplicate_ids),
+            "duplicate_source_event_id_sha256": [
+                hashlib.sha256(item.encode("utf-8")).hexdigest()
+                for item in duplicate_ids
+            ],
+            "components": components,
+        }
+    )
+    return compact
+
+
+def _compact_action_bias(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value.get(key)
+        for key in (
+            "verification_level",
+            "required_stake_multiplier",
+            "direct_match_allowed",
+            "trust_hint",
+            "claim_priority_delta",
+            "evidence_outcome_kinds",
+        )
     }
 
 
@@ -580,7 +684,11 @@ def _ollama_agent_call(
                 },
                 {"role": "user", "content": prompt},
             ],
-            "options": {"temperature": 0.2, "num_predict": 1200},
+            "options": {
+                "temperature": 0.2,
+                "num_ctx": 8192,
+                "num_predict": 1200,
+            },
         }
         request = urllib.request.Request(
             endpoint,
@@ -596,6 +704,13 @@ def _ollama_agent_call(
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Ollama HTTP {exc.code}: {detail}") from exc
         content = str(_object(provider.get("message")).get("content") or "")
+        if not content.strip():
+            raise RuntimeError(
+                "Ollama returned an empty response "
+                f"(done_reason={provider.get('done_reason')!r}, "
+                f"prompt_eval_count={provider.get('prompt_eval_count')!r}, "
+                f"eval_count={provider.get('eval_count')!r})"
+            )
         payload = _parse_json_response(content)
         return payload, {
             "provider": "ollama",
@@ -614,12 +729,12 @@ def _ollama_agent_call(
 def _role_instruction(role: str) -> str:
     instructions = {
         "relation_evidence_analyst": (
-            "Identify observable conditions supported by the supplied settlement evidence. "
-            "Separate evidence from causal inference."
+            "Audit whether the supplied relation evidence supports the claimed delta. "
+            "Trace before, after, raw, bounded, and applied values to source events."
         ),
         "counterexample_challenger": (
-            "Challenge the proposed successful-relation conditions. Find counterexamples, "
-            "hidden state, confounders, and unsafe generalizations."
+            "Challenge the relation-learning claims. Find template fallback, identity bias, "
+            "replay, cap bypass, hidden state, confounders, and unsafe generalizations."
         ),
         "audit_verifier": (
             "Audit traceability, falsifiability, rollback boundaries, and whether any claim "
@@ -649,7 +764,12 @@ def _task_prompt(task: dict[str, Any]) -> str:
     return (
         "Analyze this single bounded task. Do not invent evidence and do not propose direct "
         "state changes.\n\n"
-        + json.dumps(task, ensure_ascii=False, indent=2, sort_keys=True)
+        + json.dumps(
+            task,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     )
 
 
@@ -684,7 +804,23 @@ def _parse_json_response(content: str) -> dict[str, Any]:
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.DOTALL)
     if fenced:
         cleaned = fenced.group(1)
-    value = json.loads(cleaned)
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError as original:
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(cleaned):
+            if character != "{":
+                continue
+            try:
+                candidate, _ = decoder.raw_decode(cleaned[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                return candidate
+        excerpt = cleaned[:200].replace("\n", "\\n")
+        raise ValueError(
+            f"Agent response did not contain a JSON object; excerpt={excerpt!r}"
+        ) from original
     if not isinstance(value, dict):
         raise ValueError("Agent response must be a JSON object")
     return value

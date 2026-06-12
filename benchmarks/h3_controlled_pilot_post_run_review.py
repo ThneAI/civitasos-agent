@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.h3_controlled_pilot_runner import (
+    LEGACY_TASK_SCHEMA_VERSION,
     POST_RUN_RECEIPT_SCHEMA_VERSION,
     TASK_SCHEMA_VERSION,
     _reconcile_generations,
@@ -36,7 +37,10 @@ def review_post_run_receipt(
 
     if _object(receipt).get("schema_version") != POST_RUN_RECEIPT_SCHEMA_VERSION:
         failures.append("post-run receipt schema mismatch")
-    if _object(task).get("schema_version") != TASK_SCHEMA_VERSION:
+    if _object(task).get("schema_version") not in {
+        TASK_SCHEMA_VERSION,
+        LEGACY_TASK_SCHEMA_VERSION,
+    }:
         failures.append("controlled task schema mismatch")
     if task_path.is_file() and _sha256(task_path) != task_ref.get("sha256"):
         failures.append("controlled task hash mismatch")

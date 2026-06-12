@@ -46,10 +46,29 @@ from benchmarks.h2_restart_continuity_gate import (
 
 SCHEMA_VERSION = "h2-multi-agent-backend-continuity-gate:v1"
 PHASE_SCHEMA_VERSION = "h2-multi-agent-backend-continuity-phase:v1"
+WORKER_SCENARIOS = {
+    "alpha": {
+        "event_kind": "settlement_confirmed",
+        "task_kind": "accountable_delivery_summary",
+        "risk_class": "low",
+        "agent_provider": "local-gpu-agent",
+    },
+    "beta": {
+        "event_kind": "post_delivery_dispute",
+        "task_kind": "evidence_quality_review",
+        "risk_class": "medium",
+        "agent_provider": "deepseek-api-agent",
+    },
+    "gamma": {
+        "event_kind": "post_delivery_failure",
+        "task_kind": "authorization_boundary_audit",
+        "risk_class": "high",
+        "agent_provider": "claude-cli-agent",
+    },
+}
 WORKER_CASES = {
-    "alpha": "settlement_confirmed",
-    "beta": "post_delivery_dispute",
-    "gamma": "post_delivery_failure",
+    worker: str(scenario["event_kind"])
+    for worker, scenario in WORKER_SCENARIOS.items()
 }
 PRIOR_EXPECTATION = {
     "expected_trust": 0.72,
@@ -90,7 +109,11 @@ def run_gate(
     )
     try:
         identities = _provision_identities(run_root, sandbox.base_url)
-        tasks = _post_tasks(sandbox.base_url, identities)
+        tasks = _post_tasks(
+            sandbox.base_url,
+            identities,
+            owner_id=owner_id,
+        )
         _write_json(run_root / "tasks.json", tasks)
         phase1_processes = {
             worker: _run_phase(
@@ -184,6 +207,8 @@ def _provision_identities(run_root: Path, base_url: str) -> dict[str, dict[str, 
 def _post_tasks(
     base_url: str,
     identities: dict[str, dict[str, Any]],
+    *,
+    owner_id: str,
 ) -> dict[str, str]:
     requester = authenticated_agent(
         base_url=base_url,
@@ -191,13 +216,17 @@ def _post_tasks(
         identity_path=Path(identities["requester"]["identity_path"]),
     )
     tasks: dict[str, str] = {}
-    for worker, event_kind in WORKER_CASES.items():
+    for worker, scenario in WORKER_SCENARIOS.items():
         response = requester.pool_post(
             required_capability="general",
             input_data={
                 "kind": "h2_restart_continuity_probe",
+                "task_kind": scenario["task_kind"],
                 "worker": worker,
-                "expected_post_shutdown_event_kind": event_kind,
+                "owner_id": owner_id,
+                "agent_provider": scenario["agent_provider"],
+                "risk_class": scenario["risk_class"],
+                "expected_post_shutdown_event_kind": scenario["event_kind"],
             },
             reward=1,
             allowed_agents=[identities[worker]["agent_id"]],
@@ -478,12 +507,9 @@ def _phase_recover(
         },
     }
     event_kind = str(event.get("event_kind") or "")
-    event_record = {
-        "task_id": task_id,
-        "relation_id": relation_id,
-        "event_id": event.get("event_id"),
-        "observed_at": event.get("observed_at"),
-    }
+    event_record = dict(event)
+    event_record["task_id"] = task_id
+    event_record["relation_id"] = relation_id
     if event_kind == "settlement_confirmed":
         relation_context["recent_repairs"] = [event_record]
     else:
@@ -528,7 +554,12 @@ def _phase_recover(
     }
     authorization_change = {
         "before": _authorization_profile(prior),
-        "after": _authorization_profile(after),
+        "after": _authorization_profile(
+            after,
+            minimum_verification_level=str(
+                action_bias.get("verification_level") or "baseline"
+            ),
+        ),
     }
     authorization_change["changed"] = (
         authorization_change["before"] != authorization_change["after"]
@@ -722,7 +753,11 @@ def _evaluate_gate(
     }
 
 
-def _authorization_profile(vector: dict[str, Any]) -> dict[str, Any]:
+def _authorization_profile(
+    vector: dict[str, Any],
+    *,
+    minimum_verification_level: str = "baseline",
+) -> dict[str, Any]:
     trust = _float(vector.get("expected_trust"))
     betrayal_risk = _float(vector.get("expected_betrayal_risk"))
     verification_level = "baseline"
@@ -730,6 +765,14 @@ def _authorization_profile(vector: dict[str, Any]) -> dict[str, Any]:
         verification_level = "strict"
     elif betrayal_risk >= 0.25 or trust < 0.65:
         verification_level = "elevated"
+    order = {"baseline": 0, "elevated": 1, "strict": 2}
+    minimum = (
+        minimum_verification_level
+        if minimum_verification_level in order
+        else "baseline"
+    )
+    if order[minimum] > order[verification_level]:
+        verification_level = minimum
     multiplier = round(1.0 + betrayal_risk * 2.0 + max(0.0, 0.70 - trust), 3)
     decision = {
         "baseline": "standard_claim_allowed",

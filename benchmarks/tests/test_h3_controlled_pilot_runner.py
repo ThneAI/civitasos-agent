@@ -11,9 +11,17 @@ from benchmarks.h3_controlled_pilot_post_run_review import (
     review_post_run_receipt,
 )
 from benchmarks.h3_controlled_pilot_runner import run_controlled_pilot
+from benchmarks.h3_controlled_pilot_runner import _parse_json_response
 
 
 NOW = datetime(2026, 6, 9, 14, 0, tzinfo=timezone.utc)
+
+
+def test_parse_json_response_accepts_provider_thinking_wrapper() -> None:
+    payload = _parse_json_response(
+        '<think>auditing evidence</think>\\n{"verdict":"review required"}\\n'
+    )
+    assert payload == {"verdict": "review required"}
 
 
 def test_three_agent_controlled_pilot_consumes_once_and_writes_receipt(
@@ -206,6 +214,62 @@ def test_qualification_runner_rejects_development_scope(tmp_path: Path) -> None:
 
     assert report["passed"] is False
     assert report["checks"]["authorized_scope_valid"] is False
+
+
+def test_relation_learning_replication_task_exposes_delta_provenance(
+    tmp_path: Path,
+) -> None:
+    preflight, bounded, evidence = _write_inputs(tmp_path)
+    bounded_value = json.loads(bounded.read_text(encoding="utf-8"))
+    draft = bounded_value["draft_surface"]["drafts"][0]
+    draft["proposal_kind"] = "validate_relation_learning_replication"
+    evidence_value = json.loads(evidence[0].read_text(encoding="utf-8"))
+    update = evidence_value["worker_summaries"]["alpha"]["relation_update"][
+        "expectation_updates"
+    ][0]
+    update["update_params"] = {
+        "delta_provenance": {
+            "schema_version": "relation-learning-provenance:v1",
+            "source_event_ids": ["event:1"],
+            "raw_deltas": {"expected_trust": 0.1},
+            "bounded_deltas": {"expected_trust": 0.08},
+            "applied_deltas": {"expected_trust": 0.08},
+            "per_step_abs_caps": {"expected_trust": 0.08},
+            "components": [
+                {
+                    "outcome_kind": "settlement_confirmed",
+                    "effective_weight": 0.8,
+                    "base_deltas": {"expected_trust": 0.1},
+                }
+            ],
+        }
+    }
+    evidence[0].write_text(json.dumps(evidence_value), encoding="utf-8")
+    draft["source_binding"]["evidence_refs"][0]["source_report_sha256"] = _sha256(
+        evidence[0]
+    )
+    bounded.write_text(json.dumps(bounded_value), encoding="utf-8")
+
+    report = run_controlled_pilot(
+        preflight_path=preflight,
+        bounded_plan_report_path=bounded,
+        evidence_report_paths=evidence,
+        agent_root=tmp_path,
+        model="test-model",
+        ack_kill_switch_armed=True,
+        current_time=NOW,
+        agent_call=_fake_agent_call,
+    )
+
+    assert report["passed"] is True
+    task = json.loads(Path(report["task"]["path"]).read_text(encoding="utf-8"))
+    assert task["task_kind"] == "relation_learning_replication_analysis"
+    provenance = task["evidence_snapshots"][0]["record"]["relation_update"][
+        "learning_provenance"
+    ]
+    assert provenance["source_event_count"] == 1
+    assert provenance["source_event_id_sha256"] == [_sha256_text("event:1")]
+    assert "base_deltas" not in provenance["components"][0]
 
 
 def test_qualification_runner_repairs_invalid_response_contract(
@@ -405,3 +469,9 @@ def _sha256(path: Path) -> str:
     import hashlib
 
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sha256_text(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
