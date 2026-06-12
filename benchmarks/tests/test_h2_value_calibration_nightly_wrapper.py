@@ -89,6 +89,53 @@ def test_nightly_wrapper_wires_h2_h3_read_only_readiness_chain() -> None:
     assert "-m benchmarks.h3_operator_review_reconciliation_gate reconcile" in text
     assert "H3_OPERATOR_REVIEW_PACKET is required" in text
     assert (
+        'RUN_H3_BOUNDED_PLAN_DRAFT_GATE='
+        '"${RUN_H3_BOUNDED_PLAN_DRAFT_GATE:-0}"'
+    ) in text
+    assert "-m benchmarks.h3_bounded_plan_draft_gate" in text
+    assert (
+        '--reconciliation-report '
+        '"$H3_BOUNDED_PLAN_RECONCILIATION_REPORT"'
+    ) in text
+    assert (
+        'RUN_H3_BOUNDED_PLAN_CHALLENGE_REVIEW_GATE='
+        '"${RUN_H3_BOUNDED_PLAN_CHALLENGE_REVIEW_GATE:-0}"'
+    ) in text
+    assert "-m benchmarks.h3_bounded_plan_challenge_review_gate reconcile" in text
+    assert "H3_BOUNDED_PLAN_CHALLENGE_REVIEW_PACKET is required" in text
+    assert (
+        'RUN_H3_CONTROLLED_PILOT_AUTHORIZATION_REQUEST_GATE='
+        '"${RUN_H3_CONTROLLED_PILOT_AUTHORIZATION_REQUEST_GATE:-0}"'
+    ) in text
+    assert (
+        "-m benchmarks.h3_controlled_pilot_authorization_request_gate"
+        in text
+    )
+    assert (
+        'RUN_H3_CONTROLLED_PILOT_AUTHORIZATION_DECISION_GATE='
+        '"${RUN_H3_CONTROLLED_PILOT_AUTHORIZATION_DECISION_GATE:-0}"'
+    ) in text
+    assert (
+        "-m benchmarks.h3_controlled_pilot_authorization_decision_gate reconcile"
+        in text
+    )
+    assert (
+        "H3_CONTROLLED_PILOT_AUTHORIZATION_DECISION_PACKET is required"
+        in text
+    )
+    assert (
+        'RUN_H3_CONTROLLED_PILOT_EXECUTION_PREFLIGHT_GATE='
+        '"${RUN_H3_CONTROLLED_PILOT_EXECUTION_PREFLIGHT_GATE:-0}"'
+    ) in text
+    assert (
+        "-m benchmarks.h3_controlled_pilot_execution_preflight_gate"
+        in text
+    )
+    assert (
+        "H3_CONTROLLED_PILOT_EXECUTION_PREFLIGHT_AUTHORIZATION_RECEIPT_ID is required"
+        in text
+    )
+    assert (
         'RUN_H2_H3_READINESS_SUMMARY='
         '"${RUN_H2_H3_READINESS_SUMMARY:-$RUN_H2_DELAYED_CONSEQUENCE_EVIDENCE_CHECK}"'
     ) in text
