@@ -807,6 +807,15 @@ def _parse_json_response(content: str) -> dict[str, Any]:
     try:
         value = json.loads(cleaned)
     except json.JSONDecodeError as original:
+        normalized = _normalize_escaped_json_whitespace(cleaned)
+        if normalized != cleaned:
+            try:
+                value = json.loads(normalized)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(value, dict):
+                    return value
         decoder = json.JSONDecoder()
         for index, character in enumerate(cleaned):
             if character != "{":
@@ -824,6 +833,42 @@ def _parse_json_response(content: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Agent response must be a JSON object")
     return value
+
+
+def _normalize_escaped_json_whitespace(content: str) -> str:
+    """Decode provider-emitted structural whitespace without altering strings."""
+    normalized: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(content):
+        character = content[index]
+        if in_string:
+            normalized.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            normalized.append(character)
+            index += 1
+            continue
+        if character == "\\" and index + 1 < len(content):
+            replacement = {"n": "\n", "r": "\r", "t": "\t"}.get(
+                content[index + 1]
+            )
+            if replacement is not None:
+                normalized.append(replacement)
+                index += 2
+                continue
+        normalized.append(character)
+        index += 1
+    return "".join(normalized)
 
 
 def _valid_agent_payload(

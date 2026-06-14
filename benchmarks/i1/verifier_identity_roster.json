@@ -1,0 +1,73 @@
+{
+  "schema_version": "i1-verifier-identity-roster:v1",
+  "minimum_stable_identities": 5,
+  "minimum_verifiers": 3,
+  "minimum_provider_runtime_families": 2,
+  "proposer_identity_alias": "deepseek-api-agent",
+  "default_verifier_allowlist": [
+    "claude-cli-agent",
+    "external2-api-agent",
+    "hermes-cli-agent",
+    "local-gpu-agent"
+  ],
+  "identities": [
+    {
+      "identity_alias": "deepseek-api-agent",
+      "display_name": "DeepSeek API Agent",
+      "provider_family": "deepseek-api",
+      "runtime_family": "openai-compatible-api",
+      "roles": [
+        "proposer",
+        "verifier"
+      ]
+    },
+    {
+      "identity_alias": "claude-cli-agent",
+      "display_name": "Claude CLI Agent",
+      "provider_family": "claude-cli-adapter",
+      "runtime_family": "cli-agent",
+      "roles": [
+        "verifier",
+        "counterexample_challenger"
+      ]
+    },
+    {
+      "identity_alias": "hermes-cli-agent",
+      "display_name": "Hermes CLI Agent",
+      "provider_family": "hermes-cli",
+      "runtime_family": "cli-agent",
+      "roles": [
+        "verifier",
+        "semantic_reviewer"
+      ]
+    },
+    {
+      "identity_alias": "external2-api-agent",
+      "display_name": "Secondary External API Agent",
+      "provider_family": "secondary-external-api",
+      "runtime_family": "openai-compatible-api",
+      "roles": [
+        "verifier",
+        "independent_reviewer"
+      ]
+    },
+    {
+      "identity_alias": "local-gpu-agent",
+      "display_name": "Local GPU Agent",
+      "provider_family": "local-ollama",
+      "runtime_family": "ollama-native",
+      "roles": [
+        "verifier",
+        "smoke_reviewer"
+      ]
+    }
+  ],
+  "boundary": {
+    "local_test_identities_only": true,
+    "registration_required_before_i1": true,
+    "signature_control_proof_required_before_i1": true,
+    "model_credentials_in_roster": false,
+    "i1_execution_allowed": false,
+    "external_side_effect_allowed": false
+  }
+}

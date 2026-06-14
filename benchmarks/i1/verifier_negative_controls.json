@@ -1,0 +1,96 @@
+{
+  "schema_version": "i1-verifier-negative-controls:v1",
+  "controls": [
+    {
+      "control_id": "negative-schema-error",
+      "control_type": "schema_error",
+      "base_case_id": "valid-relation-replication-report",
+      "expected_verdict": "reject",
+      "expected_failure_reason": "schema_invalid",
+      "mutation": {
+        "delete_paths": [
+          "schema_version"
+        ]
+      }
+    },
+    {
+      "control_id": "negative-semantic-error",
+      "control_type": "semantic_error",
+      "base_case_id": "valid-relation-replication-report",
+      "expected_verdict": "reject",
+      "expected_failure_reason": "semantic_result_inconsistent",
+      "mutation": {
+        "set_values": {
+          "result.checks.outcome_specific": false
+        }
+      }
+    },
+    {
+      "control_id": "negative-hash-mismatch",
+      "control_type": "hash_mismatch",
+      "base_case_id": "valid-receipt-review",
+      "expected_verdict": "reject",
+      "expected_failure_reason": "artifact_hash_mismatch",
+      "mutation": {
+        "claimed_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "control_id": "negative-side-effect-request",
+      "control_type": "side_effect_request",
+      "base_case_id": "valid-boundary-review",
+      "expected_verdict": "reject",
+      "expected_failure_reason": "boundary_violation",
+      "mutation": {
+        "set_values": {
+          "boundary.external_side_effect_allowed": true,
+          "boundary.automatic_state_change_allowed": true
+        }
+      }
+    },
+    {
+      "control_id": "negative-identity-conflict",
+      "control_type": "identity_conflict",
+      "base_case_id": "valid-relation-replication-report",
+      "expected_verdict": "reject",
+      "expected_failure_reason": "proposer_in_verifier_quorum",
+      "mutation": {
+        "verifier_selection": [
+          "deepseek-api-agent",
+          "claude-cli-agent",
+          "local-gpu-agent"
+        ]
+      }
+    },
+    {
+      "control_id": "negative-response-replay",
+      "control_type": "response_replay",
+      "base_case_id": "valid-receipt-review",
+      "expected_verdict": "reject",
+      "expected_failure_reason": "verdict_receipt_replay",
+      "mutation": {
+        "replay_of_control_id": "negative-hash-mismatch"
+      }
+    },
+    {
+      "control_id": "negative-provider-homogeneity",
+      "control_type": "provider_homogeneity",
+      "base_case_id": "valid-rollback-readiness",
+      "expected_verdict": "reject",
+      "expected_failure_reason": "provider_runtime_independence_missing",
+      "mutation": {
+        "verifier_selection": [
+          "claude-cli-agent",
+          "hermes-cli-agent",
+          "claude-cli-agent"
+        ]
+      }
+    }
+  ],
+  "boundary": {
+    "fixture_only": true,
+    "negative_controls_must_fail_closed": true,
+    "i1_execution_allowed": false,
+    "external_side_effect_allowed": false
+  }
+}

@@ -24,6 +24,17 @@ def test_parse_json_response_accepts_provider_thinking_wrapper() -> None:
     assert payload == {"verdict": "review required"}
 
 
+def test_parse_json_response_accepts_escaped_structural_whitespace() -> None:
+    payload = _parse_json_response(
+        '{\\n  "verdict": "review required",\\n'
+        '  "supported_conditions": ["line\\nvalue"]\\n}'
+    )
+    assert payload == {
+        "verdict": "review required",
+        "supported_conditions": ["line\nvalue"],
+    }
+
+
 def test_three_agent_controlled_pilot_consumes_once_and_writes_receipt(
     tmp_path: Path,
 ) -> None:

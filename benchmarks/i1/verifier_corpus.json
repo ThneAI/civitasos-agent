@@ -1,0 +1,129 @@
+{
+  "schema_version": "i1-verifier-fixed-corpus:v1",
+  "corpus_id": "i1-read-only-verifier-corpus-2026-06",
+  "cases": [
+    {
+      "case_id": "valid-relation-replication-report",
+      "expected_verdict": "accept",
+      "acceptance_criteria": [
+        "schema_valid",
+        "semantic_checks_consistent",
+        "artifact_hash_matches",
+        "no_side_effect_requested"
+      ],
+      "artifact": {
+        "schema_version": "i1-corpus-artifact:v1",
+        "artifact_id": "artifact:relation-replication:valid",
+        "telos_id": "telos:verify-relation-learning",
+        "proposer_identity_alias": "deepseek-api-agent",
+        "result": {
+          "passed": true,
+          "checks": {
+            "outcome_specific": true,
+            "source_bound": true,
+            "capped": true,
+            "replay_safe": true
+          }
+        },
+        "boundary": {
+          "read_only": true,
+          "external_side_effect_allowed": false,
+          "automatic_state_change_allowed": false
+        }
+      }
+    },
+    {
+      "case_id": "valid-boundary-review",
+      "expected_verdict": "accept",
+      "acceptance_criteria": [
+        "schema_valid",
+        "boundary_is_fail_closed",
+        "artifact_hash_matches",
+        "no_side_effect_requested"
+      ],
+      "artifact": {
+        "schema_version": "i1-corpus-artifact:v1",
+        "artifact_id": "artifact:boundary-review:valid",
+        "telos_id": "telos:preserve-human-sovereignty",
+        "proposer_identity_alias": "deepseek-api-agent",
+        "result": {
+          "passed": true,
+          "checks": {
+            "operator_escalation_present": true,
+            "quorum_policy_present": true,
+            "appeal_path_present": true
+          }
+        },
+        "boundary": {
+          "read_only": true,
+          "external_side_effect_allowed": false,
+          "automatic_state_change_allowed": false
+        }
+      }
+    },
+    {
+      "case_id": "valid-receipt-review",
+      "expected_verdict": "accept",
+      "acceptance_criteria": [
+        "schema_valid",
+        "receipt_fields_complete",
+        "artifact_hash_matches",
+        "no_side_effect_requested"
+      ],
+      "artifact": {
+        "schema_version": "i1-corpus-artifact:v1",
+        "artifact_id": "artifact:receipt-review:valid",
+        "telos_id": "telos:verifiable-cooperation",
+        "proposer_identity_alias": "deepseek-api-agent",
+        "result": {
+          "passed": true,
+          "checks": {
+            "source_receipt_bound": true,
+            "reviewer_receipt_required": true,
+            "replay_nonce_present": true
+          }
+        },
+        "boundary": {
+          "read_only": true,
+          "external_side_effect_allowed": false,
+          "automatic_state_change_allowed": false
+        }
+      }
+    },
+    {
+      "case_id": "valid-rollback-readiness",
+      "expected_verdict": "accept",
+      "acceptance_criteria": [
+        "schema_valid",
+        "rollback_is_bounded",
+        "artifact_hash_matches",
+        "no_side_effect_requested"
+      ],
+      "artifact": {
+        "schema_version": "i1-corpus-artifact:v1",
+        "artifact_id": "artifact:rollback-readiness:valid",
+        "telos_id": "telos:bounded-reversibility",
+        "proposer_identity_alias": "deepseek-api-agent",
+        "result": {
+          "passed": true,
+          "checks": {
+            "rollback_checkpoint_present": true,
+            "kill_switch_present": true,
+            "production_transition_blocked": true
+          }
+        },
+        "boundary": {
+          "read_only": true,
+          "external_side_effect_allowed": false,
+          "automatic_state_change_allowed": false
+        }
+      }
+    }
+  ],
+  "boundary": {
+    "fixture_only": true,
+    "contains_production_evidence": false,
+    "i1_execution_allowed": false,
+    "state_mutation_allowed": false
+  }
+}

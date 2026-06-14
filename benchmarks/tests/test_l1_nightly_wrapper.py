@@ -384,6 +384,22 @@ def test_beta0_real_model_pilot_wrapper_enforces_external_model_and_strict_bound
     assert "beta0_real_model_pilot_does_not_claim_h3_production_readiness" in text
 
 
+def test_beta_product_pilot_is_canonical_strict_single_command_entry() -> None:
+    wrapper = Path(__file__).resolve().parents[1] / "run_beta_product_pilot.sh"
+    text = wrapper.read_text(encoding="utf-8")
+
+    assert "benchmarks/run_beta0_real_model_pilot.sh" in text
+    assert "CIVITASOS_AUTH_MODE=production" in text
+    assert "CIVITASOS_DEMO_LOGIN_ENABLED=false" in text
+    assert "CIVITASOS_DEMO_AUTO_REGISTER=false" in text
+    assert "CIVITASOS_SERVICE_TOKEN_SECRET" in text
+    assert "CIVITASOS_WAKE_CALLBACK_SECRET" in text
+    assert 'BETA_PRODUCT_RUN_LEDGER_CHECK="${BETA_PRODUCT_RUN_LEDGER_CHECK:-0}"' in text
+    assert 'BETA0_RUN_PACKET_CHECK="$BETA_PRODUCT_RUN_LEDGER_CHECK"' in text
+    assert "strict startup ownership is required" in text
+    assert "trap cleanup EXIT INT TERM" in text
+
+
 def test_l1_contract_smoke_scheduled_indexes_evidence() -> None:
     wrapper = Path(__file__).resolve().parents[1] / "run_l1_contract_smoke_scheduled.sh"
     text = wrapper.read_text(encoding="utf-8")
