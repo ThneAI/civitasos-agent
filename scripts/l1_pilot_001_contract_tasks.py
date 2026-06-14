@@ -131,6 +131,7 @@ def build_alpha_payload(
                 "required_sections": ["任务边界", "执行计划", "H3"],
                 "forbid_upstream_replay": False,
                 "h3_must_remain_blocked": True,
+                "canonical_h3_boundary": True,
             },
         },
     )
@@ -174,6 +175,7 @@ def build_beta_payload(
                 "required_sections": ["变更摘要", "与上游不同之处", "H3"],
                 "forbid_upstream_replay": True,
                 "h3_must_remain_blocked": True,
+                "canonical_h3_boundary": True,
             },
         },
     )
@@ -223,6 +225,7 @@ def build_gamma_payload(
                 "required_sections": ["verdict", "问题清单", "H3"],
                 "forbid_upstream_replay": True,
                 "h3_must_remain_blocked": True,
+                "canonical_h3_boundary": True,
                 "review_must_have_issue_list": True,
             },
         },
@@ -288,6 +291,7 @@ def build_repair_payload(
                 "required_sections": ["失败原因", "修复计划", "验证步骤", "H3"],
                 "forbid_upstream_replay": True,
                 "h3_must_remain_blocked": True,
+                "canonical_h3_boundary": True,
             },
         },
     )
