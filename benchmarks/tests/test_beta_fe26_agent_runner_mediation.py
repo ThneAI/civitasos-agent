@@ -59,6 +59,14 @@ def test_beta_fe26_posts_claims_generates_after_claim_and_delivers(tmp_path: Pat
     for generator in generators.values():
         assert generator.seen_claimed_task_statuses == ["Claimed"]
         assert generator.seen_claimed_by
+    task_receipt = json.loads(
+        (tmp_path / "run" / "deepseek-api-agent.task_receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert task_receipt["artifact_envelope"]["artifact_kind"] == "task"
+    assert task_receipt["artifact_envelope"]["plane"] == "runtime"
+    assert task_receipt["artifact_envelope"]["subject_id"].startswith("pool-task:")
 
 
 def test_beta_fe26_allowlist_records_excluded_participants(tmp_path: Path) -> None:

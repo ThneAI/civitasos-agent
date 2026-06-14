@@ -23,6 +23,21 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+try:
+    from civitasos_contracts.artifacts import artifact_ref, build_artifact_envelope
+    from civitasos_contracts.auth import resolve_auth_session
+    from civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_runtime_evidence,
+    )
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.artifacts import artifact_ref, build_artifact_envelope
+    from scripts.civitasos_contracts.auth import resolve_auth_session
+    from scripts.civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_runtime_evidence,
+    )
+
 FE9_SCHEMA = "beta-fe9-frontend-post-merge-smoke-receipt:v1"
 RECEIPT_SCHEMA = "beta-fe10-frontend-preview-receipt:v1"
 NON_CLAIMS = (
@@ -124,21 +139,37 @@ def run_preview_gate(
         backend_checks.append({"name": "healthz", "url": f"{backend_url}/healthz", **health})
         if health.get("status_code") != 200:
             failures.append("backend /healthz must return 200")
-        auth_report = _resolve_auth(
-            backend_url=backend_url,
-            auth_mode=auth_mode,
-            bearer_token=bearer_token,
-            bearer_token_file=bearer_token_file,
-            service_token_secret=service_token_secret,
-            service_id=service_id,
-            service_token_scopes=service_token_scopes or [],
-            demo_login_agent_id=demo_login_agent_id,
-        )
-        if auth_report.get("passed") is not True:
-            failures.append(f"backend auth bootstrap failed for preview smoke: {auth_report.get('auth_method') or auth_mode}")
+        try:
+            session = resolve_auth_session(
+                base_url=backend_url,
+                auth_mode=auth_mode,
+                bearer_token=bearer_token,
+                bearer_token_files=_bearer_token_files(bearer_token_file),
+                bearer_token_env_values=(
+                    os.getenv("CIVITASOS_FE10_BEARER_TOKEN"),
+                    os.getenv("CIVITASOS_BEARER_TOKEN"),
+                ),
+                service_token_secret=(
+                    service_token_secret
+                    or os.getenv("CIVITASOS_FE10_SERVICE_TOKEN_SECRET")
+                    or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
+                ),
+                service_id=service_id,
+                service_scopes=service_token_scopes or _default_service_token_scopes(),
+                demo_login_agent_id=demo_login_agent_id,
+            )
+            token = session.token
+            auth_report = session.report()
+        except (RuntimeError, ValueError) as exc:
+            auth_report = {
+                "passed": False,
+                "auth_method": auth_mode.replace("-", "_"),
+                "token": "",
+                "token_recorded": False,
+                "error": str(exc),
+            }
+            failures.append(f"backend auth bootstrap failed for preview smoke: {auth_mode}")
         _validate_auth_boundary(auth_report, failures)
-        token = str(auth_report.get("token") or "")
-        auth_report["token"] = "<redacted>" if token else ""
         for name, method, path, requires_auth in READ_ENDPOINTS:
             headers = {"Authorization": f"Bearer {token}"} if requires_auth and token else None
             result = _http_json(f"{backend_url}{path}", headers, method=method)
@@ -148,13 +179,25 @@ def run_preview_gate(
             if result.get("json_object") is not True:
                 failures.append(f"backend read endpoint must return JSON object: {name}")
 
+    source_ref = artifact_ref(source_fe9_receipt) if source_fe9_receipt.is_file() else None
+    auth_method = str((auth_report or {}).get("auth_method") or "none")
     receipt = {
         "schema_version": RECEIPT_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="runtime",
+            schema_version=RECEIPT_SCHEMA,
+            artifact_id=f"fe10-preview:{_ref_digest(source_ref)[:16]}",
+            subject_id=f"frontend-preview:{frontend_root.name}",
+            producer="beta_fe10_frontend_preview_gate",
+            source_refs=[source_ref] if source_ref else [],
+            scope="local_or_private_frontend_preview",
+        ),
         "checked_at": _now(),
         "passed": not failures,
         "decision": "beta_fe10_frontend_preview_passed" if not failures else "blocked",
         "failure_reasons": failures,
-        "source_fe9_receipt": _artifact_ref(source_fe9_receipt) if source_fe9_receipt.is_file() else None,
+        "source_fe9_receipt": source_ref,
         "frontend_root": str(frontend_root),
         "frontend_url": frontend_url,
         "backend_url": backend_url,
@@ -164,7 +207,21 @@ def run_preview_gate(
         "backend_read_model_checks": backend_checks,
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
-        "git_actions_performed": {"commit": True, "push": True, "pr": True, "merge": True, "deploy": False},
+        "runtime_evidence": build_runtime_evidence(
+            {"post_merge_smoke_receipt": source_ref},
+            assertions={
+                "frontend_check_count": len(frontend_checks),
+                "backend_read_model_check_count": len(backend_checks),
+                "auth_method": auth_method,
+                "private_preview_url_enforced": True,
+            },
+        ),
+        "release_provenance": build_git_release_provenance(
+            {"source_post_merge_smoke_receipt": source_ref},
+            actions_observed={"commit": True, "push": True, "pr": True, "merge": True},
+            actions_performed_by_current_step={},
+        ),
+        "git_actions_performed": {"commit": False, "push": False, "pr": False, "merge": False, "deploy": False},
         "boundary": _boundary(),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),
@@ -195,120 +252,17 @@ def _check_frontend(frontend_url: str, failures: list[str]) -> list[dict[str, An
     return checks
 
 
-def _demo_login(backend_url: str, agent_id: str) -> dict[str, Any]:
-    payload = json.dumps({"agent_id": agent_id}).encode("utf-8")
-    request = urllib.request.Request(
-        f"{backend_url}/api/v1/auth/demo-login",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            status = response.status
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        return {"passed": False, "status_code": exc.code, "error": raw[:500], "token_recorded": False}
-    except Exception as exc:
-        return {"passed": False, "status_code": None, "error": str(exc), "token_recorded": False}
-    try:
-        body = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"passed": False, "status_code": status, "error": "invalid JSON", "token_recorded": False}
-    token = str(body.get("token") or body.get("data", {}).get("token") or "") if isinstance(body, dict) else ""
-    return {"passed": bool(token), "status_code": status, "token": token, "token_recorded": False, "auth_method": body.get("auth_method") if isinstance(body, dict) else None}
-
-
-def _resolve_auth(
-    *,
-    backend_url: str,
-    auth_mode: str,
-    bearer_token: str | None,
-    bearer_token_file: Path | None,
-    service_token_secret: str | None,
-    service_id: str,
-    service_token_scopes: list[str],
-    demo_login_agent_id: str,
-) -> dict[str, Any]:
-    token = _configured_bearer_token(bearer_token, bearer_token_file)
-    if auth_mode in {"auto", "bearer-token"} and token:
-        return {
-            "passed": True,
-            "status_code": None,
-            "token": token,
-            "token_recorded": False,
-            "auth_method": "bearer_token",
-            "source": "argument_env_or_file",
-        }
-    if auth_mode == "bearer-token":
-        return {"passed": False, "status_code": None, "token_recorded": False, "auth_method": "bearer_token", "error": "missing bearer token"}
-    secret = service_token_secret or os.getenv("CIVITASOS_FE10_SERVICE_TOKEN_SECRET") or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
-    if auth_mode in {"auto", "service-token"} and secret:
-        return _service_token(
-            backend_url=backend_url,
-            service_id=service_id,
-            secret=secret,
-            scopes=service_token_scopes or _default_service_token_scopes(),
-        )
-    if auth_mode == "service-token":
-        return {"passed": False, "status_code": None, "token_recorded": False, "auth_method": "service_token", "error": "missing service token secret"}
-    return _demo_login(backend_url, demo_login_agent_id)
-
-
-def _configured_bearer_token(bearer_token: str | None, bearer_token_file: Path | None) -> str:
-    if bearer_token:
-        return bearer_token.strip()
-    env_token = os.getenv("CIVITASOS_FE10_BEARER_TOKEN") or os.getenv("CIVITASOS_BEARER_TOKEN")
-    if env_token:
-        return env_token.strip()
-    if bearer_token_file and bearer_token_file.is_file():
-        return bearer_token_file.read_text(encoding="utf-8").strip()
-    env_file = os.getenv("CIVITASOS_FE10_BEARER_TOKEN_FILE")
-    if env_file and Path(env_file).is_file():
-        return Path(env_file).read_text(encoding="utf-8").strip()
-    return ""
-
-
-def _service_token(*, backend_url: str, service_id: str, secret: str, scopes: list[str]) -> dict[str, Any]:
-    payload = json.dumps({"service_id": service_id, "secret": secret, "scopes": scopes}).encode("utf-8")
-    request = urllib.request.Request(
-        f"{backend_url}/api/v1/auth/service-token",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            status = response.status
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        return {"passed": False, "status_code": exc.code, "error": raw[:500], "token_recorded": False, "auth_method": "service_token"}
-    except Exception as exc:
-        return {"passed": False, "status_code": None, "error": str(exc), "token_recorded": False, "auth_method": "service_token"}
-    try:
-        body = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"passed": False, "status_code": status, "error": "invalid JSON", "token_recorded": False, "auth_method": "service_token"}
-    data = body.get("data") if isinstance(body, dict) else {}
-    token = str(body.get("token") or data.get("token") or "") if isinstance(data, dict) else ""
-    return {
-        "passed": bool(token),
-        "status_code": status,
-        "token": token,
-        "token_recorded": False,
-        "auth_method": "service_token",
-        "service_id": data.get("service_id") if isinstance(data, dict) else service_id,
-        "scopes": data.get("scopes") if isinstance(data, dict) else scopes,
-        "production_allowed": data.get("production_allowed") if isinstance(data, dict) else False,
-        "evidence_allowed": data.get("evidence_allowed") if isinstance(data, dict) else False,
-    }
-
-
 def _default_service_token_scopes() -> list[str]:
     raw = os.getenv("CIVITASOS_FE10_SERVICE_TOKEN_SCOPES", "pool:read,audit:read")
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _bearer_token_files(argument_file: Path | None) -> list[Path]:
+    paths = [argument_file] if argument_file else []
+    env_file = os.getenv("CIVITASOS_FE10_BEARER_TOKEN_FILE")
+    if env_file:
+        paths.append(Path(env_file))
+    return paths
 
 
 def _http_json(url: str, headers: dict[str, str] | None, method: str = "GET") -> dict[str, Any]:
@@ -459,8 +413,12 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
+def _artifact_ref(path: Path) -> dict[str, str | None]:
+    return artifact_ref(path)
+
+
+def _ref_digest(ref: Any) -> str:
+    return str(ref.get("sha256") or "missing") if isinstance(ref, dict) else "missing"
 
 
 def _sha256(path: Path) -> str:

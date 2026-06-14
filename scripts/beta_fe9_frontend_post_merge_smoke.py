@@ -17,6 +17,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from civitasos_contracts.artifacts import artifact_ref, build_artifact_envelope
+    from civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_runtime_evidence,
+    )
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.artifacts import artifact_ref, build_artifact_envelope
+    from scripts.civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_runtime_evidence,
+    )
+
 FE8_SCHEMA = "beta-fe8-frontend-merge-receipt:v1"
 RECEIPT_SCHEMA = "beta-fe9-frontend-post-merge-smoke-receipt:v1"
 EXECUTION_SCHEMA = "beta-fe9-frontend-post-merge-smoke-execution:v1"
@@ -111,13 +124,24 @@ def run_post_merge_smoke(
     if after.get("head_commit") != local_head and local_head:
         failures.append("post-merge smoke must not change frontend HEAD")
 
+    source_ref = artifact_ref(source_fe8_receipt) if source_fe8_receipt.is_file() else None
     receipt = {
         "schema_version": RECEIPT_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="runtime",
+            schema_version=RECEIPT_SCHEMA,
+            artifact_id=f"fe9-smoke:{merge_commit or 'unknown'}",
+            subject_id=f"frontend-release:{merge_commit or frontend_root.name}",
+            producer="beta_fe9_frontend_post_merge_smoke",
+            source_refs=[source_ref] if source_ref else [],
+            scope="post_merge_runtime_smoke",
+        ),
         "checked_at": _now(),
         "passed": not failures,
         "decision": "beta_fe9_frontend_post_merge_smoke_passed" if not failures else "blocked",
         "failure_reasons": failures,
-        "source_fe8_receipt": _artifact_ref(source_fe8_receipt) if source_fe8_receipt.is_file() else None,
+        "source_fe8_receipt": source_ref,
         "frontend_root": str(frontend_root),
         "remote": remote,
         "base_branch": branch,
@@ -130,7 +154,22 @@ def run_post_merge_smoke(
         "verification_commands": command_reports,
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
-        "git_actions_performed": {"commit": True, "push": True, "pr": True, "merge": True, "deploy": False},
+        "runtime_evidence": build_runtime_evidence(
+            {},
+            assertions={
+                "verification_command_count": len(command_reports),
+                "all_verification_commands_passed": all(
+                    report.get("returncode") == 0 for report in command_reports
+                ),
+                "local_head_matches_remote_head": bool(local_head and local_head == remote_head),
+            },
+        ),
+        "release_provenance": build_git_release_provenance(
+            {"source_merge_receipt": source_ref},
+            actions_observed={"commit": True, "push": True, "pr": True, "merge": True},
+            actions_performed_by_current_step={},
+        ),
+        "git_actions_performed": {"commit": False, "push": False, "pr": False, "merge": False, "deploy": False},
         "boundary": _boundary(),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),
@@ -247,8 +286,8 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
+def _artifact_ref(path: Path) -> dict[str, str | None]:
+    return artifact_ref(path)
 
 
 def _sha256(path: Path) -> str:

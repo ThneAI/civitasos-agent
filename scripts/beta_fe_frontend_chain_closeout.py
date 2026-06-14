@@ -16,6 +16,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from civitasos_contracts.artifacts import (
+        artifact_ref,
+        build_artifact_envelope,
+        validate_artifact_envelope,
+    )
+    from civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+        build_runtime_evidence,
+    )
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.artifacts import (
+        artifact_ref,
+        build_artifact_envelope,
+        validate_artifact_envelope,
+    )
+    from scripts.civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+        build_runtime_evidence,
+    )
+
 CHAIN_SCHEMA = "beta-fe-frontend-chain-closeout-summary:v1"
 HANDOFF_SCHEMA = "beta-fe-frontend-chain-operator-handoff:v1"
 INDEX_SCHEMA = "beta-fe-frontend-cumulative-evidence-index:v1"
@@ -119,15 +142,62 @@ def closeout_frontend_chain(
 
     metrics = _metrics(mediation, stages)
     summary_path = output_root / "frontend_release_chain_summary.json"
+    mediation_ref = artifact_ref(mediation_summary)
+    stage_refs = {stage: artifact_ref(stage_paths[stage]) for stage in STAGES}
+    runtime_evidence = build_runtime_evidence(
+        {
+            "agent_mediation": mediation_ref,
+            "bounded_apply": stage_refs["fe3"],
+            "post_merge_smoke": stage_refs["fe9"],
+            "private_preview": stage_refs["fe10"],
+        },
+        assertions={
+            "pool_task_count": metrics["pool_task_count"],
+            "delivery_observed_count": metrics["delivery_observed_count"],
+            "post_merge_command_count": metrics["post_merge_command_count"],
+            "preview_check_count": metrics["preview_check_count"],
+        },
+    )
+    governance_evidence = build_governance_evidence(
+        {"release_review_reconciliation": stage_refs["fe7"]},
+        assertions={
+            "reviewer_count": metrics["reviewer_count"],
+            "review_merge_ready": metrics["review_merge_ready"],
+            "operator_handoff_required": True,
+        },
+    )
+    release_provenance = build_git_release_provenance(
+        {
+            "commit_receipt": stage_refs["fe4"],
+            "push_receipt": stage_refs["fe5"],
+            "draft_pr_receipt": stage_refs["fe6"],
+            "merge_receipt": stage_refs["fe8"],
+        },
+        actions_observed={"commit": True, "push": True, "pr": True, "merge": True},
+        actions_performed_by_current_step={},
+    )
     summary = {
         "schema_version": CHAIN_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="governance",
+            schema_version=CHAIN_SCHEMA,
+            artifact_id=f"frontend-chain-closeout:{chain_id}",
+            subject_id=f"frontend-release-chain:{chain_id}",
+            producer="beta_fe_frontend_chain_closeout",
+            source_refs=[mediation_ref, *stage_refs.values()],
+            scope="read_only_chain_closeout",
+        ),
         "checked_at": _now(),
         "passed": not failures,
         "decision": "beta_fe_frontend_chain_closeout_passed" if not failures else "blocked",
         "failure_reasons": failures,
         "chain_id": chain_id,
-        "mediation_summary": _artifact_ref(mediation_summary),
-        "gate_receipts": {stage: _artifact_ref(stage_paths[stage]) for stage in STAGES},
+        "mediation_summary": mediation_ref,
+        "gate_receipts": stage_refs,
+        "runtime_evidence": runtime_evidence,
+        "governance_evidence": governance_evidence,
+        "release_provenance": release_provenance,
         "metrics": metrics,
         "historical_actions_observed": {
             "civitasos_pool_mediation": metrics["mediation_observed"],
@@ -152,6 +222,16 @@ def closeout_frontend_chain(
         handoff_failures.append("chain summary hash must be stable")
     handoff = {
         "schema_version": HANDOFF_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="approval",
+            plane="governance",
+            schema_version=HANDOFF_SCHEMA,
+            artifact_id=f"frontend-operator-handoff:{chain_id}",
+            subject_id=f"frontend-release-chain:{chain_id}",
+            producer="beta_fe_frontend_chain_closeout",
+            source_refs=[artifact_ref(summary_path)],
+            scope="operator_handoff_review_required",
+        ),
         "checked_at": _now(),
         "passed": not handoff_failures,
         "decision": "beta_fe_frontend_operator_handoff_ready" if not handoff_failures else "blocked",
@@ -160,6 +240,9 @@ def closeout_frontend_chain(
         "chain_summary": _artifact_ref(summary_path),
         "roles": normalized_roles,
         "handoff_metrics": metrics,
+        "runtime_evidence": runtime_evidence,
+        "governance_evidence": governance_evidence,
+        "release_provenance": release_provenance,
         "required_operator_checks": [
             {"check": "all_gate_receipts_hash_bound", "passed": not failures},
             {"check": "civitasos_pool_mediation_observed", "passed": metrics["mediation_observed"]},
@@ -216,6 +299,9 @@ def write_cumulative_index(
                 "reviewer_count": int(metrics.get("reviewer_count") or 0),
                 "preview_check_count": int(metrics.get("preview_check_count") or 0),
                 "changed_file_count": int(metrics.get("changed_file_count") or 0),
+                "runtime_evidence": handoff.get("runtime_evidence"),
+                "governance_evidence": handoff.get("governance_evidence"),
+                "release_provenance": handoff.get("release_provenance"),
             }
         )
     if len(records) < min_chains:
@@ -229,6 +315,20 @@ def write_cumulative_index(
     })
     index = {
         "schema_version": INDEX_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="governance",
+            schema_version=INDEX_SCHEMA,
+            artifact_id=f"frontend-cumulative-index:{len(records)}",
+            subject_id="frontend-release-chains",
+            producer="beta_fe_frontend_chain_closeout",
+            source_refs=[
+                record["handoff"]
+                for record in records
+                if isinstance(record.get("handoff"), dict)
+            ],
+            scope="read_only_multi_chain_index",
+        ),
         "indexed_at": _now(),
         "passed": not failures,
         "decision": "beta_fe_frontend_cumulative_evidence_index_ready" if not failures else "blocked",
@@ -240,6 +340,15 @@ def write_cumulative_index(
         "total_reviewer_count": sum(record["reviewer_count"] for record in records),
         "total_preview_check_count": sum(record["preview_check_count"] for record in records),
         "total_changed_file_count": sum(record["changed_file_count"] for record in records),
+        "total_runtime_evidence_ref_count": sum(
+            _bundle_ref_count(record.get("runtime_evidence")) for record in records
+        ),
+        "total_governance_evidence_ref_count": sum(
+            _bundle_ref_count(record.get("governance_evidence")) for record in records
+        ),
+        "total_release_provenance_ref_count": sum(
+            _bundle_ref_count(record.get("release_provenance")) for record in records
+        ),
         "unique_participant_count": len(participant_ids),
         "unique_participant_ids": participant_ids,
         "chains": records,
@@ -282,6 +391,12 @@ def _validate_stages(
             failures.append(f"{stage} schema_version must be {schema}")
         if value.get("passed") is not True or value.get("decision") != decision:
             failures.append(f"{stage} receipt must be passed")
+        envelope = value.get("artifact_envelope")
+        if envelope is not None:
+            failures.extend(
+                f"{stage} artifact_envelope: {failure}"
+                for failure in validate_artifact_envelope(envelope)
+            )
         _validate_safe_boundaries(value, failures, stage)
     _validate_ref_matches(stages["fe3"].get("source_fe26_summary"), mediation_path, failures, "fe3 source mediation")
     for stage, (field, previous) in SOURCE_FIELDS.items():
@@ -360,6 +475,11 @@ def _validate_handoff(value: dict[str, Any], path: Path, failures: list[str]) ->
         failures.append(f"{path}: invalid handoff schema")
     if value.get("passed") is not True or value.get("decision") != "beta_fe_frontend_operator_handoff_ready":
         failures.append(f"{path}: handoff must be ready")
+    if value.get("artifact_envelope") is not None:
+        failures.extend(
+            f"{path}: artifact_envelope: {failure}"
+            for failure in validate_artifact_envelope(value.get("artifact_envelope"))
+        )
     ref = value.get("chain_summary")
     chain_path = _validate_ref(ref, failures, f"{path}: chain_summary")
     if chain_path:
@@ -455,10 +575,13 @@ def _required_text(value: Any, failures: list[str], label: str) -> str:
 
 
 def _artifact_ref(path: Path) -> dict[str, str | None]:
-    return {
-        "path": str(path.resolve()),
-        "sha256": _sha256(path) if path.is_file() else None,
-    }
+    return artifact_ref(path)
+
+
+def _bundle_ref_count(value: Any) -> int:
+    if not isinstance(value, dict) or not isinstance(value.get("refs"), dict):
+        return 0
+    return len(value["refs"])
 
 
 def _sha256(path: Path) -> str:

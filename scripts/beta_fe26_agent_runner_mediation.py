@@ -27,6 +27,13 @@ from pathlib import Path
 from typing import Any, Protocol
 
 try:
+    from civitasos_contracts.artifacts import build_artifact_envelope
+    from civitasos_contracts.auth import CivitasHttpClient
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.artifacts import build_artifact_envelope
+    from scripts.civitasos_contracts.auth import CivitasHttpClient
+
+try:
     from beta_fe_ollama_native_reviewer import OllamaNativeReviewer, OllamaReviewResult, patch_review_as_text
 except ModuleNotFoundError:
     from scripts.beta_fe_ollama_native_reviewer import OllamaNativeReviewer, OllamaReviewResult, patch_review_as_text
@@ -64,83 +71,41 @@ NON_CLAIMS = (
 )
 
 
-class HttpJsonClient:
+class HttpJsonClient(CivitasHttpClient):
     def __init__(
         self,
         base_url: str,
         *,
         bearer_token: str | None = None,
         demo_login_agent_id: str = "beta_fe26_runner_mediation",
+        service_token_secret: str | None = None,
+        service_id: str = "beta_fe26_runner_mediation",
+        service_scopes: list[str] | None = None,
+        require_service_token: bool = False,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.bearer_token = bearer_token or os.getenv("CIVITASOS_BEARER_TOKEN") or None
-        self.demo_login_agent_id = demo_login_agent_id
-        self.demo_login_attempted = False
+        super().__init__(
+            base_url,
+            bearer_token=bearer_token or os.getenv("CIVITASOS_BEARER_TOKEN"),
+            service_token_secret=(
+                service_token_secret
+                or os.getenv("CIVITASOS_FE_MEDIATION_SERVICE_TOKEN_SECRET")
+                or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
+            ),
+            service_id=service_id,
+            service_scopes=service_scopes or _default_service_scopes(),
+            require_service_token=require_service_token,
+            demo_login_agent_id=demo_login_agent_id,
+            required_service_token_error=(
+                "FE mediation strict auth requires --service-token-secret "
+                "or CIVITASOS_SERVICE_TOKEN_SECRET"
+            ),
+            timeout=60,
+        )
 
     def healthz(self) -> None:
         request = urllib.request.Request(self._url("/healthz"), method="GET")
         with urllib.request.urlopen(request, timeout=5) as response:
             response.read()
-
-    def get(self, path: str) -> Any:
-        request = urllib.request.Request(self._url(path), headers=self._headers(), method="GET")
-        return self._open_json(request)
-
-    def post(self, path: str, payload: dict[str, Any]) -> Any:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            self._url(path),
-            data=body,
-            headers=self._headers(content_type=True),
-            method="POST",
-        )
-        return self._open_json(request)
-
-    def _url(self, path: str) -> str:
-        return f"{self.base_url}{path if path.startswith('/') else '/' + path}"
-
-    def _headers(self, *, content_type: bool = False) -> dict[str, str]:
-        headers = {"Accept": "application/json"}
-        if content_type:
-            headers["Content-Type"] = "application/json"
-        token = self._auth_token()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        return headers
-
-    def _auth_token(self) -> str | None:
-        if self.bearer_token:
-            return self.bearer_token
-        if self.demo_login_attempted:
-            return None
-        self.demo_login_attempted = True
-        payload = self._open_json(
-            urllib.request.Request(
-                self._url("/api/v1/auth/demo-login"),
-                data=json.dumps({"agent_id": self.demo_login_agent_id}).encode("utf-8"),
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                method="POST",
-            )
-        )
-        token = payload.get("token") if isinstance(payload, dict) else None
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not token and isinstance(data, dict):
-            token = data.get("token")
-        if token:
-            self.bearer_token = str(token)
-        return self.bearer_token
-
-    @staticmethod
-    def _open_json(request: urllib.request.Request) -> Any:
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"HTTP {exc.code} {request.full_url}: {detail}") from exc
-        if not raw:
-            return None
-        return json.loads(raw)
 
 
 @dataclass(frozen=True)
@@ -358,11 +323,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--participant", action="append", default=[], help="optional participant allowlist; defaults to all FE-2 packet participants")
     parser.add_argument("--confirm-deliveries", action="store_true")
     parser.add_argument("--demo-login-agent-id", default="beta_fe26_runner_mediation")
+    parser.add_argument("--service-token-secret")
+    parser.add_argument("--service-id", default="beta_fe26_runner_mediation")
+    parser.add_argument("--service-token-scope", action="append", default=[])
+    parser.add_argument("--require-service-token", action="store_true")
     parser.add_argument("--expected-patch-slice-id", default="task_read_adapter_extraction")
     args = parser.parse_args(argv)
 
     generators = _parse_runner_specs(args.runner_spec)
-    client = HttpJsonClient(args.backend_url, demo_login_agent_id=args.demo_login_agent_id)
+    client = HttpJsonClient(
+        args.backend_url,
+        demo_login_agent_id=args.demo_login_agent_id,
+        service_token_secret=args.service_token_secret,
+        service_id=args.service_id,
+        service_scopes=args.service_token_scope or None,
+        require_service_token=bool(args.require_service_token),
+    )
     summary = run_mediation(
         client=client,
         fe2_packet_summary_path=Path(args.fe2_packet_summary),
@@ -375,6 +351,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if summary.get("passed") is True else 1
+
+
+def _default_service_scopes() -> list[str]:
+    raw = os.getenv(
+        "CIVITASOS_FE_MEDIATION_SERVICE_TOKEN_SCOPES",
+        "agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write",
+    )
+    return [scope.strip() for scope in raw.split(",") if scope.strip()]
 
 
 def run_mediation(
@@ -543,8 +527,21 @@ def _post_claim_generate_deliver(
             final_task = _get_task(client, task_id)
         except RuntimeError as exc:
             confirm = {"blocked": True, "reason": "confirm_blocked_or_unavailable", "error": str(exc)}
+    prompt_ref = _artifact_ref(prompt_path)
+    generation_ref = _artifact_ref(generation_path)
+    generation_report_ref = _artifact_ref(generation_report_path)
     return {
         "schema_version": TASK_RECEIPT_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="task",
+            plane="runtime",
+            schema_version=TASK_RECEIPT_SCHEMA,
+            artifact_id=f"fe26-task:{task_id}",
+            subject_id=f"pool-task:{task_id}",
+            producer="beta_fe26_agent_runner_mediation",
+            source_refs=[prompt_ref, generation_ref, generation_report_ref],
+            scope="agent_runner_claim_generate_deliver",
+        ),
         "checked_at": _now(),
         "participant_id": participant_id,
         "task_id": task_id,
@@ -556,9 +553,9 @@ def _post_claim_generate_deliver(
         "confirm_response": confirm,
         "final_task": _task_summary(final_task),
         "runner_kind": generation.runner_kind,
-        "prompt_ref": _artifact_ref(prompt_path),
-        "generation_response": _artifact_ref(generation_path),
-        "generation_report": _artifact_ref(generation_report_path),
+        "prompt_ref": prompt_ref,
+        "generation_response": generation_ref,
+        "generation_report": generation_report_ref,
         "claim_observed": bool(final_task.get("claimed_by") or delivered_task.get("claimed_by") or claimed_task.get("claimed_by")),
         "generation_observed_after_claim": True,
         "delivery_observed": final_task.get("status") in {"Delivered", "Completed"} or delivered_task.get("status") == "Delivered",

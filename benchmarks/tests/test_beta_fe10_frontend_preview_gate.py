@@ -59,6 +59,12 @@ def test_fe10_preview_gate_checks_frontend_and_backend_read_models(tmp_path: Pat
     }
     assert report["boundary"]["preview_allowed"] is True
     assert report["boundary"]["deploy_allowed"] is False
+    assert report["artifact_envelope"]["artifact_kind"] == "receipt"
+    assert report["artifact_envelope"]["plane"] == "runtime"
+    assert report["release_provenance"]["runtime_evidence"] is False
+    assert report["release_provenance"]["actions_observed"]["merge"] is True
+    assert report["release_provenance"]["actions_performed_by_current_step"]["merge"] is False
+    assert report["git_actions_performed"]["merge"] is False
 
 
 def test_fe10_preview_gate_prefers_service_token_when_secret_supplied(tmp_path: Path) -> None:

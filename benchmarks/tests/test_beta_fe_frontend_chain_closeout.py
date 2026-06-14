@@ -37,6 +37,21 @@ def test_closeout_writes_hash_bound_summary_and_handoff(tmp_path: Path) -> None:
     assert handoff["handoff_metrics"]["passed_gate_count"] == 8
     assert handoff["handoff_metrics"]["preview_check_count"] == 3
     assert handoff["handoff_boundary"]["merge_allowed"] is False
+    assert set(handoff["runtime_evidence"]["refs"]) == {
+        "agent_mediation",
+        "bounded_apply",
+        "post_merge_smoke",
+        "private_preview",
+    }
+    assert set(handoff["governance_evidence"]["refs"]) == {
+        "release_review_reconciliation",
+    }
+    assert set(handoff["release_provenance"]["refs"]) == {
+        "commit_receipt",
+        "push_receipt",
+        "draft_pr_receipt",
+        "merge_receipt",
+    }
     assert (tmp_path / "out" / "frontend_release_chain_summary.json").is_file()
 
 
@@ -83,6 +98,9 @@ def test_cumulative_index_aggregates_two_chains(tmp_path: Path) -> None:
     assert report["total_gate_receipt_count"] == 16
     assert report["total_pool_task_count"] == 8
     assert report["unique_participant_count"] == 4
+    assert report["total_runtime_evidence_ref_count"] == 8
+    assert report["total_governance_evidence_ref_count"] == 2
+    assert report["total_release_provenance_ref_count"] == 8
     assert report["index_boundary"]["deploy_allowed"] is False
 
 

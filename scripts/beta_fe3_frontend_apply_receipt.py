@@ -17,6 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from civitasos_contracts.artifacts import artifact_ref, build_artifact_envelope
+    from civitasos_contracts.provenance import build_runtime_evidence
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.artifacts import artifact_ref, build_artifact_envelope
+    from scripts.civitasos_contracts.provenance import build_runtime_evidence
+
 RECEIPT_SCHEMA = "beta-fe3-frontend-apply-receipt:v1"
 FE26_SCHEMA = "beta-fe26-agent-runner-mediation-summary:v1"
 FE12_SCHEMA = "beta-fe12-four-agent-frontend-mediation-summary:v1"
@@ -110,8 +117,19 @@ def write_receipt(
             failures.append(f"verification command failed: {report['command']}")
 
     passed = not failures
+    source_ref = artifact_ref(source_fe26_summary)
     receipt = {
         "schema_version": RECEIPT_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="runtime",
+            schema_version=RECEIPT_SCHEMA,
+            artifact_id=f"fe3-apply:{_ref_digest(source_ref)[:16]}",
+            subject_id=f"frontend-slice:{frontend_root.name}",
+            producer="beta_fe3_frontend_apply_receipt",
+            source_refs=[source_ref],
+            scope="bounded_frontend_apply",
+        ),
         "checked_at": _now(),
         "passed": passed,
         "decision": "beta_fe3_frontend_apply_receipt_passed" if passed else "blocked",
@@ -119,8 +137,8 @@ def write_receipt(
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
         "source_mediation_schema": source_summary.get("schema_version") if isinstance(source_summary, dict) else None,
-        "source_mediation_summary": _artifact_ref(source_fe26_summary),
-        "source_fe26_summary": _artifact_ref(source_fe26_summary),
+        "source_mediation_summary": source_ref,
+        "source_fe26_summary": source_ref,
         "frontend_root": str(frontend_root),
         "frontend_head": _git_text(frontend_root, ["rev-parse", "--short", "HEAD"]).strip(),
         "changed_files": changed_files,
@@ -129,6 +147,18 @@ def write_receipt(
         "diff_stat_ref": _artifact_ref(stat_path),
         "rollback_check": rollback_check,
         "verification_commands": command_reports,
+        "runtime_evidence": build_runtime_evidence(
+            {
+                "mediation_summary": source_ref,
+                "diff": artifact_ref(diff_path),
+                "diff_stat": artifact_ref(stat_path),
+            },
+            assertions={
+                "changed_file_count": len(changed_files),
+                "rollback_check_passed": rollback_check.get("exit_code") == 0,
+                "verification_command_count": len(command_reports),
+            },
+        ),
         "boundary": {
             "frontend_code_modified": True,
             "apply_allowed": True,
@@ -328,6 +358,10 @@ def _artifact_ref(path: Path) -> dict[str, str]:
     if not path.is_file():
         raise FileNotFoundError(f"artifact path is not a file: {path}")
     return {"path": str(path.resolve()), "sha256": _sha256(path)}
+
+
+def _ref_digest(ref: Any) -> str:
+    return str(ref.get("sha256") or "missing") if isinstance(ref, dict) else "missing"
 
 
 def _sha256(path: Path) -> str:

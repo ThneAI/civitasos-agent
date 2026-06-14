@@ -20,6 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from civitasos_contracts.auth import CivitasHttpClient
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.auth import CivitasHttpClient
+
 
 DEFAULT_BASE_URL = "http://localhost:8099"
 DEFAULT_ROOT = "runs/l1_pilot_001_contract_tasks"
@@ -53,7 +58,9 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-class HttpJsonClient:
+class HttpJsonClient(CivitasHttpClient):
+    """L1 compatibility adapter over the canonical auth client."""
+
     def __init__(
         self,
         base_url: str,
@@ -62,131 +69,32 @@ class HttpJsonClient:
         api_key: str | None = None,
         demo_login_agent_id: str | None = None,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._bearer_token = bearer_token or os.getenv("CIVITASOS_BEARER_TOKEN") or None
-        self._api_key = api_key or os.getenv("CIVITASOS_API_KEY") or None
-        self._service_token_secret = (
-            os.getenv("L1_SERVICE_TOKEN_SECRET")
-            or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
-            or None
-        )
-        self._service_id = os.getenv("L1_SERVICE_ID", "l1_contract_tasks")
-        self._service_scopes = _scope_list(
-            os.getenv("L1_SERVICE_TOKEN_SCOPES", "agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write,webhooks:write")
-        )
-        self._require_service_token = _env_flag("L1_REQUIRE_SERVICE_TOKEN")
-        self._demo_login_agent_id = (
-            demo_login_agent_id
-            if demo_login_agent_id is not None
-            else os.getenv("L1_DEMO_LOGIN_AGENT_ID", DEFAULT_DEMO_LOGIN_AGENT_ID)
-        )
-        self._service_token_attempted = False
-        self._demo_login_attempted = False
-
-    def get(self, path: str) -> Any:
-        request = urllib.request.Request(self._url(path), headers=self._headers(), method="GET")
-        return self._open_json(request)
-
-    def post(self, path: str, payload: dict[str, Any]) -> Any:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            self._url(path),
-            data=body,
-            headers=self._headers(content_type=True),
-            method="POST",
-        )
-        return self._open_json(request)
-
-    def _url(self, path: str) -> str:
-        return f"{self._base_url}{path if path.startswith('/') else '/' + path}"
-
-    def _headers(self, *, content_type: bool = False) -> dict[str, str]:
-        headers = {"Accept": "application/json"}
-        if content_type:
-            headers["Content-Type"] = "application/json"
-        if self._api_key:
-            headers["X-API-Key"] = self._api_key
-        token = self._auth_token()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        return headers
-
-    def _auth_token(self) -> str | None:
-        if self._require_service_token:
-            if not self._service_token_secret:
-                raise RuntimeError(
-                    "L1_REQUIRE_SERVICE_TOKEN=1 requires L1_SERVICE_TOKEN_SECRET "
-                    "or CIVITASOS_SERVICE_TOKEN_SECRET"
+        super().__init__(
+            base_url,
+            bearer_token=bearer_token or os.getenv("CIVITASOS_BEARER_TOKEN"),
+            api_key=api_key or os.getenv("CIVITASOS_API_KEY"),
+            service_token_secret=(
+                os.getenv("L1_SERVICE_TOKEN_SECRET")
+                or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
+            ),
+            service_id=os.getenv("L1_SERVICE_ID", "l1_contract_tasks"),
+            service_scopes=_scope_list(
+                os.getenv(
+                    "L1_SERVICE_TOKEN_SCOPES",
+                    "agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write,webhooks:write",
                 )
-            if not self._service_token_attempted:
-                return self._service_token()
-            return self._bearer_token
-        if self._bearer_token or self._api_key:
-            return self._bearer_token
-        if self._service_token_secret and not self._service_token_attempted:
-            return self._service_token()
-        if self._demo_login_attempted:
-            return self._bearer_token
-        agent_id = str(self._demo_login_agent_id or "").strip()
-        if not agent_id:
-            self._demo_login_attempted = True
-            return None
-        self._demo_login_attempted = True
-        payload = self._open_json(
-            urllib.request.Request(
-                self._url("/api/v1/auth/demo-login"),
-                data=json.dumps({"agent_id": agent_id}).encode("utf-8"),
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                method="POST",
-            )
+            ),
+            require_service_token=_env_flag("L1_REQUIRE_SERVICE_TOKEN"),
+            demo_login_agent_id=(
+                demo_login_agent_id
+                if demo_login_agent_id is not None
+                else os.getenv("L1_DEMO_LOGIN_AGENT_ID", DEFAULT_DEMO_LOGIN_AGENT_ID)
+            ),
+            required_service_token_error=(
+                "L1_REQUIRE_SERVICE_TOKEN=1 requires L1_SERVICE_TOKEN_SECRET "
+                "or CIVITASOS_SERVICE_TOKEN_SECRET"
+            ),
         )
-        if not isinstance(payload, dict):
-            raise RuntimeError(f"demo-login response must be an object: {payload}")
-        token = payload.get("token")
-        data = payload.get("data")
-        if not token and isinstance(data, dict):
-            token = data.get("token")
-        if not token:
-            raise RuntimeError(f"demo-login response missing token: {payload}")
-        self._bearer_token = str(token)
-        return self._bearer_token
-
-    def _service_token(self) -> str | None:
-        self._service_token_attempted = True
-        payload = self._open_json(
-            urllib.request.Request(
-                self._url("/api/v1/auth/service-token"),
-                data=json.dumps({
-                    "service_id": self._service_id,
-                    "secret": self._service_token_secret,
-                    "scopes": self._service_scopes,
-                }).encode("utf-8"),
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                method="POST",
-            )
-        )
-        if not isinstance(payload, dict):
-            raise RuntimeError(f"service-token response must be an object: {payload}")
-        token = payload.get("token")
-        data = payload.get("data")
-        if not token and isinstance(data, dict):
-            token = data.get("token")
-        if not token:
-            raise RuntimeError(f"service-token response missing token: {payload}")
-        self._bearer_token = str(token)
-        return self._bearer_token
-
-    @staticmethod
-    def _open_json(request: urllib.request.Request) -> Any:
-        try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"HTTP {exc.code} {request.full_url}: {detail}") from exc
-        if not raw:
-            return None
-        return json.loads(raw)
 
 
 def build_alpha_payload(

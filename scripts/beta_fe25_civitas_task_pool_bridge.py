@@ -22,6 +22,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from civitasos_contracts.auth import CivitasHttpClient
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.auth import CivitasHttpClient
+
 SUMMARY_SCHEMA = "beta-fe25-civitas-task-pool-bridge-summary:v1"
 TASK_RECEIPT_SCHEMA = "beta-fe25-civitas-task-pool-delivery-receipt:v1"
 FE2_RECONCILIATION_SCHEMA = "beta-fe2-patch-proposal-reconciliation:v1"
@@ -53,83 +58,41 @@ FALSE_BOUNDARY_FIELDS = (
 )
 
 
-class HttpJsonClient:
+class HttpJsonClient(CivitasHttpClient):
     def __init__(
         self,
         base_url: str,
         *,
         bearer_token: str | None = None,
         demo_login_agent_id: str = "beta_fe25_bridge",
+        service_token_secret: str | None = None,
+        service_id: str = "beta_fe25_bridge",
+        service_scopes: list[str] | None = None,
+        require_service_token: bool = False,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.bearer_token = bearer_token or os.getenv("CIVITASOS_BEARER_TOKEN") or None
-        self.demo_login_agent_id = demo_login_agent_id
-        self.demo_login_attempted = False
+        super().__init__(
+            base_url,
+            bearer_token=bearer_token or os.getenv("CIVITASOS_BEARER_TOKEN"),
+            service_token_secret=(
+                service_token_secret
+                or os.getenv("CIVITASOS_FE_MEDIATION_SERVICE_TOKEN_SECRET")
+                or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
+            ),
+            service_id=service_id,
+            service_scopes=service_scopes or _default_service_scopes(),
+            require_service_token=require_service_token,
+            demo_login_agent_id=demo_login_agent_id,
+            required_service_token_error=(
+                "FE mediation strict auth requires --service-token-secret "
+                "or CIVITASOS_SERVICE_TOKEN_SECRET"
+            ),
+            timeout=30,
+        )
 
     def healthz(self) -> None:
         request = urllib.request.Request(self._url("/healthz"), method="GET")
         with urllib.request.urlopen(request, timeout=5) as response:
             response.read()
-
-    def get(self, path: str) -> Any:
-        request = urllib.request.Request(self._url(path), headers=self._headers(), method="GET")
-        return self._open_json(request)
-
-    def post(self, path: str, payload: dict[str, Any]) -> Any:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            self._url(path),
-            data=body,
-            headers=self._headers(content_type=True),
-            method="POST",
-        )
-        return self._open_json(request)
-
-    def _url(self, path: str) -> str:
-        return f"{self.base_url}{path if path.startswith('/') else '/' + path}"
-
-    def _headers(self, *, content_type: bool = False) -> dict[str, str]:
-        headers = {"Accept": "application/json"}
-        if content_type:
-            headers["Content-Type"] = "application/json"
-        token = self._auth_token()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        return headers
-
-    def _auth_token(self) -> str | None:
-        if self.bearer_token:
-            return self.bearer_token
-        if self.demo_login_attempted:
-            return None
-        self.demo_login_attempted = True
-        payload = self._open_json(
-            urllib.request.Request(
-                self._url("/api/v1/auth/demo-login"),
-                data=json.dumps({"agent_id": self.demo_login_agent_id}).encode("utf-8"),
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                method="POST",
-            )
-        )
-        token = payload.get("token") if isinstance(payload, dict) else None
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not token and isinstance(data, dict):
-            token = data.get("token")
-        if token:
-            self.bearer_token = str(token)
-        return self.bearer_token
-
-    @staticmethod
-    def _open_json(request: urllib.request.Request) -> Any:
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"HTTP {exc.code} {request.full_url}: {detail}") from exc
-        if not raw:
-            return None
-        return json.loads(raw)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,9 +102,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--confirm-deliveries", action="store_true")
     parser.add_argument("--demo-login-agent-id", default="beta_fe25_bridge")
+    parser.add_argument("--service-token-secret")
+    parser.add_argument("--service-id", default="beta_fe25_bridge")
+    parser.add_argument("--service-token-scope", action="append", default=[])
+    parser.add_argument("--require-service-token", action="store_true")
     args = parser.parse_args(argv)
 
-    client = HttpJsonClient(args.backend_url, demo_login_agent_id=args.demo_login_agent_id)
+    client = HttpJsonClient(
+        args.backend_url,
+        demo_login_agent_id=args.demo_login_agent_id,
+        service_token_secret=args.service_token_secret,
+        service_id=args.service_id,
+        service_scopes=args.service_token_scope or None,
+        require_service_token=bool(args.require_service_token),
+    )
     summary = run_bridge(
         client=client,
         fe2_reconciliation_path=Path(args.fe2_reconciliation),
@@ -151,6 +125,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if summary.get("passed") is True else 1
+
+
+def _default_service_scopes() -> list[str]:
+    raw = os.getenv(
+        "CIVITASOS_FE_MEDIATION_SERVICE_TOKEN_SCOPES",
+        "agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write",
+    )
+    return [scope.strip() for scope in raw.split(",") if scope.strip()]
 
 
 def run_bridge(

@@ -27,6 +27,19 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from civitasos_contracts.artifacts import build_artifact_envelope
+    from civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+    )
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.artifacts import build_artifact_envelope
+    from scripts.civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+    )
+
+try:
     from beta_fe_ollama_native_reviewer import OllamaNativeReviewer
 except ModuleNotFoundError:
     from scripts.beta_fe_ollama_native_reviewer import OllamaNativeReviewer
@@ -164,13 +177,24 @@ def run_fe5_push(*, source_fe4_receipt: Path, frontend_root: Path, output_root: 
         failures.append("target branch already exists at a different commit")
 
     auth_path = output_root / "beta_fe5_frontend_push_authorization.json"
+    source_fe4_ref = _artifact_ref(source_fe4_receipt) if source_fe4_receipt.is_file() else None
     authorization = {
         "schema_version": "beta-fe5-frontend-push-authorization:v1",
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="approval",
+            plane="governance",
+            schema_version="beta-fe5-frontend-push-authorization:v1",
+            artifact_id=f"fe5-push-approval:{commit_id or 'unknown'}",
+            subject_id=f"git-branch:{target_branch}",
+            producer="beta_fe5_8_frontend_release_gates",
+            source_refs=[source_fe4_ref] if source_fe4_ref else [],
+            scope="remote_branch_push_only",
+        ),
         "created_at": _now(),
         "decision": "beta_fe5_frontend_push_authorized" if not failures else "blocked",
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
-        "source_fe4_receipt": _artifact_ref(source_fe4_receipt) if source_fe4_receipt.is_file() else None,
+        "source_fe4_receipt": source_fe4_ref,
         "frontend_root": str(frontend_root),
         "commit_id": commit_id,
         "remote": remote,
@@ -178,6 +202,14 @@ def run_fe5_push(*, source_fe4_receipt: Path, frontend_root: Path, output_root: 
         "target_branch": target_branch,
         "remote_branch_before_head": remote_before,
         "authorization_scope": "remote_branch_push_only",
+        "governance_evidence": build_governance_evidence(
+            {"source_commit_receipt": source_fe4_ref},
+            assertions={
+                "operator_id": operator_id,
+                "target_branch": target_branch,
+                "authorization_scope": "remote_branch_push_only",
+            },
+        ),
         "boundary": _boundary(push_allowed=True),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),
@@ -195,14 +227,27 @@ def run_fe5_push(*, source_fe4_receipt: Path, frontend_root: Path, output_root: 
             failures.append("remote target branch must equal FE-4 commit after push")
 
     receipt_path = output_root / "beta_fe5_frontend_push_receipt.json"
+    authorization_ref = _artifact_ref(auth_path)
     receipt = {
         "schema_version": FE5_RECEIPT_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="release",
+            schema_version=FE5_RECEIPT_SCHEMA,
+            artifact_id=f"fe5-push:{commit_id or 'unknown'}",
+            subject_id=f"git-branch:{target_branch}",
+            producer="beta_fe5_8_frontend_release_gates",
+            source_refs=[
+                ref for ref in (source_fe4_ref, authorization_ref) if ref
+            ],
+            scope="remote_branch_push",
+        ),
         "checked_at": _now(),
         "passed": not failures,
         "decision": "beta_fe5_frontend_push_receipt_passed" if not failures else "blocked",
         "failure_reasons": failures,
-        "source_fe4_receipt": _artifact_ref(source_fe4_receipt) if source_fe4_receipt.is_file() else None,
-        "source_push_authorization": _artifact_ref(auth_path),
+        "source_fe4_receipt": source_fe4_ref,
+        "source_push_authorization": authorization_ref,
         "frontend_root": str(frontend_root),
         "commit_id": commit_id,
         "remote": remote,
@@ -213,6 +258,14 @@ def run_fe5_push(*, source_fe4_receipt: Path, frontend_root: Path, output_root: 
         "repo_snapshot": _repo_snapshot(frontend_root, []),
         "push": push_run,
         "git_actions_performed": {"commit": True, "push": not failures, "pr": False, "merge": False, "deploy": False},
+        "release_provenance": build_git_release_provenance(
+            {
+                "source_commit_receipt": source_fe4_ref,
+                "push_authorization": authorization_ref,
+            },
+            actions_observed={"commit": True, "push": not failures},
+            actions_performed_by_current_step={"push": not failures},
+        ),
         "boundary": _boundary(push_allowed=True),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),
@@ -243,13 +296,24 @@ def run_fe6_pr(*, source_fe5_receipt: Path, frontend_root: Path, output_root: Pa
             failures.append("remote pushed branch no longer matches FE-5 commit_id")
 
     auth_path = output_root / "beta_fe6_frontend_draft_pr_authorization.json"
+    source_fe5_ref = _artifact_ref(source_fe5_receipt) if source_fe5_receipt.is_file() else None
     _write_json(auth_path, {
         "schema_version": "beta-fe6-frontend-draft-pr-authorization:v1",
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="approval",
+            plane="governance",
+            schema_version="beta-fe6-frontend-draft-pr-authorization:v1",
+            artifact_id=f"fe6-pr-approval:{commit_id or 'unknown'}",
+            subject_id=f"github-pr:{github_repo}:{branch or 'unknown'}",
+            producer="beta_fe5_8_frontend_release_gates",
+            source_refs=[source_fe5_ref] if source_fe5_ref else [],
+            scope="github_draft_pr_only",
+        ),
         "created_at": _now(),
         "decision": "beta_fe6_frontend_draft_pr_authorized" if not failures else "blocked",
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
-        "source_fe5_receipt": _artifact_ref(source_fe5_receipt) if source_fe5_receipt.is_file() else None,
+        "source_fe5_receipt": source_fe5_ref,
         "github_repo": github_repo,
         "base_branch": base_branch,
         "head_branch": branch,
@@ -257,6 +321,15 @@ def run_fe6_pr(*, source_fe5_receipt: Path, frontend_root: Path, output_root: Pa
         "title": title,
         "body_file": _artifact_ref(body_file) if body_file.is_file() else None,
         "authorization_scope": "github_draft_pr_only",
+        "governance_evidence": build_governance_evidence(
+            {"source_push_receipt": source_fe5_ref},
+            assertions={
+                "operator_id": operator_id,
+                "github_repo": github_repo,
+                "base_branch": base_branch,
+                "authorization_scope": "github_draft_pr_only",
+            },
+        ),
         "boundary": _boundary(pr_allowed=True),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),
@@ -289,14 +362,27 @@ def run_fe6_pr(*, source_fe5_receipt: Path, frontend_root: Path, output_root: Pa
         if pr.get("baseRefName") != base_branch:
             failures.append("FE-6 PR baseRefName must match requested base branch")
 
+    authorization_ref = _artifact_ref(auth_path)
     receipt = {
         "schema_version": FE6_RECEIPT_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="release",
+            schema_version=FE6_RECEIPT_SCHEMA,
+            artifact_id=f"fe6-pr:{github_repo}:{pr.get('number') or branch or 'unknown'}",
+            subject_id=f"github-pr:{github_repo}:{pr.get('number') or branch or 'unknown'}",
+            producer="beta_fe5_8_frontend_release_gates",
+            source_refs=[
+                ref for ref in (source_fe5_ref, authorization_ref) if ref
+            ],
+            scope="github_draft_pr",
+        ),
         "checked_at": _now(),
         "passed": not failures,
         "decision": "beta_fe6_frontend_draft_pr_receipt_passed" if not failures else "blocked",
         "failure_reasons": failures,
-        "source_fe5_receipt": _artifact_ref(source_fe5_receipt) if source_fe5_receipt.is_file() else None,
-        "source_draft_pr_authorization": _artifact_ref(auth_path),
+        "source_fe5_receipt": source_fe5_ref,
+        "source_draft_pr_authorization": authorization_ref,
         "frontend_root": str(frontend_root),
         "github_repo": github_repo,
         "base_branch": base_branch,
@@ -305,6 +391,14 @@ def run_fe6_pr(*, source_fe5_receipt: Path, frontend_root: Path, output_root: Pa
         "draft_pr": pr,
         "create": create_run,
         "git_actions_performed": {"commit": True, "push": True, "pr": not failures, "merge": False, "deploy": False},
+        "release_provenance": build_git_release_provenance(
+            {
+                "source_push_receipt": source_fe5_ref,
+                "draft_pr_authorization": authorization_ref,
+            },
+            actions_observed={"commit": True, "push": True, "pr": not failures},
+            actions_performed_by_current_step={"pr": not failures},
+        ),
         "boundary": _boundary(pr_allowed=True),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),
@@ -355,23 +449,46 @@ def run_fe7_review(*, source_fe6_receipt: Path, frontend_root: Path, output_root
         for review in additional_reviews
     }
 
+    source_fe6_ref = _artifact_ref(source_fe6_receipt) if source_fe6_receipt.is_file() else None
+    local_review_ref = _artifact_ref(output_root / "beta_fe7_local_agent_review.json")
+    external_review_ref = _artifact_ref(output_root / "beta_fe7_external_agent_review.json")
+    additional_review_refs = [
+        _artifact_ref(output_root / f"beta_fe7_{_safe_file_token(str(review.get('reviewer_id')))}_agent_review.json")
+        for review in additional_reviews
+    ]
     receipt = {
         "schema_version": FE7_RECEIPT_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="review",
+            plane="governance",
+            schema_version=FE7_RECEIPT_SCHEMA,
+            artifact_id=f"fe7-review:{github_repo}:{pr_number or 'unknown'}",
+            subject_id=f"github-pr:{github_repo}:{pr_number or 'unknown'}",
+            producer="beta_fe5_8_frontend_release_gates",
+            source_refs=[
+                ref
+                for ref in (
+                    source_fe6_ref,
+                    local_review_ref,
+                    external_review_ref,
+                    *additional_review_refs,
+                )
+                if ref
+            ],
+            scope="multi_agent_release_review_reconciliation",
+        ),
         "checked_at": _now(),
         "passed": not failures,
         "decision": "beta_fe7_frontend_review_reconciliation_passed" if not failures else "blocked",
         "failure_reasons": failures,
-        "source_fe6_receipt": _artifact_ref(source_fe6_receipt) if source_fe6_receipt.is_file() else None,
+        "source_fe6_receipt": source_fe6_ref,
         "frontend_root": str(frontend_root),
         "github_repo": github_repo,
         "pr": pr,
         "commit_id": fe6.get("commit_id") if isinstance(fe6, dict) else None,
-        "local_agent_review": _artifact_ref(output_root / "beta_fe7_local_agent_review.json"),
-        "external_agent_review": _artifact_ref(output_root / "beta_fe7_external_agent_review.json"),
-        "additional_agent_reviews": [
-            _artifact_ref(output_root / f"beta_fe7_{_safe_file_token(str(review.get('reviewer_id')))}_agent_review.json")
-            for review in additional_reviews
-        ],
+        "local_agent_review": local_review_ref,
+        "external_agent_review": external_review_ref,
+        "additional_agent_reviews": additional_review_refs,
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
         "operator_decision": operator_decision,
@@ -387,6 +504,22 @@ def run_fe7_review(*, source_fe6_receipt: Path, frontend_root: Path, output_root
             },
             "merge_ready": not failures,
         },
+        "governance_evidence": build_governance_evidence(
+            {
+                "source_draft_pr_receipt": source_fe6_ref,
+                "local_agent_review": local_review_ref,
+                "external_agent_review": external_review_ref,
+                **{
+                    f"additional_agent_review_{index}": ref
+                    for index, ref in enumerate(additional_review_refs, start=1)
+                },
+            },
+            assertions={
+                "operator_id": operator_id,
+                "operator_decision": operator_decision,
+                "merge_ready": not failures,
+            },
+        ),
         "diff": {"source": "gh pr diff", "captured_chars": len(diff), "truncated_at": max_diff_chars},
         "diff_command": diff_run,
         "git_actions_performed": {"commit": True, "push": True, "pr": True, "merge": False, "deploy": False},
@@ -627,13 +760,24 @@ def run_fe8_merge(*, source_fe7_reconciliation: Path, frontend_root: Path, outpu
             failures.append("base branch remote head must advance after merge")
         if merge_commit_oid and remote_after != merge_commit_oid:
             failures.append("base branch remote head must equal GitHub mergeCommit.oid")
+    source_fe7_ref = _artifact_ref(source_fe7_reconciliation) if source_fe7_reconciliation.is_file() else None
     receipt = {
         "schema_version": FE8_RECEIPT_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="release",
+            schema_version=FE8_RECEIPT_SCHEMA,
+            artifact_id=f"fe8-merge:{github_repo}:{pr_number or 'unknown'}",
+            subject_id=f"github-pr:{github_repo}:{pr_number or 'unknown'}",
+            producer="beta_fe5_8_frontend_release_gates",
+            source_refs=[source_fe7_ref] if source_fe7_ref else [],
+            scope="github_pr_merge",
+        ),
         "checked_at": _now(),
         "passed": not failures,
         "decision": "beta_fe8_frontend_merge_receipt_passed" if not failures else "blocked",
         "failure_reasons": failures,
-        "source_fe7_reconciliation": _artifact_ref(source_fe7_reconciliation) if source_fe7_reconciliation.is_file() else None,
+        "source_fe7_reconciliation": source_fe7_ref,
         "frontend_root": str(frontend_root),
         "github_repo": github_repo,
         "pr": merged or pr,
@@ -648,6 +792,16 @@ def run_fe8_merge(*, source_fe7_reconciliation: Path, frontend_root: Path, outpu
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
         "git_actions_performed": {"commit": True, "push": True, "pr": True, "merge": merge_performed, "deploy": False},
+        "release_provenance": build_git_release_provenance(
+            {"source_review_reconciliation": source_fe7_ref},
+            actions_observed={
+                "commit": True,
+                "push": True,
+                "pr": True,
+                "merge": merge_performed,
+            },
+            actions_performed_by_current_step={"merge": merge_performed},
+        ),
         "boundary": _boundary(merge_allowed=merge_authorized),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),

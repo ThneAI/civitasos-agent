@@ -17,6 +17,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from civitasos_contracts.artifacts import build_artifact_envelope
+    from civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+    )
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.artifacts import build_artifact_envelope
+    from scripts.civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+    )
+
 AUTHORIZATION_SCHEMA = "beta-fe4-frontend-commit-authorization:v1"
 EXECUTION_SCHEMA = "beta-fe4-frontend-commit-execution-report:v1"
 RECEIPT_SCHEMA = "beta-fe4-frontend-commit-receipt:v1"
@@ -119,13 +132,25 @@ def run_commit_gate(
     receipt_path = output_root / "beta_fe4_frontend_commit_receipt.json"
     receipt = None
     if not failures and commit_id:
+        source_fe3_ref = _artifact_ref(source_fe3_receipt)
+        authorization_ref = _artifact_ref(authorization_path)
         receipt = {
             "schema_version": RECEIPT_SCHEMA,
+            "artifact_envelope": build_artifact_envelope(
+                artifact_kind="receipt",
+                plane="release",
+                schema_version=RECEIPT_SCHEMA,
+                artifact_id=f"fe4-commit:{commit_id}",
+                subject_id=f"git-commit:{commit_id}",
+                producer="beta_fe4_frontend_commit_gate",
+                source_refs=[source_fe3_ref, authorization_ref],
+                scope="local_git_commit",
+            ),
             "checked_at": _now(),
             "passed": True,
             "decision": "beta_fe4_frontend_commit_receipt_passed",
-            "source_fe3_receipt": _artifact_ref(source_fe3_receipt),
-            "source_commit_authorization": _artifact_ref(authorization_path),
+            "source_fe3_receipt": source_fe3_ref,
+            "source_commit_authorization": authorization_ref,
             "frontend_root": str(frontend_root),
             "target_repo": {"before": before, "after": after},
             "commit_id": commit_id,
@@ -133,6 +158,14 @@ def run_commit_gate(
             "staged_files": staged_files,
             "committed_files": committed_files,
             "git_actions_performed": {"commit": True, "push": False, "pr": False, "merge": False, "deploy": False},
+            "release_provenance": build_git_release_provenance(
+                {
+                    "source_apply_receipt": source_fe3_ref,
+                    "commit_authorization": authorization_ref,
+                },
+                actions_observed={"commit": True},
+                actions_performed_by_current_step={"commit": True},
+            ),
             "boundary": _boundary(commit_allowed=True),
             "h3_boundary": _h3_boundary(),
             "non_claims": list(NON_CLAIMS),
@@ -210,18 +243,37 @@ def _authorization_payload(
     operator_id: str,
     operator_authorization: str,
 ) -> dict[str, Any]:
+    source_ref = _artifact_ref(source_fe3_receipt)
     return {
         "schema_version": AUTHORIZATION_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="approval",
+            plane="governance",
+            schema_version=AUTHORIZATION_SCHEMA,
+            artifact_id=f"fe4-commit-approval:{_sha256(source_fe3_receipt)[:16]}",
+            subject_id=f"frontend-slice:{frontend_root.name}",
+            producer="beta_fe4_frontend_commit_gate",
+            source_refs=[source_ref],
+            scope="local_git_commit_only",
+        ),
         "created_at": _now(),
         "decision": "beta_fe4_frontend_commit_authorized",
         "operator_id": operator_id,
         "operator_authorization": operator_authorization,
-        "source_fe3_receipt": _artifact_ref(source_fe3_receipt),
+        "source_fe3_receipt": source_ref,
         "frontend_root": str(frontend_root),
         "target_repo_before": before,
         "authorized_files": changed_files,
         "commit_message": commit_message,
         "authorization_scope": "local_git_commit_only",
+        "governance_evidence": build_governance_evidence(
+            {"source_apply_receipt": source_ref},
+            assertions={
+                "operator_id": operator_id,
+                "authorized_file_count": len(changed_files),
+                "authorization_scope": "local_git_commit_only",
+            },
+        ),
         "boundary": _boundary(commit_allowed=True),
         "h3_boundary": _h3_boundary(),
         "non_claims": list(NON_CLAIMS),

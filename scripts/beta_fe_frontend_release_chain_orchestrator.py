@@ -17,6 +17,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from civitasos_contracts.artifacts import build_artifact_envelope
+    from civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+        build_runtime_evidence,
+    )
+except ModuleNotFoundError:
+    from scripts.civitasos_contracts.artifacts import build_artifact_envelope
+    from scripts.civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+        build_runtime_evidence,
+    )
+
 import beta_fe3_frontend_apply_receipt as fe3
 import beta_fe4_frontend_commit_gate as fe4
 import beta_fe5_8_frontend_release_gates as fe5_8
@@ -55,7 +70,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frontend-url")
     parser.add_argument("--backend-url")
     parser.add_argument("--skip-preview", action="store_true")
-    parser.add_argument("--preview-auth-mode", choices=("auto", "bearer-token", "service-token", "demo-login"), default="auto")
+    parser.add_argument(
+        "--preview-auth-mode",
+        choices=("bearer-token", "service-token"),
+        default="service-token",
+        help="Release preview is fail-closed; demo-login remains available only on the standalone FE-10 dev command.",
+    )
     parser.add_argument("--preview-bearer-token")
     parser.add_argument("--preview-bearer-token-file")
     parser.add_argument("--preview-service-token-secret")
@@ -271,13 +291,51 @@ def run_release_chain(
 
 
 def _summary(output_root: Path, failures: list[str], gate_refs: dict[str, Any]) -> dict[str, Any]:
+    source_refs = [
+        ref for ref in gate_refs.values()
+        if isinstance(ref, dict) and ref.get("sha256")
+    ]
     report = {
         "schema_version": SUMMARY_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="governance",
+            schema_version=SUMMARY_SCHEMA,
+            artifact_id=f"frontend-release-chain:{output_root.name}",
+            subject_id=f"frontend-release-chain:{output_root.name}",
+            producer="beta_fe_frontend_release_chain_orchestrator",
+            source_refs=source_refs,
+            scope="controlled_frontend_release_chain",
+        ),
         "checked_at": _now(),
         "passed": not failures,
         "decision": "beta_fe_frontend_release_chain_passed" if not failures else "blocked",
         "failure_reasons": failures,
         "gate_receipts": gate_refs,
+        "runtime_evidence": build_runtime_evidence(
+            {
+                key: gate_refs.get(key)
+                for key in ("fe3", "fe9", "fe10")
+            },
+            assertions={"release_chain_passed": not failures},
+        ),
+        "governance_evidence": build_governance_evidence(
+            {"fe7_review_reconciliation": gate_refs.get("fe7")},
+            assertions={"release_chain_passed": not failures},
+        ),
+        "release_provenance": build_git_release_provenance(
+            {
+                key: gate_refs.get(key)
+                for key in ("fe4", "fe5", "fe6", "fe8")
+            },
+            actions_observed={
+                "commit": "fe4" in gate_refs,
+                "push": "fe5" in gate_refs,
+                "pr": "fe6" in gate_refs,
+                "merge": "fe8" in gate_refs,
+            },
+            actions_performed_by_current_step={},
+        ),
         "boundary": {
             "frontend_code_modified": True,
             "apply_allowed": True,
