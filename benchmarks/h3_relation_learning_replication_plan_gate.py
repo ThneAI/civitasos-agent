@@ -32,6 +32,8 @@ REQUIRED_REPLICATION_CHECKS = {
     "all_normative_updates_blocked",
     "different_outcomes_produce_different_post_states",
     "negative_outcome_severity_is_ordered",
+    "owner_negative_control_is_neutral",
+    "provider_negative_control_is_neutral",
     "provider_owner_negative_control_is_neutral",
     "duplicate_event_replay_is_blocked",
     "different_relation_history_changes_delta",

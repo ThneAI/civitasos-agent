@@ -289,11 +289,11 @@ def _severity_is_ordered(records: list[dict[str, Any]]) -> bool:
 
 def _run_negative_controls() -> dict[str, Any]:
     before = RelationExpectationVector()
-    left = calculate_relation_update(
+    baseline = calculate_relation_update(
         before,
         [
             RelationEvidence(
-                ref="negative-control:left",
+                ref="negative-control:baseline",
                 outcome_kind="post_delivery_dispute",
                 task_kind="same-task",
                 provider="deepseek-api-agent",
@@ -301,11 +301,35 @@ def _run_negative_controls() -> dict[str, Any]:
             )
         ],
     )
-    right = calculate_relation_update(
+    owner_variant = calculate_relation_update(
         before,
         [
             RelationEvidence(
-                ref="negative-control:right",
+                ref="negative-control:owner-variant",
+                outcome_kind="post_delivery_dispute",
+                task_kind="same-task",
+                provider="deepseek-api-agent",
+                owner_id="owner-b",
+            )
+        ],
+    )
+    provider_variant = calculate_relation_update(
+        before,
+        [
+            RelationEvidence(
+                ref="negative-control:provider-variant",
+                outcome_kind="post_delivery_dispute",
+                task_kind="same-task",
+                provider="local-gpu-agent",
+                owner_id="owner-a",
+            )
+        ],
+    )
+    combined_variant = calculate_relation_update(
+        before,
+        [
+            RelationEvidence(
+                ref="negative-control:combined-variant",
                 outcome_kind="post_delivery_dispute",
                 task_kind="same-task",
                 provider="local-gpu-agent",
@@ -353,11 +377,20 @@ def _run_negative_controls() -> dict[str, Any]:
             for index in range(10)
         ],
     )
+    baseline_state = asdict(baseline.after)
+
+    def neutral(candidate: Any) -> bool:
+        return (
+            baseline.applied_deltas == candidate.applied_deltas
+            and baseline_state == asdict(candidate.after)
+        )
+
     return {
         "checks": {
-            "provider_owner_negative_control_is_neutral": (
-                left.applied_deltas == right.applied_deltas
-                and asdict(left.after) == asdict(right.after)
+            "owner_negative_control_is_neutral": neutral(owner_variant),
+            "provider_negative_control_is_neutral": neutral(provider_variant),
+            "provider_owner_negative_control_is_neutral": neutral(
+                combined_variant
             ),
             "duplicate_event_replay_is_blocked": (
                 not replay.novel_evidence
@@ -373,8 +406,10 @@ def _run_negative_controls() -> dict[str, Any]:
                 for parameter, cap in MAX_ABS_DELTA.items()
             ),
         },
-        "provider_owner_neutral_left": learning_provenance(left),
-        "provider_owner_neutral_right": learning_provenance(right),
+        "neutral_baseline": learning_provenance(baseline),
+        "owner_neutral_variant": learning_provenance(owner_variant),
+        "provider_neutral_variant": learning_provenance(provider_variant),
+        "provider_owner_neutral_variant": learning_provenance(combined_variant),
         "duplicate_replay": learning_provenance(replay),
         "history_low_precision": learning_provenance(low_precision),
         "history_high_precision": learning_provenance(high_precision),

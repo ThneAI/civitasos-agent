@@ -94,6 +94,8 @@ def _write_replication_report(tmp_path: Path) -> Path:
         "records": records,
         "negative_controls": {
             "checks": {
+                "owner_negative_control_is_neutral": True,
+                "provider_negative_control_is_neutral": True,
                 "provider_owner_negative_control_is_neutral": True,
                 "duplicate_event_replay_is_blocked": True,
                 "different_relation_history_changes_delta": True,

@@ -24,6 +24,8 @@ def test_replication_gate_accepts_two_differentiated_batches(tmp_path: Path) -> 
     assert report["passed"] is True
     assert report["metrics"]["owner_count"] == 2
     assert report["metrics"]["record_count"] == 6
+    assert report["checks"]["owner_negative_control_is_neutral"] is True
+    assert report["checks"]["provider_negative_control_is_neutral"] is True
     assert report["readiness"]["replication_evidence_ready_for_h3_review"] is True
     assert report["readiness"]["valid_for_qualification"] is False
     assert output.is_file()
