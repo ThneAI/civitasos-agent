@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import secrets
@@ -12,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, sha256_text, write_json_object
 from benchmarks.i1.identity_preparation import did_from_public_key
 
 SCHEMA_VERSION = "i1-identity-registration-gate:v1"
@@ -31,10 +31,10 @@ def run_gate(
     factory = agent_factory or CivitasAgent
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    preparation = _read_json(preparation_report_path)
-    h3 = _read_json(h3_qualification_path)
+    preparation = read_json_object(preparation_report_path)
+    h3 = read_json_object(h3_qualification_path)
 
-    _check(
+    check(
         checks,
         failures,
         "h3_semantic_qualification_passed",
@@ -42,16 +42,16 @@ def run_gate(
         == "h3-relation-learning-semantic-qualification:v1"
         and h3.get("passed") is True
         and h3.get("valid_for_qualification") is True
-        and _object(h3.get("readiness")).get("i1_entry_inputs_ready") is True,
+        and object_value(h3.get("readiness")).get("i1_entry_inputs_ready") is True,
     )
     identities = [
         item
-        for item in _object(preparation.get("identity_manifest")).get(
+        for item in object_value(preparation.get("identity_manifest")).get(
             "identities", []
         )
         if isinstance(item, dict)
     ]
-    _check(
+    check(
         checks,
         failures,
         "preparation_report_passed",
@@ -59,20 +59,20 @@ def run_gate(
         == "i1-verifier-preparation-report:v1"
         and preparation.get("passed") is True,
     )
-    _check(
+    check(
         checks,
         failures,
         "five_prepared_identities_present",
         len(identities) == 5,
     )
     aliases = [str(item.get("identity_alias") or "") for item in identities]
-    _check(
+    check(
         checks,
         failures,
         "prepared_aliases_unique",
         all(aliases) and len(aliases) == len(set(aliases)),
     )
-    _check(
+    check(
         checks,
         failures,
         "service_token_bootstrap_configured",
@@ -98,14 +98,14 @@ def run_gate(
                 )
                 break
 
-    _check(
+    check(
         checks,
         failures,
         "all_five_identities_registered",
         len(receipts) == 5
         and all(item.get("registration_verified") is True for item in receipts),
     )
-    _check(
+    check(
         checks,
         failures,
         "all_five_signature_controls_verified",
@@ -114,14 +114,14 @@ def run_gate(
             item.get("signature_control_verified") is True for item in receipts
         ),
     )
-    _check(
+    check(
         checks,
         failures,
         "all_five_did_challenge_auth_proven",
         len(receipts) == 5
         and all(item.get("did_challenge_auth_proven") is True for item in receipts),
     )
-    _check(
+    check(
         checks,
         failures,
         "registered_dids_unique",
@@ -137,8 +137,8 @@ def run_gate(
         "checks": checks,
         "backend_url": backend_url,
         "source_artifacts": {
-            "preparation_report": _artifact_ref(preparation_report_path),
-            "h3_semantic_qualification": _artifact_ref(h3_qualification_path),
+            "preparation_report": artifact_ref(preparation_report_path),
+            "h3_semantic_qualification": artifact_ref(h3_qualification_path),
         },
         "identity_receipts": receipts,
         "metrics": {
@@ -188,11 +188,7 @@ def run_gate(
             "registration_does_not_unlock_production",
         ],
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_json_object(output, report)
     return report
 
 
@@ -235,7 +231,7 @@ def _register_identity(
         public_key=public_key,
     )
     registered_did = str(
-        _object(registration.get("agent")).get("did")
+        object_value(registration.get("agent")).get("did")
         or registration.get("did")
         or registration.get("agent_id")
         or ""
@@ -245,7 +241,7 @@ def _register_identity(
     agent.save_identity(str(key_path))
 
     agent.authenticate(allow_legacy_fallback=False)
-    auth_context = _object(agent.jwt_auth_context)
+    auth_context = object_value(agent.jwt_auth_context)
     auth_method = str(auth_context.get("auth_method") or "")
     did_challenge_auth = (
         "challenge" in auth_method
@@ -282,7 +278,7 @@ def _register_identity(
         "runtime_family": identity.get("runtime_family"),
         "roles": identity.get("roles", []),
         "did": expected_did,
-        "public_key_sha256": _sha256_text(public_key),
+        "public_key_sha256": sha256_text(public_key),
         "identity_key_path": str(key_path),
         "identity_key_mode": f"{mode:04o}",
         "registration_verified": True,
@@ -292,44 +288,10 @@ def _register_identity(
         "auth_method": auth_method,
         "evidence_allowed": auth_context.get("evidence_allowed") is True,
         "signature_control_verified": True,
-        "signature_message_sha256": _sha256_text(message),
-        "signature_sha256": _sha256_text(signature),
+        "signature_message_sha256": sha256_text(message),
+        "signature_sha256": sha256_text(signature),
         "verified_at": datetime.now(timezone.utc).isoformat(),
     }
-
-
-def _check(
-    checks: dict[str, bool],
-    failures: list[str],
-    name: str,
-    passed: bool,
-) -> None:
-    checks[name] = bool(passed)
-    if not passed:
-        failures.append(name)
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"expected JSON object: {path}")
-    return value
-
-
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path), "sha256": _sha256(path)}
 
 
 def main() -> None:

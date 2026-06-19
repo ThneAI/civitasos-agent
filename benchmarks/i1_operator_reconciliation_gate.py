@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
+
+from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, write_json_object
 
 SCHEMA_VERSION = "i1-operator-reconciliation-gate:v1"
 
@@ -14,12 +15,12 @@ SCHEMA_VERSION = "i1-operator-reconciliation-gate:v1"
 def run_gate(*, matrix_report_path: Path, output: Path) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    matrix = _read_json(matrix_report_path)
-    matrix_checks = _object(matrix.get("checks"))
-    metrics = _object(matrix.get("metrics"))
-    readiness = _object(matrix.get("readiness"))
+    matrix = read_json_object(matrix_report_path)
+    matrix_checks = object_value(matrix.get("checks"))
+    metrics = object_value(matrix.get("metrics"))
+    readiness = object_value(matrix.get("readiness"))
 
-    _check(
+    check(
         checks,
         failures,
         "matrix_report_passed",
@@ -37,14 +38,14 @@ def run_gate(*, matrix_report_path: Path, output: Path) -> dict[str, Any]:
         "provider_homogeneity_negative_control_rejected",
         "identity_conflict_negative_control_rejected",
     ):
-        _check(checks, failures, name, matrix_checks.get(name) is True)
-    _check(
+        check(checks, failures, name, matrix_checks.get(name) is True)
+    check(
         checks,
         failures,
         "matrix_ready_for_reconciliation",
         readiness.get("i1_b_c_reconciliation_input_ready") is True,
     )
-    _check(
+    check(
         checks,
         failures,
         "quorum_metrics_complete",
@@ -59,7 +60,7 @@ def run_gate(*, matrix_report_path: Path, output: Path) -> dict[str, Any]:
         "passed": passed,
         "failure_reasons": failures,
         "checks": checks,
-        "source_artifacts": {"matrix_report": _artifact_ref(matrix_report_path)},
+        "source_artifacts": {"matrix_report": artifact_ref(matrix_report_path)},
         "operator_reconciliation": {
             "decision": "i1_read_only_verifier_consensus_passed" if passed else "blocked_i1_reconciliation",
             "reason": (
@@ -92,39 +93,8 @@ def run_gate(*, matrix_report_path: Path, output: Path) -> dict[str, Any]:
             "i1_reconciliation_does_not_unlock_production",
         ],
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_object(output, report)
     return report
-
-
-def _check(
-    checks: dict[str, bool],
-    failures: list[str],
-    name: str,
-    passed: bool,
-) -> None:
-    checks[name] = bool(passed)
-    if not passed:
-        failures.append(name)
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"expected JSON object: {path}")
-    return value
-
-
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
 
 
 def main() -> None:

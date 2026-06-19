@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from benchmarks.i2_evidence import artifact_ref, object_value, read_json_object, write_boundaries_closed, write_json_object
+from benchmarks.i_gate_evidence import artifact_ref, object_value, read_json_object, write_boundaries_closed, write_json_object
 from benchmarks.i2b_real_external_readonly_command_gate import run_gate as run_i2b
 
 SCHEMA_VERSION = "i2b-provider-contrast-gate:v1"

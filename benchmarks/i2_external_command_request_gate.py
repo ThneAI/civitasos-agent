@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
+
+from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, write_json_object
 
 SCHEMA_VERSION = "i2-external-command-gate-request:v1"
 
@@ -14,16 +15,16 @@ SCHEMA_VERSION = "i2-external-command-gate-request:v1"
 def run_gate(*, i1_reconciliation_path: Path, output: Path) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    i1 = _read_json(i1_reconciliation_path)
-    readiness = _object(i1.get("readiness"))
-    _check(
+    i1 = read_json_object(i1_reconciliation_path)
+    readiness = object_value(i1.get("readiness"))
+    check(
         checks,
         failures,
         "i1_reconciliation_passed",
         i1.get("schema_version") == "i1-operator-reconciliation-gate:v1"
         and i1.get("passed") is True,
     )
-    _check(
+    check(
         checks,
         failures,
         "i1_allows_i2_request_only",
@@ -31,7 +32,7 @@ def run_gate(*, i1_reconciliation_path: Path, output: Path) -> dict[str, Any]:
         and readiness.get("i2_gate_request_ready") is True
         and readiness.get("i2_execution_allowed") is False,
     )
-    source = _artifact_ref(i1_reconciliation_path)
+    source = artifact_ref(i1_reconciliation_path)
     request_id = "i2-request:" + source["sha256"][:20]
     passed = bool(checks) and all(checks.values()) and not failures
     report = {
@@ -74,39 +75,8 @@ def run_gate(*, i1_reconciliation_path: Path, output: Path) -> dict[str, Any]:
             "i2_request_does_not_unlock_production",
         ],
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_object(output, report)
     return report
-
-
-def _check(
-    checks: dict[str, bool],
-    failures: list[str],
-    name: str,
-    passed: bool,
-) -> None:
-    checks[name] = bool(passed)
-    if not passed:
-        failures.append(name)
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"expected JSON object: {path}")
-    return value
-
-
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
 
 
 def main() -> None:

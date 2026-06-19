@@ -11,12 +11,23 @@ production transition.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from benchmarks.i_gate_evidence import (
+    all_checks_passed,
+    artifact_ref,
+    check,
+    object_value,
+    objects_value,
+    read_json_object,
+    sha256_json,
+    sha256_text,
+    write_json_object,
+)
 
 CHAIN_SCHEMA = "i2a-controlled-command-chain:v1"
 OPERATOR_REVIEW_SCHEMA = "i2-operator-review:v1"
@@ -44,7 +55,7 @@ FORBIDDEN_ACTIONS = [
     "production_transition",
 ]
 ALLOWED_ACTIONS = [
-    "read_source_artifact_refs",
+    "read_sourceartifact_refs",
     "read_command_envelope",
     "write_receipt_under_isolation_workspace",
 ]
@@ -126,10 +137,10 @@ def run_chain(
         "schema_version": CHAIN_SCHEMA,
         "passed": all(item.get("passed") is True for item in (review, registration, authorization, acceptance, preflight, execution, rollback, reconciliation)),
         "failure_reasons": _collect_failures(review, registration, authorization, acceptance, preflight, execution, rollback, reconciliation),
-        "request_id": _object(review.get("operator_review")).get("request_id"),
-        "command_id": _object(authorization.get("command")).get("command_id"),
+        "request_id": object_value(review.get("operator_review")).get("request_id"),
+        "command_id": object_value(authorization.get("command")).get("command_id"),
         "executor_alias": executor_alias,
-        "artifacts": {name: _artifact_ref(path) for name, path in artifacts.items() if name != "summary"},
+        "artifacts": {name: artifact_ref(path) for name, path in artifacts.items() if name != "summary"},
         "readiness": {
             "state": "i2a_protocol_smoke_passed" if reconciliation.get("passed") is True else "blocked_i2a_protocol_smoke",
             "i2a_protocol_smoke_complete": reconciliation.get("passed") is True,
@@ -144,22 +155,22 @@ def run_chain(
             "i2a_does_not_authorize_i2b_or_production",
         ],
     }
-    _write_json(artifacts["summary"], summary)
+    write_json_object(artifacts["summary"], summary)
     return summary
 
 
 def write_operator_review(*, i2_request_path: Path, output: Path, operator_id: str) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    request = _read_json(i2_request_path)
-    request_body = _object(request.get("request"))
-    readiness = _object(request.get("readiness"))
-    boundary = _object(request.get("boundary"))
+    request = read_json_object(i2_request_path)
+    request_body = object_value(request.get("request"))
+    readiness = object_value(request.get("readiness"))
+    boundary = object_value(request.get("boundary"))
 
-    _check(checks, failures, "i2_request_passed", request.get("schema_version") == "i2-external-command-gate-request:v1" and request.get("passed") is True)
-    _check(checks, failures, "request_ready_for_operator_review", readiness.get("i2_gate_requested") is True and readiness.get("operator_authorization_required") is True)
-    _check(checks, failures, "request_does_not_already_allow_execution", readiness.get("i2_execution_allowed") is False and boundary.get("external_agent_command_allowed") is False)
-    _check(checks, failures, "future_evidence_requirements_present", set(request_body.get("required_future_evidence", [])) >= {
+    check(checks, failures, "i2_request_passed", request.get("schema_version") == "i2-external-command-gate-request:v1" and request.get("passed") is True)
+    check(checks, failures, "request_ready_for_operator_review", readiness.get("i2_gate_requested") is True and readiness.get("operator_authorization_required") is True)
+    check(checks, failures, "request_does_not_already_allow_execution", readiness.get("i2_execution_allowed") is False and boundary.get("external_agent_command_allowed") is False)
+    check(checks, failures, "future_evidence_requirements_present", set(request_body.get("required_future_evidence", [])) >= {
         "external_agent_registration_receipt",
         "scoped_command_authorization_request",
         "external_agent_acceptance_receipt",
@@ -169,13 +180,13 @@ def write_operator_review(*, i2_request_path: Path, output: Path, operator_id: s
         "operator_reconciliation",
     })
 
-    passed = _passed(checks, failures)
+    passed = all_checks_passed(checks, failures)
     report = {
         "schema_version": OPERATOR_REVIEW_SCHEMA,
         "passed": passed,
         "failure_reasons": failures,
         "checks": checks,
-        "source_artifacts": {"i2_request": _artifact_ref(i2_request_path)},
+        "source_artifacts": {"i2_request": artifact_ref(i2_request_path)},
         "operator_review": {
             "operator_id": operator_id,
             "decision": "approve_i2a_read_only_protocol_smoke" if passed else "blocked_i2a_operator_review",
@@ -192,28 +203,28 @@ def write_operator_review(*, i2_request_path: Path, output: Path, operator_id: s
         "boundary": _hard_boundary(operator_review_recording_allowed=True),
         "non_claims": ["operator_review_does_not_dispatch_external_agent", "operator_review_does_not_unlock_real_task_commanding"],
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
 def write_registration_receipt(*, operator_review_path: Path, output: Path, executor_alias: str) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    review = _read_json(operator_review_path)
-    review_body = _object(review.get("operator_review"))
-    did = "did:civ:i2a:" + _sha256_text(executor_alias)[:32]
+    review = read_json_object(operator_review_path)
+    review_body = object_value(review.get("operator_review"))
+    did = "did:civ:i2a:" + sha256_text(executor_alias)[:32]
 
-    _check(checks, failures, "operator_review_passed", review.get("schema_version") == OPERATOR_REVIEW_SCHEMA and review.get("passed") is True)
-    _check(checks, failures, "approved_scope_is_i2a_read_only", review_body.get("approved_scope") == "i2a_read_only_single_use_isolated_command_protocol_smoke")
-    _check(checks, failures, "executor_alias_present", bool(executor_alias))
+    check(checks, failures, "operator_review_passed", review.get("schema_version") == OPERATOR_REVIEW_SCHEMA and review.get("passed") is True)
+    check(checks, failures, "approved_scope_is_i2a_read_only", review_body.get("approved_scope") == "i2a_read_only_single_use_isolated_command_protocol_smoke")
+    check(checks, failures, "executor_alias_present", bool(executor_alias))
 
-    passed = _passed(checks, failures)
+    passed = all_checks_passed(checks, failures)
     report = {
         "schema_version": REGISTRATION_SCHEMA,
         "passed": passed,
         "failure_reasons": failures,
         "checks": checks,
-        "source_artifacts": {"operator_review": _artifact_ref(operator_review_path)},
+        "source_artifacts": {"operator_review": artifact_ref(operator_review_path)},
         "external_agent": {
             "agent_alias": executor_alias,
             "agent_did": did,
@@ -231,7 +242,7 @@ def write_registration_receipt(*, operator_review_path: Path, output: Path, exec
         },
         "boundary": _hard_boundary(registration_recording_allowed=True),
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
@@ -245,28 +256,28 @@ def write_scoped_authorization(
 ) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    review = _read_json(operator_review_path)
-    registration = _read_json(registration_path)
-    agent = _object(registration.get("external_agent"))
+    review = read_json_object(operator_review_path)
+    registration = read_json_object(registration_path)
+    agent = object_value(registration.get("external_agent"))
 
-    _check(checks, failures, "operator_review_passed", review.get("passed") is True)
-    _check(checks, failures, "registration_passed", registration.get("schema_version") == REGISTRATION_SCHEMA and registration.get("passed") is True)
-    _check(checks, failures, "objective_is_nonempty", bool(objective.strip()))
-    _check(checks, failures, "expiry_within_limit", 1 <= expiry_minutes <= 60)
+    check(checks, failures, "operator_review_passed", review.get("passed") is True)
+    check(checks, failures, "registration_passed", registration.get("schema_version") == REGISTRATION_SCHEMA and registration.get("passed") is True)
+    check(checks, failures, "objective_is_nonempty", bool(objective.strip()))
+    check(checks, failures, "expiry_within_limit", 1 <= expiry_minutes <= 60)
 
     now = datetime.now(timezone.utc)
-    nonce_seed = json.dumps({"review": _artifact_ref(operator_review_path), "registration": _artifact_ref(registration_path), "objective": objective}, sort_keys=True)
-    nonce = _sha256_text(nonce_seed)[:24]
-    command_id = "i2a-command:" + _sha256_text(nonce_seed)[:20]
-    passed = _passed(checks, failures)
+    nonce_seed = json.dumps({"review": artifact_ref(operator_review_path), "registration": artifact_ref(registration_path), "objective": objective}, sort_keys=True)
+    nonce = sha256_text(nonce_seed)[:24]
+    command_id = "i2a-command:" + sha256_text(nonce_seed)[:20]
+    passed = all_checks_passed(checks, failures)
     report = {
         "schema_version": AUTHORIZATION_SCHEMA,
         "passed": passed,
         "failure_reasons": failures,
         "checks": checks,
         "source_artifacts": {
-            "operator_review": _artifact_ref(operator_review_path),
-            "registration": _artifact_ref(registration_path),
+            "operator_review": artifact_ref(operator_review_path),
+            "registration": artifact_ref(registration_path),
         },
         "command": {
             "command_id": command_id,
@@ -293,35 +304,35 @@ def write_scoped_authorization(
         },
         "boundary": _hard_boundary(scoped_command_authorization_recording_allowed=True),
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
 def write_acceptance_receipt(*, registration_path: Path, authorization_path: Path, output: Path) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    registration = _read_json(registration_path)
-    authorization = _read_json(authorization_path)
-    agent = _object(registration.get("external_agent"))
-    command = _object(authorization.get("command"))
+    registration = read_json_object(registration_path)
+    authorization = read_json_object(authorization_path)
+    agent = object_value(registration.get("external_agent"))
+    command = object_value(authorization.get("command"))
 
-    _check(checks, failures, "registration_passed", registration.get("passed") is True)
-    _check(checks, failures, "authorization_passed", authorization.get("schema_version") == AUTHORIZATION_SCHEMA and authorization.get("passed") is True)
-    _check(checks, failures, "executor_matches_registration", command.get("executor_alias") == agent.get("agent_alias") and command.get("executor_did") == agent.get("agent_did"))
-    _check(checks, failures, "forbidden_actions_present", set(command.get("forbidden_actions", [])) == set(FORBIDDEN_ACTIONS))
+    check(checks, failures, "registration_passed", registration.get("passed") is True)
+    check(checks, failures, "authorization_passed", authorization.get("schema_version") == AUTHORIZATION_SCHEMA and authorization.get("passed") is True)
+    check(checks, failures, "executor_matches_registration", command.get("executor_alias") == agent.get("agent_alias") and command.get("executor_did") == agent.get("agent_did"))
+    check(checks, failures, "forbidden_actions_present", set(command.get("forbidden_actions", [])) == set(FORBIDDEN_ACTIONS))
 
-    passed = _passed(checks, failures)
+    passed = all_checks_passed(checks, failures)
     report = {
         "schema_version": ACCEPTANCE_SCHEMA,
         "passed": passed,
         "failure_reasons": failures,
         "checks": checks,
-        "source_artifacts": {"registration": _artifact_ref(registration_path), "authorization": _artifact_ref(authorization_path)},
+        "source_artifacts": {"registration": artifact_ref(registration_path), "authorization": artifact_ref(authorization_path)},
         "acceptance": {
             "accepted": passed,
             "accepted_command_id": command.get("command_id"),
             "executor_alias": agent.get("agent_alias"),
-            "scope_hash": _sha256_json(command),
+            "scope_hash": sha256_json(command),
             "attestations": {
                 "will_not_use_network": True,
                 "will_not_write_source_tree": True,
@@ -333,40 +344,40 @@ def write_acceptance_receipt(*, registration_path: Path, authorization_path: Pat
         "readiness": {"state": "i2a_external_agent_accepted_scope" if passed else "blocked_i2a_acceptance", "external_agent_acceptance_receipt_present": passed},
         "boundary": _hard_boundary(acceptance_recording_allowed=True),
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
 def write_isolation_preflight(*, authorization_path: Path, acceptance_path: Path, output: Path, workspace: Path) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    authorization = _read_json(authorization_path)
-    acceptance = _read_json(acceptance_path)
-    command = _object(authorization.get("command"))
-    accepted = _object(acceptance.get("acceptance"))
+    authorization = read_json_object(authorization_path)
+    acceptance = read_json_object(acceptance_path)
+    command = object_value(authorization.get("command"))
+    accepted = object_value(acceptance.get("acceptance"))
 
     if workspace.exists():
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "README.txt").write_text("I.2-A isolated read-only receipt workspace.\n", encoding="utf-8")
 
-    _check(checks, failures, "authorization_passed", authorization.get("passed") is True)
-    _check(checks, failures, "acceptance_passed", acceptance.get("schema_version") == ACCEPTANCE_SCHEMA and acceptance.get("passed") is True)
-    _check(checks, failures, "command_id_matches_acceptance", command.get("command_id") == accepted.get("accepted_command_id"))
-    _check(checks, failures, "single_use_nonce_present", bool(command.get("single_use_nonce")) and command.get("single_use") is True)
-    _check(checks, failures, "network_forbidden", "network_access" in command.get("forbidden_actions", []))
-    _check(checks, failures, "git_write_forbidden", "git_write" in command.get("forbidden_actions", []) and "git_push" in command.get("forbidden_actions", []))
-    _check(checks, failures, "source_write_forbidden", "source_tree_write" in command.get("forbidden_actions", []))
-    _check(checks, failures, "production_forbidden", "production_transition" in command.get("forbidden_actions", []))
-    _check(checks, failures, "workspace_created", workspace.is_dir())
+    check(checks, failures, "authorization_passed", authorization.get("passed") is True)
+    check(checks, failures, "acceptance_passed", acceptance.get("schema_version") == ACCEPTANCE_SCHEMA and acceptance.get("passed") is True)
+    check(checks, failures, "command_id_matches_acceptance", command.get("command_id") == accepted.get("accepted_command_id"))
+    check(checks, failures, "single_use_nonce_present", bool(command.get("single_use_nonce")) and command.get("single_use") is True)
+    check(checks, failures, "network_forbidden", "network_access" in command.get("forbidden_actions", []))
+    check(checks, failures, "git_write_forbidden", "git_write" in command.get("forbidden_actions", []) and "git_push" in command.get("forbidden_actions", []))
+    check(checks, failures, "source_write_forbidden", "source_tree_write" in command.get("forbidden_actions", []))
+    check(checks, failures, "production_forbidden", "production_transition" in command.get("forbidden_actions", []))
+    check(checks, failures, "workspace_created", workspace.is_dir())
 
-    passed = _passed(checks, failures)
+    passed = all_checks_passed(checks, failures)
     report = {
         "schema_version": PREFLIGHT_SCHEMA,
         "passed": passed,
         "failure_reasons": failures,
         "checks": checks,
-        "source_artifacts": {"authorization": _artifact_ref(authorization_path), "acceptance": _artifact_ref(acceptance_path)},
+        "source_artifacts": {"authorization": artifact_ref(authorization_path), "acceptance": artifact_ref(acceptance_path)},
         "isolation": {
             "profile": "i2a_read_only_receipt_workspace",
             "workspace": str(workspace.resolve()),
@@ -381,27 +392,27 @@ def write_isolation_preflight(*, authorization_path: Path, acceptance_path: Path
         "readiness": {"state": "i2a_isolation_preflight_passed" if passed else "blocked_i2a_isolation_preflight", "command_execution_allowed_in_isolation": passed},
         "boundary": _hard_boundary(isolation_preflight_recording_allowed=True, isolated_command_execution_allowed=passed),
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
 def write_execution_receipt(*, authorization_path: Path, acceptance_path: Path, preflight_path: Path, output: Path) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    authorization = _read_json(authorization_path)
-    acceptance = _read_json(acceptance_path)
-    preflight = _read_json(preflight_path)
-    command = _object(authorization.get("command"))
-    workspace = Path(str(_object(preflight.get("isolation")).get("workspace") or ""))
+    authorization = read_json_object(authorization_path)
+    acceptance = read_json_object(acceptance_path)
+    preflight = read_json_object(preflight_path)
+    command = object_value(authorization.get("command"))
+    workspace = Path(str(object_value(preflight.get("isolation")).get("workspace") or ""))
     response_path = workspace / "external_agent_response.json"
 
-    _check(checks, failures, "authorization_passed", authorization.get("passed") is True)
-    _check(checks, failures, "acceptance_passed", acceptance.get("passed") is True)
-    _check(checks, failures, "preflight_passed", preflight.get("schema_version") == PREFLIGHT_SCHEMA and preflight.get("passed") is True)
-    _check(checks, failures, "workspace_exists", workspace.is_dir())
-    _check(checks, failures, "command_is_read_only", command.get("command_class") == "read_only_boundary_attestation")
+    check(checks, failures, "authorization_passed", authorization.get("passed") is True)
+    check(checks, failures, "acceptance_passed", acceptance.get("passed") is True)
+    check(checks, failures, "preflight_passed", preflight.get("schema_version") == PREFLIGHT_SCHEMA and preflight.get("passed") is True)
+    check(checks, failures, "workspace_exists", workspace.is_dir())
+    check(checks, failures, "command_is_read_only", command.get("command_class") == "read_only_boundary_attestation")
 
-    if _passed(checks, failures):
+    if all_checks_passed(checks, failures):
         response = {
             "schema_version": "i2a-controlled-external-agent-response:v1",
             "command_id": command.get("command_id"),
@@ -416,50 +427,50 @@ def write_execution_receipt(*, authorization_path: Path, acceptance_path: Path, 
                 "production_touched": False,
             },
         }
-        _write_json(response_path, response)
-    _check(checks, failures, "response_written_under_workspace", response_path.is_file() and response_path.parent.resolve() == workspace.resolve())
+        write_json_object(response_path, response)
+    check(checks, failures, "response_written_under_workspace", response_path.is_file() and response_path.parent.resolve() == workspace.resolve())
 
-    passed = _passed(checks, failures)
+    passed = all_checks_passed(checks, failures)
     report = {
         "schema_version": EXECUTION_SCHEMA,
         "passed": passed,
         "failure_reasons": failures,
         "checks": checks,
-        "source_artifacts": {"authorization": _artifact_ref(authorization_path), "acceptance": _artifact_ref(acceptance_path), "preflight": _artifact_ref(preflight_path)},
+        "source_artifacts": {"authorization": artifact_ref(authorization_path), "acceptance": artifact_ref(acceptance_path), "preflight": artifact_ref(preflight_path)},
         "execution": {
             "execution_kind": "controlled_read_only_receipt_write",
             "command_id": command.get("command_id"),
             "command_consumed": passed,
             "single_use_nonce": command.get("single_use_nonce"),
-            "output_artifact": _artifact_ref(response_path) if response_path.is_file() else None,
+            "output_artifact": artifact_ref(response_path) if response_path.is_file() else None,
             "external_side_effect_observed": False,
         },
         "readiness": {"state": "i2a_command_execution_receipt_present" if passed else "blocked_i2a_execution", "command_execution_receipt_present": passed},
         "boundary": _hard_boundary(execution_receipt_recording_allowed=True),
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
 def write_rollback_or_abort_receipt(*, execution_path: Path, preflight_path: Path, output: Path) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    execution = _read_json(execution_path)
-    preflight = _read_json(preflight_path)
-    isolation = _object(preflight.get("isolation"))
+    execution = read_json_object(execution_path)
+    preflight = read_json_object(preflight_path)
+    isolation = object_value(preflight.get("isolation"))
 
-    _check(checks, failures, "execution_passed", execution.get("schema_version") == EXECUTION_SCHEMA and execution.get("passed") is True)
-    _check(checks, failures, "preflight_passed", preflight.get("passed") is True)
-    _check(checks, failures, "read_only_no_rollback_required", _object(execution.get("execution")).get("external_side_effect_observed") is False)
-    _check(checks, failures, "workspace_is_deletable_boundary", bool(isolation.get("workspace")))
+    check(checks, failures, "execution_passed", execution.get("schema_version") == EXECUTION_SCHEMA and execution.get("passed") is True)
+    check(checks, failures, "preflight_passed", preflight.get("passed") is True)
+    check(checks, failures, "read_only_no_rollback_required", object_value(execution.get("execution")).get("external_side_effect_observed") is False)
+    check(checks, failures, "workspace_is_deletable_boundary", bool(isolation.get("workspace")))
 
-    passed = _passed(checks, failures)
+    passed = all_checks_passed(checks, failures)
     report = {
         "schema_version": ROLLBACK_SCHEMA,
         "passed": passed,
         "failure_reasons": failures,
         "checks": checks,
-        "source_artifacts": {"execution": _artifact_ref(execution_path), "preflight": _artifact_ref(preflight_path)},
+        "source_artifacts": {"execution": artifact_ref(execution_path), "preflight": artifact_ref(preflight_path)},
         "rollback_or_abort": {
             "rollback_required": False,
             "abort_required": False,
@@ -470,7 +481,7 @@ def write_rollback_or_abort_receipt(*, execution_path: Path, preflight_path: Pat
         "readiness": {"state": "i2a_rollback_or_abort_receipt_present" if passed else "blocked_i2a_rollback_or_abort", "rollback_or_abort_receipt_present": passed},
         "boundary": _hard_boundary(rollback_or_abort_recording_allowed=True),
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
@@ -487,13 +498,13 @@ def write_reconciliation(
 ) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    review = _read_json(operator_review_path)
-    registration = _read_json(registration_path)
-    authorization = _read_json(authorization_path)
-    acceptance = _read_json(acceptance_path)
-    preflight = _read_json(preflight_path)
-    execution = _read_json(execution_path)
-    rollback = _read_json(rollback_or_abort_path)
+    review = read_json_object(operator_review_path)
+    registration = read_json_object(registration_path)
+    authorization = read_json_object(authorization_path)
+    acceptance = read_json_object(acceptance_path)
+    preflight = read_json_object(preflight_path)
+    execution = read_json_object(execution_path)
+    rollback = read_json_object(rollback_or_abort_path)
 
     for label, report, schema in (
         ("operator_review", review, OPERATOR_REVIEW_SCHEMA),
@@ -504,28 +515,28 @@ def write_reconciliation(
         ("execution", execution, EXECUTION_SCHEMA),
         ("rollback_or_abort", rollback, ROLLBACK_SCHEMA),
     ):
-        _check(checks, failures, f"{label}_passed", report.get("schema_version") == schema and report.get("passed") is True)
-    command = _object(authorization.get("command"))
-    exec_body = _object(execution.get("execution"))
-    _check(checks, failures, "command_consumed_once", exec_body.get("command_consumed") is True and exec_body.get("single_use_nonce") == command.get("single_use_nonce"))
-    _check(checks, failures, "no_external_side_effects", exec_body.get("external_side_effect_observed") is False)
-    _check(checks, failures, "preflight_kept_isolation", _object(preflight.get("isolation")).get("network_allowed") is False and _object(preflight.get("isolation")).get("source_tree_write_allowed") is False)
-    _check(checks, failures, "rollback_or_abort_closed", _object(rollback.get("rollback_or_abort")).get("rollback_required") is False and _object(rollback.get("rollback_or_abort")).get("abort_required") is False)
+        check(checks, failures, f"{label}_passed", report.get("schema_version") == schema and report.get("passed") is True)
+    command = object_value(authorization.get("command"))
+    exec_body = object_value(execution.get("execution"))
+    check(checks, failures, "command_consumed_once", exec_body.get("command_consumed") is True and exec_body.get("single_use_nonce") == command.get("single_use_nonce"))
+    check(checks, failures, "no_external_side_effects", exec_body.get("external_side_effect_observed") is False)
+    check(checks, failures, "preflight_kept_isolation", object_value(preflight.get("isolation")).get("network_allowed") is False and object_value(preflight.get("isolation")).get("source_tree_write_allowed") is False)
+    check(checks, failures, "rollback_or_abort_closed", object_value(rollback.get("rollback_or_abort")).get("rollback_required") is False and object_value(rollback.get("rollback_or_abort")).get("abort_required") is False)
 
-    passed = _passed(checks, failures)
+    passed = all_checks_passed(checks, failures)
     report = {
         "schema_version": RECONCILIATION_SCHEMA,
         "passed": passed,
         "failure_reasons": failures,
         "checks": checks,
         "source_artifacts": {
-            "operator_review": _artifact_ref(operator_review_path),
-            "registration": _artifact_ref(registration_path),
-            "authorization": _artifact_ref(authorization_path),
-            "acceptance": _artifact_ref(acceptance_path),
-            "preflight": _artifact_ref(preflight_path),
-            "execution": _artifact_ref(execution_path),
-            "rollback_or_abort": _artifact_ref(rollback_or_abort_path),
+            "operator_review": artifact_ref(operator_review_path),
+            "registration": artifact_ref(registration_path),
+            "authorization": artifact_ref(authorization_path),
+            "acceptance": artifact_ref(acceptance_path),
+            "preflight": artifact_ref(preflight_path),
+            "execution": artifact_ref(execution_path),
+            "rollback_or_abort": artifact_ref(rollback_or_abort_path),
         },
         "operator_reconciliation": {
             "decision": "i2a_controlled_protocol_smoke_passed" if passed else "blocked_i2a_reconciliation",
@@ -547,7 +558,7 @@ def write_reconciliation(
             "i2a_reconciliation_does_not_unlock_production",
         ],
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
@@ -571,48 +582,6 @@ def _collect_failures(*reports: dict[str, Any]) -> list[str]:
     for report in reports:
         failures.extend(str(item) for item in report.get("failure_reasons", []))
     return failures
-
-
-def _passed(checks: dict[str, bool], failures: list[str]) -> bool:
-    return bool(checks) and all(checks.values()) and not failures
-
-
-def _check(checks: dict[str, bool], failures: list[str], name: str, passed: bool) -> None:
-    checks[name] = bool(passed)
-    if not passed:
-        failures.append(name)
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"expected JSON object: {path}")
-    return value
-
-
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _sha256_json(value: Any) -> str:
-    return _sha256_text(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
 
 
 def _iso(value: datetime) -> str:

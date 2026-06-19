@@ -11,6 +11,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from benchmarks.i_gate_evidence import (
+    artifact_ref,
+    check,
+    object_value,
+    objects_value,
+    read_json_object,
+    sha256_file,
+    sha256_text,
+    write_json_object,
+)
 from nacl.signing import VerifyKey
 
 SCHEMA_VERSION = "i1-read-only-verifier-matrix-gate:v1"
@@ -28,39 +38,39 @@ def run_gate(
 
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    preparation = _read_json(preparation_report_path)
-    registration = _read_json(identity_registration_path)
+    preparation = read_json_object(preparation_report_path)
+    registration = read_json_object(identity_registration_path)
 
-    identities = _objects(_object(preparation.get("identity_manifest")).get("identities"))
-    cases = _objects(_object(preparation.get("corpus_manifest")).get("cases"))
-    receipts = _objects(registration.get("identity_receipts"))
+    identities = objects_value(object_value(preparation.get("identity_manifest")).get("identities"))
+    cases = objects_value(object_value(preparation.get("corpus_manifest")).get("cases"))
+    receipts = objects_value(registration.get("identity_receipts"))
     identities_by_alias = {str(item.get("identity_alias") or ""): item for item in identities}
     receipts_by_alias = {str(item.get("identity_alias") or ""): item for item in receipts}
-    proposer = str(_object(preparation.get("identity_manifest")).get("proposer_identity_alias") or "")
+    proposer = str(object_value(preparation.get("identity_manifest")).get("proposer_identity_alias") or "")
     allowlist = [
         str(item)
-        for item in _object(preparation.get("identity_manifest")).get("default_verifier_allowlist", [])
+        for item in object_value(preparation.get("identity_manifest")).get("default_verifier_allowlist", [])
         if str(item)
     ]
 
-    _check(checks, failures, "preparation_report_passed", preparation.get("passed") is True)
-    _check(
+    check(checks, failures, "preparation_report_passed", preparation.get("passed") is True)
+    check(
         checks,
         failures,
         "identity_registration_prerequisites_complete",
         registration.get("schema_version") == "i1-identity-registration-gate:v1"
         and registration.get("passed") is True
-        and _object(registration.get("readiness")).get("i1_execution_preflight_input_ready") is True,
+        and object_value(registration.get("readiness")).get("i1_execution_preflight_input_ready") is True,
     )
-    _check(checks, failures, "five_identities_present", len(identities) == 5)
-    _check(checks, failures, "eleven_cases_present", len(cases) == 11)
-    _check(
+    check(checks, failures, "five_identities_present", len(identities) == 5)
+    check(checks, failures, "eleven_cases_present", len(cases) == 11)
+    check(
         checks,
         failures,
         "default_quorum_excludes_proposer",
         bool(proposer) and proposer not in allowlist and len(set(allowlist)) >= MIN_QUORUM,
     )
-    _check(
+    check(
         checks,
         failures,
         "registered_receipts_match_prepared_identities",
@@ -87,52 +97,52 @@ def run_gate(
                 )
 
     quorum = _quorum_summary(cases=cases, verdicts=verdicts, allowlist=allowlist)
-    _check(
+    check(
         checks,
         failures,
         "all_verdict_signatures_verified",
         bool(verdicts) and all(item.get("signature_verified") is True for item in verdicts),
     )
-    _check(
+    check(
         checks,
         failures,
         "all_positive_cases_accepted_by_quorum",
         quorum.get("positive_cases_accepted") == 4,
     )
-    _check(
+    check(
         checks,
         failures,
         "all_negative_controls_rejected_by_quorum",
         quorum.get("negative_controls_rejected") == 7,
     )
-    _check(
+    check(
         checks,
         failures,
         "quorum_provider_independence_sufficient",
         _provider_independence(allowlist, identities_by_alias),
     )
-    _check(
+    check(
         checks,
         failures,
         "proposer_excluded_from_all_quorums",
         bool(quorum.get("case_quorums"))
         and all(proposer not in item.get("counted_verifier_aliases", []) for item in quorum["case_quorums"]),
     )
-    _check(
+    check(
         checks,
         failures,
         "hash_drift_negative_control_rejected",
         _case_quorum(quorum, "negative-hash-mismatch").get("quorum_decision") == "reject"
         and _case_quorum(quorum, "negative-hash-mismatch").get("failure_reason") == "artifact_hash_mismatch",
     )
-    _check(
+    check(
         checks,
         failures,
         "replay_negative_control_rejected",
         _case_quorum(quorum, "negative-response-replay").get("quorum_decision") == "reject"
         and _case_quorum(quorum, "negative-response-replay").get("failure_reason") == "verdict_receipt_replay",
     )
-    _check(
+    check(
         checks,
         failures,
         "provider_homogeneity_negative_control_rejected",
@@ -140,7 +150,7 @@ def run_gate(
         and _case_quorum(quorum, "negative-provider-homogeneity").get("failure_reason")
         == "provider_runtime_independence_missing",
     )
-    _check(
+    check(
         checks,
         failures,
         "identity_conflict_negative_control_rejected",
@@ -156,8 +166,8 @@ def run_gate(
         "failure_reasons": failures,
         "checks": checks,
         "source_artifacts": {
-            "preparation_report": _artifact_ref(preparation_report_path),
-            "identity_registration": _artifact_ref(identity_registration_path),
+            "preparation_report": artifact_ref(preparation_report_path),
+            "identity_registration": artifact_ref(identity_registration_path),
         },
         "matrix": {
             "verifier_count": len(identities),
@@ -197,8 +207,7 @@ def run_gate(
             "fixture_corpus_is_not_production_evidence",
         ],
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_object(output, report)
     return report
 
 
@@ -238,7 +247,7 @@ def _signed_verdict(
         "signature_hex": signature,
         "signature_verified": True,
         "signed_payload_sha256": hashlib.sha256(message).hexdigest(),
-        "signature_sha256": _sha256_text(signature),
+        "signature_sha256": sha256_text(signature),
     }
 
 
@@ -248,12 +257,12 @@ def _evaluate_case(
     proposer_alias: str,
 ) -> tuple[str, str | None]:
     artifact_path = Path(str(case.get("artifact_path") or ""))
-    actual_sha = _sha256(artifact_path)
-    artifact = _read_json(artifact_path)
-    metadata = _object(case.get("control_metadata"))
+    actual_sha = sha256_file(artifact_path)
+    artifact = read_json_object(artifact_path)
+    metadata = object_value(case.get("control_metadata"))
     if artifact.get("schema_version") != "i1-corpus-artifact:v1":
         return "reject", "schema_invalid"
-    boundary = _object(artifact.get("boundary"))
+    boundary = object_value(artifact.get("boundary"))
     if (
         boundary.get("read_only") is not True
         or boundary.get("external_side_effect_allowed") is not False
@@ -262,8 +271,8 @@ def _evaluate_case(
         return "reject", "boundary_violation"
     if actual_sha != str(case.get("artifact_sha256") or "") or actual_sha != str(case.get("claimed_sha256") or ""):
         return "reject", "artifact_hash_mismatch"
-    result = _object(artifact.get("result"))
-    checks = _object(result.get("checks"))
+    result = object_value(artifact.get("result"))
+    checks = object_value(result.get("checks"))
     if result.get("passed") is not True or any(value is not True for value in checks.values()):
         return "reject", "semantic_result_inconsistent"
     selection = [str(item) for item in metadata.get("verifier_selection", []) if str(item)]
@@ -350,46 +359,8 @@ def _case_quorum(quorum: dict[str, Any], case_id: str) -> dict[str, Any]:
     return {}
 
 
-def _check(
-    checks: dict[str, bool],
-    failures: list[str],
-    name: str,
-    passed: bool,
-) -> None:
-    checks[name] = bool(passed)
-    if not passed:
-        failures.append(name)
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"expected JSON object: {path}")
-    return value
-
-
-def _objects(value: Any) -> list[dict[str, Any]]:
-    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
-
-
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
 def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
 
 
 def main() -> None:
