@@ -12,14 +12,17 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import stat
-import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from benchmarks.i2_provider_runner import (
+    build_readonly_command_prompt,
+    call_openai_compatible,
+    parse_json_object_response,
+)
 
 CHAIN_SCHEMA = "i2b-real-external-readonly-command-chain:v1"
 OPERATOR_REVIEW_SCHEMA = "i2b-operator-review:v1"
@@ -215,8 +218,9 @@ def write_registration(*, operator_review_path: Path, env_file: Path, output: Pa
     host = urllib.parse.urlparse(base_url).hostname or ""
     _check(checks, failures, "operator_review_passed", review.get("schema_version") == OPERATOR_REVIEW_SCHEMA and review.get("passed") is True)
     _check(checks, failures, "env_file_mode_private", env_file.is_file() and stat.S_IMODE(env_file.stat().st_mode) & 0o077 == 0)
-    _check(checks, failures, "provider_is_openai_compatible", provider == "openai_compatible")
-    _check(checks, failures, "base_url_is_https", base_url.startswith("https://"))
+    local_http_allowed = _local_http_allowed(provider=provider, base_url=base_url, env=env)
+    _check(checks, failures, "provider_supported", provider in {"openai_compatible", "local_ollama_gpu"})
+    _check(checks, failures, "base_url_transport_allowed", base_url.startswith("https://") or local_http_allowed)
     _check(checks, failures, "api_key_present_not_recorded", bool(api_key))
     _check(checks, failures, "model_present", bool(model))
     passed = _passed(checks, failures)
@@ -233,6 +237,7 @@ def write_registration(*, operator_review_path: Path, env_file: Path, output: Pa
             "provider": provider,
             "provider_host": host,
             "model": model,
+            "local_http_loopback_allowed": local_http_allowed,
             "capabilities": ["read_only_artifact_review", "structured_receipt_generation", "boundary_attestation"],
             "registration_scope": "i2b_one_time_read_only_external_model_command",
             "api_key_present": bool(api_key),
@@ -313,11 +318,14 @@ def write_preflight(*, authorization_path: Path, registration_path: Path, env_fi
     api_key = env.get("BETA6_EXTERNAL_AGENT_API_KEY", "")
     command = _object(authorization.get("command"))
     agent = _object(registration.get("external_agent"))
+    provider_host = str(agent.get("provider_host") or "")
+    local_http_allowed = agent.get("local_http_loopback_allowed") is True
     _check(checks, failures, "authorization_passed", authorization.get("schema_version") == AUTHORIZATION_SCHEMA and authorization.get("passed") is True)
     _check(checks, failures, "registration_passed", registration.get("passed") is True)
     _check(checks, failures, "env_file_private", env_file.is_file() and stat.S_IMODE(env_file.stat().st_mode) & 0o077 == 0)
     _check(checks, failures, "api_key_present", bool(api_key))
-    _check(checks, failures, "provider_host_allowlisted", agent.get("provider_host") in command.get("provider_host_allowlist", []))
+    _check(checks, failures, "provider_host_allowlisted", provider_host in command.get("provider_host_allowlist", []))
+    _check(checks, failures, "provider_network_is_scoped", provider_host not in {"", "0.0.0.0"} and (provider_host not in {"127.0.0.1", "localhost", "::1"} or local_http_allowed))
     _check(checks, failures, "source_git_runtime_deploy_forbidden", set(FORBIDDEN_ACTIONS).issubset(set(command.get("forbidden_actions", []))))
     passed = _passed(checks, failures)
     report = {
@@ -330,6 +338,7 @@ def write_preflight(*, authorization_path: Path, registration_path: Path, env_fi
             "profile": "i2b_real_external_provider_read_only",
             "provider_api_network_allowed": True,
             "allowed_provider_hosts": command.get("provider_host_allowlist", []),
+            "local_http_loopback_allowed": local_http_allowed,
             "general_network_allowed": False,
             "source_tree_write_allowed": False,
             "git_allowed": False,
@@ -383,14 +392,17 @@ def write_api_call_report(
             content = api_response_override.replace("__COMMAND_ID__", str(command.get("command_id") or ""))
             http_status = 200
         else:
-            content, http_status = _call_openai_compatible(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                prompt=_prompt(command=command, i2a_excerpt=i2a_excerpt),
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            try:
+                content, http_status = _call_openai_compatible(
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    prompt=_prompt(command=command, i2a_excerpt=i2a_excerpt),
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            except RuntimeError as exc:
+                failures.append(f"external provider call failed: {exc}")
     parsed = _parse_response(content, failures) if content else {}
     _check(checks, failures, "provider_returned_http_200", http_status == 200)
     _check(checks, failures, "response_schema_valid", parsed.get("schema_version") == RESPONSE_SCHEMA)
@@ -590,93 +602,22 @@ def write_reconciliation(
 
 
 def _call_openai_compatible(*, base_url: str, api_key: str, model: str, prompt: str, max_tokens: int, temperature: float) -> tuple[str, int]:
-    endpoint = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are an external CivitasOS Agent. Return strict JSON only."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
+    return call_openai_compatible(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        prompt=prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            data = json.loads(raw)
-            choices = data.get("choices") if isinstance(data, dict) else []
-            if not choices:
-                raise RuntimeError("provider returned no choices")
-            content = choices[0].get("message", {}).get("content", "")
-            return str(content), int(response.status)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:800]
-        raise RuntimeError(f"external provider HTTP {exc.code}: {detail}") from exc
 
 
 def _prompt(*, command: dict[str, Any], i2a_excerpt: str) -> str:
-    return f"""
-You are executing a single I.2-B read-only external Agent command.
-
-Return strict JSON matching this schema:
-{{
-  "schema_version": "{RESPONSE_SCHEMA}",
-  "command_id": "{command.get('command_id')}",
-  "accepted": true,
-  "verdict": "accepted_scope_executed_read_only",
-  "summary": "one concise sentence",
-  "observations": ["2-4 concrete observations"],
-  "recommendation": "remain_blocked_for_real_task_commanding",
-  "boundary_attestation": {{
-    "network_used_only_for_provider_api": true,
-    "source_tree_modified": false,
-    "git_used": false,
-    "runtime_state_mutated": false,
-    "production_touched": false
-  }}
-}}
-
-Hard rules:
-- Do not ask for more context.
-- Do not claim source, Git, runtime, deploy, or production authority.
-- Do not recommend real task commanding without a separate operator gate.
-- Keep recommendation exactly one of: remain_blocked_for_real_task_commanding, operator_review_before_next_gate.
-
-Command envelope:
-{json.dumps(command, ensure_ascii=False, indent=2, sort_keys=True)}
-
-I.2-A summary excerpt:
-{i2a_excerpt}
-""".strip()
+    return build_readonly_command_prompt(response_schema=RESPONSE_SCHEMA, command=command, i2a_excerpt=i2a_excerpt)
 
 
 def _parse_response(content: str, failures: list[str]) -> dict[str, Any]:
-    text = content.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text).strip()
-    try:
-        value = json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            failures.append("external response was not JSON")
-            return {}
-        try:
-            value = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            failures.append("external response JSON parse failed")
-            return {}
-    if not isinstance(value, dict):
-        failures.append("external response JSON must be object")
-        return {}
-    return value
+    return parse_json_object_response(content, failures)
 
 
 def _safe_excerpt(path: Path, max_chars: int) -> str:
@@ -697,6 +638,15 @@ def _load_env(path: Path, failures: list[str]) -> dict[str, str]:
         key, value = line.split("=", 1)
         env[key.strip()] = value.strip().strip('"').strip("'")
     return env
+
+
+def _local_http_allowed(*, provider: str, base_url: str, env: dict[str, str]) -> bool:
+    if provider != "local_ollama_gpu":
+        return False
+    if env.get("BETA6_EXTERNAL_AGENT_ALLOW_LOCAL_HTTP", "").strip().lower() != "true":
+        return False
+    parsed = urllib.parse.urlparse(base_url)
+    return parsed.scheme == "http" and (parsed.hostname or "") in {"127.0.0.1", "localhost", "::1"}
 
 
 def _required_env(env: dict[str, str], key: str, failures: list[str]) -> str:

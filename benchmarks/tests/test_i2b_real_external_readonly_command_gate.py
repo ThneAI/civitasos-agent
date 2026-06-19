@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+import benchmarks.i2b_real_external_readonly_command_gate as gate
 from benchmarks.i2b_real_external_readonly_command_gate import RESPONSE_SCHEMA, run_gate, write_operator_review
 
 
@@ -61,6 +62,28 @@ def test_i2b_operator_review_blocks_failed_i2a(tmp_path: Path) -> None:
 
     assert report["passed"] is False
     assert report["checks"]["i2a_summary_passed"] is False
+
+
+def test_i2b_provider_exception_writes_fail_closed_receipts(tmp_path: Path, monkeypatch) -> None:
+    i2a = _write_i2a_summary(tmp_path, passed=True)
+    env_file = _write_env(tmp_path)
+
+    def fail_provider(**_: object) -> tuple[str, int]:
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(gate, "_call_openai_compatible", fail_provider)
+
+    summary = run_gate(
+        i2a_summary_path=i2a,
+        env_file=env_file,
+        output_root=tmp_path / "i2b_fail_closed",
+    )
+
+    assert summary["passed"] is False
+    api_call = json.loads((tmp_path / "i2b_fail_closed" / "i2b_real_external_agent_api_call_report.json").read_text())
+    assert api_call["passed"] is False
+    assert "external provider call failed: provider unavailable" in api_call["failure_reasons"]
+    assert summary["readiness"]["real_task_command_allowed"] is False
 
 
 def _write_i2a_summary(tmp_path: Path, *, passed: bool) -> Path:
