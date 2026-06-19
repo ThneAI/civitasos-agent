@@ -10,7 +10,6 @@ GitHub, model, backend, preview, deploy, or production runtime actions.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +37,11 @@ except ModuleNotFoundError:
         build_governance_evidence,
         build_runtime_evidence,
     )
+
+try:
+    from beta_evidence import read_json_or_empty, sha256_file, write_json
+except ModuleNotFoundError:
+    from scripts.beta_evidence import read_json_or_empty, sha256_file, write_json
 
 CHAIN_SCHEMA = "beta-fe-frontend-chain-closeout-summary:v1"
 HANDOFF_SCHEMA = "beta-fe-frontend-chain-operator-handoff:v1"
@@ -551,18 +555,7 @@ def _validate_h3(value: Any, failures: list[str], label: str) -> None:
 
 
 def _read_json(path: Path | None, failures: list[str], label: str) -> dict[str, Any]:
-    if path is None or not path.is_file():
-        failures.append(f"missing {label}: {path}")
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        failures.append(f"invalid {label}: {exc}")
-        return {}
-    if not isinstance(value, dict):
-        failures.append(f"{label} must be a JSON object")
-        return {}
-    return value
+    return read_json_or_empty(path, failures, label)
 
 
 def _required_text(value: Any, failures: list[str], label: str) -> str:
@@ -585,12 +578,11 @@ def _bundle_ref_count(value: Any) -> int:
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return sha256_file(path)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json(path, payload)
 
 
 def _now() -> str:

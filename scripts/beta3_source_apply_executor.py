@@ -11,13 +11,33 @@ production runtime actions, or writes production receipts.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from beta_evidence import (
+        artifact_ref as _evidence_artifact_ref,
+        artifact_ref_or_path as _evidence_artifact_ref_or_path,
+        read_json_object,
+        safe_read_json_object,
+        sha256_file,
+        validate_ref_bytes,
+        write_json,
+    )
+except ModuleNotFoundError:
+    from scripts.beta_evidence import (
+        artifact_ref as _evidence_artifact_ref,
+        artifact_ref_or_path as _evidence_artifact_ref_or_path,
+        read_json_object,
+        safe_read_json_object,
+        sha256_file,
+        validate_ref_bytes,
+        write_json,
+    )
 
 from beta2_patch_proposal import parse_patch_target_paths
 from beta3_source_apply_authorization import AUTHORIZATION_SCHEMA
@@ -416,16 +436,11 @@ def _validate_ref_path(ref: dict[str, Any], label: str) -> Path:
 
 
 def _artifact_ref(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise FileNotFoundError(f"artifact path is not a file: {path}")
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
+    return _evidence_artifact_ref(path)
 
 
 def _artifact_ref_or_path(path: Path) -> dict[str, str | None]:
-    return {
-        "path": str(path.resolve()),
-        "sha256": _sha256(path) if path.is_file() else None,
-    }
+    return _evidence_artifact_ref_or_path(path)
 
 
 def _append_code(codes: list[str], code: str) -> None:
@@ -448,38 +463,15 @@ def _as_dict(value: Any, failures: list[str], label: str) -> dict[str, Any]:
 
 
 def _validate_ref_bytes(ref: dict[str, Any], failures: list[str], label: str) -> Path | None:
-    path_text = str(ref.get("path") or "").strip()
-    if not path_text:
-        failures.append(f"{label}.path must be a non-empty string")
-        return None
-    path = Path(path_text)
-    if not path.is_file():
-        failures.append(f"{label}.path is not a file: {path}")
-        return None
-    if ref.get("sha256") != _sha256(path):
-        failures.append(f"{label}.sha256 does not match file bytes")
-    return path
+    return validate_ref_bytes(ref, failures, label)
 
 
 def _safe_read_json(path: Path | None, failures: list[str], label: str) -> Any:
-    if path is None:
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 - validation needs artifact reason.
-        failures.append(f"{label} could not be read: {exc}")
-        return None
-    if not isinstance(payload, dict):
-        failures.append(f"{label} must be a JSON object")
-        return None
-    return payload
+    return safe_read_json_object(path, failures, label)
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"JSON object required: {path}")
-    return payload
+    return read_json_object(path)
 
 
 def _validate_false_boundary_flags(payload: dict[str, Any], failures: list[str]) -> None:
@@ -520,12 +512,11 @@ def _receipt_validation_report(path: Path, failures: list[str]) -> dict[str, Any
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json(path, payload)
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return sha256_file(path)
 
 
 def _now() -> str:

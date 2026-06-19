@@ -34,6 +34,23 @@ except ModuleNotFoundError:
     from scripts.civitasos_contracts.auth import CivitasHttpClient
 
 try:
+    from beta_evidence import (
+        artifact_ref as _evidence_artifact_ref,
+        read_json_any_or_empty,
+        sha256_file,
+        validate_ref as _evidence_validate_ref,
+        write_json,
+    )
+except ModuleNotFoundError:
+    from scripts.beta_evidence import (
+        artifact_ref as _evidence_artifact_ref,
+        read_json_any_or_empty,
+        sha256_file,
+        validate_ref as _evidence_validate_ref,
+        write_json,
+    )
+
+try:
     from beta_fe_ollama_native_reviewer import OllamaNativeReviewer, OllamaReviewResult, patch_review_as_text
 except ModuleNotFoundError:
     from scripts.beta_fe_ollama_native_reviewer import OllamaNativeReviewer, OllamaReviewResult, patch_review_as_text
@@ -835,45 +852,23 @@ def _extract_openai_content(payload: dict[str, Any]) -> str:
 
 
 def _read_json(path: Path, failures: list[str], label: str) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        failures.append(f"{label} not found: {path}")
-    except json.JSONDecodeError as exc:
-        failures.append(f"{label} is not valid JSON: {exc}")
-    return {}
+    return read_json_any_or_empty(path, failures, label)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json(path, payload)
 
 
 def _artifact_ref(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise FileNotFoundError(f"artifact path is not a file: {path}")
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
+    return _evidence_artifact_ref(path)
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path)
 
 
 def _validate_ref(value: Any, failures: list[str], label: str) -> None:
-    if not isinstance(value, dict):
-        failures.append(f"{label} must be an object ref")
-        return
-    path = Path(str(value.get("path") or ""))
-    expected = str(value.get("sha256") or "")
-    if not path.is_file():
-        failures.append(f"{label}.path does not exist: {path}")
-        return
-    if expected and _sha256(path) != expected:
-        failures.append(f"{label}.sha256 does not match file content")
+    _evidence_validate_ref(value, failures, label)
 
 
 def _validate_boundary(value: Any, failures: list[str], label: str) -> None:
