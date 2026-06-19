@@ -9,11 +9,45 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from benchmarks.h3_evidence import artifact_ref, write_json_object
+from benchmarks.h3_evidence import artifact_ref, sha256_file, write_json_object
 
 CONSUMPTION_SCHEMA_VERSION = "h3-controlled-pilot-authorization-consumption:v1"
 AUTHORIZATION_RECEIPT_SCHEMA_VERSION = "h3-one-time-authorization-receipt:v1"
 POST_RUN_RECEIPT_SCHEMA_VERSION = "h3-controlled-pilot-post-run-receipt:v1"
+
+
+def build_authorization_receipt(
+    *,
+    decision: dict[str, Any],
+    decision_packet_path: Path,
+) -> dict[str, Any]:
+    """Build the immutable one-time authorization receipt for an approved A6 decision."""
+    seed = {
+        "request_id": decision["request_id"],
+        "request_sha256": decision["request_sha256"],
+        "decision_packet_sha256": sha256_file(decision_packet_path),
+        "decided_at": decision["decided_at"],
+    }
+    return {
+        "schema_version": AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
+        "authorization_receipt_id": (
+            f"h3-one-time-authorization:{_canonical_sha256(seed)[:20]}"
+        ),
+        "state": "one_time_authorization_granted_pending_execution_preflight",
+        "request_id": decision["request_id"],
+        "request_sha256": decision["request_sha256"],
+        "decision_packet_sha256": sha256_file(decision_packet_path),
+        "authorized_scope": decision["requested_scope"],
+        "operator_id": decision["operator_id"],
+        "monitoring_owner_id": decision["monitoring_owner_id"],
+        "audit_owner_id": decision["audit_owner_id"],
+        "valid_from": decision["valid_from"],
+        "valid_until": decision["valid_until"],
+        "controls": decision["controls"],
+        "single_use": True,
+        "consumed": False,
+        "controlled_pilot_execution_allowed": False,
+    }
 
 
 def claim_authorization(

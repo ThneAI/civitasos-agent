@@ -18,9 +18,7 @@ from benchmarks.h3_evidence import (
     sha256_file,
     write_json_object,
 )
-from benchmarks.h3_controlled_pilot_receipts import (
-    AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
-)
+from benchmarks.h3_controlled_pilot_receipts import build_authorization_receipt
 from benchmarks.h3_controlled_pilot_authorization_request_gate import (
     BOUNDARY as REQUEST_BOUNDARY,
 )
@@ -251,7 +249,14 @@ def reconcile_authorization_decisions(
 
     passed = not failures and all(checks.values())
     authorized = (
-        [_build_receipt(item, packet_path) for item in decisions if item["decision"] == "authorize_once"]
+        [
+            build_authorization_receipt(
+                decision=item,
+                decision_packet_path=packet_path,
+            )
+            for item in decisions
+            if item["decision"] == "authorize_once"
+        ]
         if passed
         else []
     )
@@ -627,35 +632,6 @@ def _pending_decision(request: dict[str, Any]) -> dict[str, Any]:
         "valid_from": None,
         "valid_until": None,
         "controls": {field: None for field in CONTROL_FIELDS},
-    }
-
-
-def _build_receipt(item: dict[str, Any], packet_path: Path) -> dict[str, Any]:
-    seed = {
-        "request_id": item["request_id"],
-        "request_sha256": item["request_sha256"],
-        "decision_packet_sha256": sha256_file(packet_path),
-        "decided_at": item["decided_at"],
-    }
-    return {
-        "schema_version": AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
-        "authorization_receipt_id": (
-            f"h3-one-time-authorization:{_canonical_sha256(seed)[:20]}"
-        ),
-        "state": "one_time_authorization_granted_pending_execution_preflight",
-        "request_id": item["request_id"],
-        "request_sha256": item["request_sha256"],
-        "decision_packet_sha256": sha256_file(packet_path),
-        "authorized_scope": item["requested_scope"],
-        "operator_id": item["operator_id"],
-        "monitoring_owner_id": item["monitoring_owner_id"],
-        "audit_owner_id": item["audit_owner_id"],
-        "valid_from": item["valid_from"],
-        "valid_until": item["valid_until"],
-        "controls": item["controls"],
-        "single_use": True,
-        "consumed": False,
-        "controlled_pilot_execution_allowed": False,
     }
 
 
