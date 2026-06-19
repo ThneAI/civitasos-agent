@@ -39,6 +39,27 @@ except ModuleNotFoundError:
         write_json,
     )
 
+try:
+    from beta3_source_apply_boundaries import (
+        NON_CLAIMS,
+        h3_boundary as _h3_boundary,
+        source_apply_operator_followup as _source_apply_operator_followup,
+        source_apply_outcome as _source_apply_outcome,
+        test_evidence_status as _test_evidence_status,
+        validate_false_boundary_flags as _validate_false_boundary_flags,
+        validate_h3_boundary as _validate_h3_boundary,
+    )
+except ModuleNotFoundError:
+    from scripts.beta3_source_apply_boundaries import (
+        NON_CLAIMS,
+        h3_boundary as _h3_boundary,
+        source_apply_operator_followup as _source_apply_operator_followup,
+        source_apply_outcome as _source_apply_outcome,
+        test_evidence_status as _test_evidence_status,
+        validate_false_boundary_flags as _validate_false_boundary_flags,
+        validate_h3_boundary as _validate_h3_boundary,
+    )
+
 from beta2_patch_proposal import parse_patch_target_paths
 from beta3_source_apply_authorization import AUTHORIZATION_SCHEMA
 from beta3_source_apply_authorization import validate_source_apply_authorization
@@ -47,12 +68,6 @@ from beta3_source_apply_authorization import validate_source_apply_authorization
 EXECUTION_SCHEMA = "beta3-source-apply-execution-report:v1"
 RECEIPT_SCHEMA = "beta3-post-source-apply-receipt:v1"
 RECEIPT_VALIDATION_SCHEMA = "beta3-post-source-apply-receipt-validation:v1"
-NON_CLAIMS = (
-    "beta3_source_apply_executor_is_l1_controlled_pilot_only",
-    "beta3_source_apply_executor_does_not_commit_push_merge_or_deploy",
-    "beta3_source_apply_executor_does_not_claim_h3_production_readiness",
-    "beta3_source_apply_executor_does_not_write_production_receipts",
-)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -353,43 +368,6 @@ def _authorization_refusal_report(authorization_path: Path, validation: dict[str
     }
 
 
-def _source_apply_outcome(
-    *,
-    source_apply_performed: bool,
-    failure_codes: list[str],
-    test_runs: list[dict[str, Any]],
-) -> str:
-    if "post_apply_test_failed" in failure_codes:
-        return "applied_tests_failed"
-    if source_apply_performed and test_runs:
-        return "applied_tests_passed"
-    if source_apply_performed:
-        return "applied_without_tests"
-    if "source_apply_check_refused" in failure_codes:
-        return "apply_check_refused"
-    if "source_apply_failed" in failure_codes:
-        return "apply_failed"
-    return "blocked_before_verified_apply"
-
-
-def _source_apply_operator_followup(failure_codes: list[str]) -> dict[str, Any]:
-    test_failure = "post_apply_test_failed" in failure_codes
-    return {
-        "required": bool(failure_codes),
-        "reason_codes": failure_codes,
-        "rollback_decision_required": test_failure,
-        "automatic_rollback_performed": False,
-    }
-
-
-def _test_evidence_status(test_runs: list[dict[str, Any]]) -> str:
-    if not test_runs:
-        return "not_run"
-    if any(run["returncode"] != 0 for run in test_runs):
-        return "failed"
-    return "passed"
-
-
 def _validate_allowlist(target_paths: list[str], prefixes: Any, failures: list[str]) -> None:
     allowed = [item for item in prefixes if isinstance(item, str)] if isinstance(prefixes, list) else []
     if not allowed:
@@ -472,31 +450,6 @@ def _safe_read_json(path: Path | None, failures: list[str], label: str) -> Any:
 
 def _read_json_object(path: Path) -> dict[str, Any]:
     return read_json_object(path)
-
-
-def _validate_false_boundary_flags(payload: dict[str, Any], failures: list[str]) -> None:
-    for flag in (
-        "commit_allowed",
-        "push_allowed",
-        "merge_allowed",
-        "deploy_allowed",
-        "production_runtime_execution_allowed",
-        "production_receipt_write_allowed",
-    ):
-        if payload.get(flag) is not False:
-            failures.append(f"{flag} must be false")
-
-
-def _validate_h3_boundary(payload: dict[str, Any], failures: list[str]) -> None:
-    boundary = _as_dict(payload.get("h3_boundary"), failures, "h3_boundary")
-    if boundary.get("h3_remains_blocked") is not True:
-        failures.append("h3_boundary.h3_remains_blocked must be true")
-    if boundary.get("h3_production_readiness_claimed") is not False:
-        failures.append("h3_boundary.h3_production_readiness_claimed must be false")
-
-
-def _h3_boundary() -> dict[str, bool]:
-    return {"h3_remains_blocked": True, "h3_production_readiness_claimed": False}
 
 
 def _receipt_validation_report(path: Path, failures: list[str]) -> dict[str, Any]:
