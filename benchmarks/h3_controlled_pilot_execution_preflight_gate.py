@@ -18,6 +18,9 @@ from benchmarks.h3_evidence import (
     sha256_file,
     write_json_object,
 )
+from benchmarks.h3_controlled_pilot_receipts import (
+    AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
+)
 from benchmarks.h3_controlled_pilot_authorization_decision_gate import (
     BOUNDARY as AUTHORIZATION_BOUNDARY,
 )
@@ -338,6 +341,12 @@ def _validate_receipt_window(
     valid_from = _timestamp(receipt.get("valid_from"))
     valid_until = _timestamp(receipt.get("valid_until"))
     scope = object_value(receipt.get("authorized_scope"))
+    _require(
+        checks,
+        failures,
+        "authorization_receipt_schema",
+        receipt.get("schema_version") == AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
+    )
     _require(
         checks,
         failures,

@@ -14,6 +14,9 @@ from benchmarks.h3_controlled_pilot_authorization_decision_gate import (
 from benchmarks.h3_controlled_pilot_authorization_request_gate import (
     build_authorization_request_gate,
 )
+from benchmarks.h3_controlled_pilot_receipts import (
+    AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
+)
 from benchmarks.tests.test_h3_controlled_pilot_authorization_request_gate import (
     _write_sources,
 )
@@ -73,7 +76,10 @@ def test_authorize_once_writes_receipts_but_does_not_execute(
     assert report["readiness"]["controlled_pilot_execution_ready"] is False
     assert len(report["authorization_receipts"]) == 2
     assert all(
-        receipt["single_use"] is True
+        (
+            receipt["schema_version"] == AUTHORIZATION_RECEIPT_SCHEMA_VERSION
+            and receipt["single_use"] is True
+        )
         and receipt["consumed"] is False
         and receipt["controlled_pilot_execution_allowed"] is False
         for receipt in report["authorization_receipts"]

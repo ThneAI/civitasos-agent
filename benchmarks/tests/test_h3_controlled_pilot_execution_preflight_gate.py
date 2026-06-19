@@ -15,6 +15,9 @@ from benchmarks.h3_controlled_pilot_authorization_request_gate import (
 from benchmarks.h3_controlled_pilot_execution_preflight_gate import (
     build_execution_preflight,
 )
+from benchmarks.h3_controlled_pilot_receipts import (
+    AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
+)
 from benchmarks.tests.test_h3_controlled_pilot_authorization_request_gate import (
     _write_sources,
 )
@@ -40,6 +43,10 @@ def test_valid_receipt_builds_runner_input_without_execution(tmp_path: Path) -> 
     assert report["boundary"]["controlled_runner_input_ready"] is True
     assert report["boundary"]["agent_dispatch_allowed"] is False
     assert report["boundary"]["runtime_execution_allowed"] is False
+    assert (
+        report["authorization_receipt"]["schema_version"]
+        == AUTHORIZATION_RECEIPT_SCHEMA_VERSION
+    )
     assert Path(report["rollback_checkpoint"]["path"]).is_file()
 
 

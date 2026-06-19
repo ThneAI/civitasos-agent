@@ -18,6 +18,9 @@ from benchmarks.h3_evidence import (
     sha256_file,
     write_json_object,
 )
+from benchmarks.h3_controlled_pilot_receipts import (
+    AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
+)
 from benchmarks.h3_controlled_pilot_authorization_request_gate import (
     BOUNDARY as REQUEST_BOUNDARY,
 )
@@ -635,6 +638,7 @@ def _build_receipt(item: dict[str, Any], packet_path: Path) -> dict[str, Any]:
         "decided_at": item["decided_at"],
     }
     return {
+        "schema_version": AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
         "authorization_receipt_id": (
             f"h3-one-time-authorization:{_canonical_sha256(seed)[:20]}"
         ),
