@@ -10,36 +10,33 @@ not authorize commit/push/merge/deploy/production actions.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import re
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import beta_fe26_agent_runner_mediation as fe26
+from beta_fe_four_agent_evidence import (
+    REQUIRED_PARTICIPANTS,
+    artifact_ref as _artifact_ref,
+    boundary as _boundary,
+    excerpt as _excerpt,
+    extract_verdict as _extract_verdict,
+    failure_reasons as _failure_reasons,
+    frontend_snapshot as _shared_frontend_snapshot,
+    git_text as _git,
+    h3_boundary as _h3_boundary,
+    line_count as _line_count,
+    participant_ids as _participant_ids,
+    read_json_object as _read_json,
+    response_summaries as _response_summaries,
+    write_json as _write_json,
+)
 
 PACKET_SCHEMA = "beta-fe2-frontend-patch-proposal-packet:v1"
 SUMMARY_SCHEMA = "beta-fe12-four-agent-frontend-mediation-summary:v1"
 RECONCILIATION_SCHEMA = "beta-fe12-four-agent-frontend-reconciliation:v1"
 PATCH_SLICE_ID = "task_pool_presentation_extraction"
-REQUIRED_PARTICIPANTS = (
-    ("deepseek-api-agent", "implementation_proposer", "minimal implementation plan and file boundary"),
-    ("claude-cli-agent", "architecture_reviewer", "architecture risk and boundary review"),
-    ("hermes-cli-agent", "ux_product_reviewer", "operator workflow and UX impact critique"),
-    ("local-gpu-agent", "smoke_verifier", "test/build/smoke checklist and rollback risks"),
-)
-FALSE_BOUNDARY_FIELDS = (
-    "frontend_code_modified",
-    "apply_allowed",
-    "commit_allowed",
-    "push_allowed",
-    "merge_allowed",
-    "deploy_allowed",
-    "production_runtime_execution_allowed",
-    "production_receipt_write_allowed",
-)
 NON_CLAIMS = (
     "beta_fe12_posts_civitasos_pool_tasks_before_agent_generation",
     "beta_fe12_requires_each_agent_to_claim_generate_deliver",
@@ -155,31 +152,7 @@ def write_packet(*, frontend_root: Path, output_root: Path) -> dict[str, Any]:
 
 def write_reconciliation(*, output_root: Path, mediation_root: Path, mediation: dict[str, Any]) -> dict[str, Any]:
     findings: list[str] = []
-    response_summaries: list[dict[str, Any]] = []
-    for participant_id in mediation.get("runner_participant_ids", []):
-        receipt_path = mediation_root / f"{participant_id}.task_receipt.json"
-        receipt = _read_json(receipt_path)
-        generation_ref = receipt.get("generation_response", {}) if isinstance(receipt, dict) else {}
-        generation_path = Path(str(generation_ref.get("path") or ""))
-        content = generation_path.read_text(encoding="utf-8") if generation_path.is_file() else ""
-        verdict = _extract_verdict(content)
-        if not content:
-            findings.append(f"{participant_id} generation response is missing")
-        if verdict == "inconclusive":
-            findings.append(f"{participant_id} did not provide a clear proceed/revise/reject verdict")
-        response_summaries.append({
-            "participant_id": participant_id,
-            "task_id": receipt.get("task_id"),
-            "runner_kind": receipt.get("runner_kind"),
-            "final_status": receipt.get("final_task", {}).get("status"),
-            "claim_observed": receipt.get("claim_observed"),
-            "generation_observed_after_claim": receipt.get("generation_observed_after_claim"),
-            "delivery_observed": receipt.get("delivery_observed"),
-            "verdict": verdict,
-            "generation_response": generation_ref,
-            "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest() if content else None,
-            "content_excerpt": content[:1200],
-        })
+    response_summaries = _response_summaries(mediation_root=mediation_root, mediation=mediation, findings=findings)
     verdict_counts = {verdict: sum(1 for item in response_summaries if item["verdict"] == verdict) for verdict in ("proceed", "revise", "reject", "inconclusive")}
     required = {participant_id for participant_id, _, _ in REQUIRED_PARTICIPANTS}
     observed = {str(item.get("participant_id")) for item in response_summaries}
@@ -232,13 +205,21 @@ def write_reconciliation(*, output_root: Path, mediation_root: Path, mediation: 
 
 
 def _frontend_snapshot(frontend_root: Path) -> dict[str, Any]:
+    snapshot = _shared_frontend_snapshot(
+        frontend_root,
+        (
+            "src/components/TaskPoolPanel.tsx",
+            "src/services/taskPoolApi.ts",
+            "src/adapters/TaskReadAdapter.ts",
+        ),
+    )
     return {
-        "head_commit": _git(frontend_root, "rev-parse", "HEAD"),
-        "head_short": _git(frontend_root, "rev-parse", "--short", "HEAD"),
-        "status_short": [line for line in _git(frontend_root, "status", "--short").splitlines() if line.strip()],
-        "task_pool_panel_lines": _line_count(frontend_root / "src/components/TaskPoolPanel.tsx"),
-        "task_pool_api_lines": _line_count(frontend_root / "src/services/taskPoolApi.ts"),
-        "task_read_adapter_lines": _line_count(frontend_root / "src/adapters/TaskReadAdapter.ts"),
+        "head_commit": snapshot["head_commit"],
+        "head_short": snapshot["head_short"],
+        "status_short": snapshot["status_short"],
+        "task_pool_panel_lines": snapshot["focus_file_lines"]["src/components/TaskPoolPanel.tsx"],
+        "task_pool_api_lines": snapshot["focus_file_lines"]["src/services/taskPoolApi.ts"],
+        "task_read_adapter_lines": snapshot["focus_file_lines"]["src/adapters/TaskReadAdapter.ts"],
     }
 
 
@@ -312,74 +293,8 @@ This is a CivitasOS-mediated task. You will only respond after your worker ident
 """
 
 
-def _extract_verdict(content: str) -> str:
-    text = content.lower()
-    patterns = [
-        r"patch proposal verdict\s*[:\-]\s*(proceed|revise|reject|inconclusive)",
-        r"verdict\s*[:\-]\s*(proceed|revise|reject|inconclusive)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1)
-    for verdict in ("reject", "revise", "proceed"):
-        if verdict in text[:1200]:
-            return verdict
-    return "inconclusive"
-
-
-def _participant_ids(packet: dict[str, Any]) -> tuple[str, ...]:
-    return tuple(str(item.get("participant_id")) for item in packet.get("participants", []) if isinstance(item, dict))
-
-
-def _failure_reasons(mediation: dict[str, Any], reconciliation: dict[str, Any]) -> list[str]:
-    reasons: list[str] = []
-    reasons.extend(str(item) for item in mediation.get("failure_reasons", []) if item)
-    reasons.extend(str(item) for item in reconciliation.get("failure_reasons", []) if item)
-    return reasons
-
-
-def _boundary() -> dict[str, bool]:
-    return {field: False for field in FALSE_BOUNDARY_FIELDS}
-
-
-def _h3_boundary() -> dict[str, bool]:
-    return {"h3_remains_blocked": True, "h3_production_readiness_claimed": False}
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    data = path.read_bytes()
-    return {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest()}
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", *args], cwd=repo, text=True, capture_output=True, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or f"git {' '.join(args)} failed")
-    return result.stdout.strip()
-
-
-def _line_count(path: Path) -> int:
-    return len(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else 0
-
-
-def _excerpt(path: Path, max_lines: int) -> str:
-    if not path.is_file():
-        return ""
-    return "\n".join(path.read_text(encoding="utf-8").splitlines()[:max_lines])
 
 
 if __name__ == "__main__":

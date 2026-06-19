@@ -10,11 +10,29 @@ writes.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from beta_preview_evidence import (
+        artifact_ref as _preview_artifact_ref,
+        boundary as _preview_boundary,
+        expect_h3_blocked as _preview_expect_h3_blocked,
+        h3_boundary as _preview_h3_boundary,
+        sha256 as _preview_sha256,
+        write_json as _preview_write_json,
+    )
+except ModuleNotFoundError:
+    from scripts.beta_preview_evidence import (
+        artifact_ref as _preview_artifact_ref,
+        boundary as _preview_boundary,
+        expect_h3_blocked as _preview_expect_h3_blocked,
+        h3_boundary as _preview_h3_boundary,
+        sha256 as _preview_sha256,
+        write_json as _preview_write_json,
+    )
 
 HANDOFF_SCHEMA = "beta-preview-operator-handoff:v1"
 CHAIN_SCHEMA = "beta-preview-chain-run-summary:v1"
@@ -108,16 +126,8 @@ def write_beta_preview_operator_handoff(
         "roles": normalized_roles,
         "handoff_metrics": metrics,
         "required_operator_checks": _operator_checks(metrics),
-        "handoff_boundary": {
-            "l1_beta_controlled_preview_only": True,
-            "merge_allowed": False,
-            "deploy_allowed": False,
-            "production_deploy_allowed": False,
-            "production_runtime_execution_allowed": False,
-            "production_receipt_write_allowed": False,
-            "h3_production_readiness_claimed": False,
-        },
-        "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
+        "handoff_boundary": _boundary(),
+        "h3_boundary": _h3_boundary(),
         "next_operator_actions": [
             "review beta_preview_chain_summary.json and referenced hashes",
             "confirm provider preflight passed without recording API keys",
@@ -308,26 +318,27 @@ def _expect_false(payload: dict[str, Any], key: str, failures: list[str], label:
 
 
 def _expect_h3_blocked(payload: dict[str, Any], failures: list[str], label: str) -> None:
-    boundary = payload.get("h3_boundary") if isinstance(payload.get("h3_boundary"), dict) else {}
-    if boundary.get("h3_remains_blocked") is not True:
-        failures.append(f"{label}.h3_boundary.h3_remains_blocked must be true")
-    if boundary.get("h3_production_readiness_claimed") is not False:
-        failures.append(f"{label}.h3_boundary.h3_production_readiness_claimed must be false")
+    _preview_expect_h3_blocked(payload, failures, label)
+
+
+def _boundary() -> dict[str, bool]:
+    return _preview_boundary()
+
+
+def _h3_boundary() -> dict[str, bool]:
+    return _preview_h3_boundary()
 
 
 def _artifact_ref(path: Path) -> dict[str, str | None]:
-    if not path.is_file():
-        return {"path": str(path), "sha256": None}
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
+    return _preview_artifact_ref(path)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _preview_write_json(path, payload)
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return _preview_sha256(path)
 
 
 def _now() -> str:
