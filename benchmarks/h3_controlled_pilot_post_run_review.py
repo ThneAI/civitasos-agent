@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
+from benchmarks.h3_evidence import artifact_ref, object_value, read_json_object, resolve_under_root, sha256_file, write_json_object
 from benchmarks.h3_controlled_pilot_runner import (
     LEGACY_TASK_SCHEMA_VERSION,
     POST_RUN_RECEIPT_SCHEMA_VERSION,
@@ -26,31 +26,31 @@ def review_post_run_receipt(
     output_path: Path,
     agent_root: Path,
 ) -> dict[str, Any]:
-    receipt_path = _resolve(post_run_receipt_path, agent_root)
-    output = _resolve(output_path, agent_root)
+    receipt_path = resolve_under_root(post_run_receipt_path, agent_root)
+    output = resolve_under_root(output_path, agent_root)
     failures: list[str] = []
-    receipt = _read_json(receipt_path, failures, "post-run receipt")
-    task_ref = _object(_object(receipt).get("task"))
+    receipt = read_json_object(receipt_path, failures, "post-run receipt")
+    task_ref = object_value(object_value(receipt).get("task"))
     task_path = Path(str(task_ref.get("path") or "/missing-task"))
-    task = _read_json(task_path, failures, "controlled task")
+    task = read_json_object(task_path, failures, "controlled task")
     reports: list[dict[str, Any]] = []
 
-    if _object(receipt).get("schema_version") != POST_RUN_RECEIPT_SCHEMA_VERSION:
+    if object_value(receipt).get("schema_version") != POST_RUN_RECEIPT_SCHEMA_VERSION:
         failures.append("post-run receipt schema mismatch")
-    if _object(task).get("schema_version") not in {
+    if object_value(task).get("schema_version") not in {
         TASK_SCHEMA_VERSION,
         LEGACY_TASK_SCHEMA_VERSION,
     }:
         failures.append("controlled task schema mismatch")
-    if task_path.is_file() and _sha256(task_path) != task_ref.get("sha256"):
+    if task_path.is_file() and sha256_file(task_path) != task_ref.get("sha256"):
         failures.append("controlled task hash mismatch")
-    side_effects = _object(_object(receipt).get("side_effects"))
-    profile = str(_object(receipt).get("validation_profile") or "development")
+    side_effects = object_value(object_value(receipt).get("side_effects"))
+    profile = str(object_value(receipt).get("validation_profile") or "development")
     if profile not in {"development", "qualification"}:
         failures.append("post-run receipt profile unsupported")
-    if _object(receipt).get("development_only") is not (profile == "development"):
+    if object_value(receipt).get("development_only") is not (profile == "development"):
         failures.append("post-run receipt development flag mismatch")
-    boundary = _object(_object(receipt).get("boundary"))
+    boundary = object_value(object_value(receipt).get("boundary"))
     if boundary.get("production_use_allowed") is not False:
         failures.append("post-run receipt production boundary mismatch")
     if boundary.get("result_valid_for_qualification") is not False:
@@ -67,17 +67,17 @@ def review_post_run_receipt(
     ):
         failures.append("forbidden state mutation observed")
 
-    for ref in _object(receipt).get("generation_reports", []):
-        ref = _object(ref)
+    for ref in object_value(receipt).get("generation_reports", []):
+        ref = object_value(ref)
         path = Path(str(ref.get("path") or "/missing-generation-report"))
-        report = _read_json(path, failures, "generation report")
-        if path.is_file() and _sha256(path) != ref.get("sha256"):
+        report = read_json_object(path, failures, "generation report")
+        if path.is_file() and sha256_file(path) != ref.get("sha256"):
             failures.append(f"generation report hash mismatch: {path}")
         if report is not None:
             normalized = dict(report)
             normalized["passed"] = _valid_agent_payload(
-                _object(report.get("response")),
-                _object(task),
+                object_value(report.get("response")),
+                object_value(task),
                 strict_evidence_refs=profile == "qualification",
             )
             reports.append(normalized)
@@ -93,8 +93,8 @@ def review_post_run_receipt(
         "validation_profile": profile,
         "development_only": profile == "development",
         "valid_for_qualification": False,
-        "source_post_run_receipt": _artifact_ref(receipt_path),
-        "source_task": _artifact_ref(task_path) if task_path.is_file() else None,
+        "source_post_run_receipt": artifact_ref(receipt_path),
+        "source_task": artifact_ref(task_path) if task_path.is_file() else None,
         "generation_report_count": len(reports),
         "valid_generation_report_count": sum(
             item.get("passed") is True for item in reports
@@ -117,51 +117,8 @@ def review_post_run_receipt(
             "review_is_not_qualification_evidence",
         ],
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
-
-
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _read_json(
-    path: Path,
-    failures: list[str],
-    label: str,
-) -> dict[str, Any] | None:
-    if not path.is_file():
-        failures.append(f"{label} missing: {path}")
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        failures.append(f"{label} invalid: {exc}")
-        return None
-    if not isinstance(value, dict):
-        failures.append(f"{label} must be an object")
-        return None
-    return value
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _resolve(path: Path, root: Path) -> Path:
-    return path.resolve() if path.is_absolute() else (root / path).resolve()
-
-
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
 
 
 def main() -> None:

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from benchmarks.h3_evidence import artifact_ref, object_value, read_required_json_object, sha256_file
 from benchmarks.h3_relation_learning_replication_gate import (
     EXPECTED_OUTCOMES,
     SCHEMA_VERSION as REPLICATION_SCHEMA_VERSION,
@@ -38,9 +38,9 @@ def run_gate(
 ) -> dict[str, Any]:
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    source_reports = [_read_json(path) for path in evidence_reports]
-    replication = _read_json(replication_report_path)
-    prior_a9 = _read_json(prior_a9_reconciliation_path)
+    source_reports = [read_required_json_object(path) for path in evidence_reports]
+    replication = read_required_json_object(replication_report_path)
+    prior_a9 = read_required_json_object(prior_a9_reconciliation_path)
     records = _semantic_records(evidence_reports, source_reports)
 
     _check(
@@ -50,7 +50,7 @@ def run_gate(
         replication.get("schema_version") == REPLICATION_SCHEMA_VERSION
         and replication.get("passed") is True,
     )
-    replication_checks = _object(replication.get("checks"))
+    replication_checks = object_value(replication.get("checks"))
     _check(
         checks,
         failures,
@@ -132,12 +132,12 @@ def run_gate(
         == "h3-controlled-pilot-operator-reconciliation:v1"
         and prior_a9.get("passed") is True
         and prior_a9.get("valid_for_qualification") is False
-        and _object(prior_a9.get("readiness")).get(
+        and object_value(prior_a9.get("readiness")).get(
             "automatic_state_change_allowed"
         )
         is False
         and all(
-            _object(prior_a9.get("boundary")).get(name) is False
+            object_value(prior_a9.get("boundary")).get(name) is False
             for name in (
                 "authorization_mutation_allowed",
                 "controlled_pilot_execution_allowed",
@@ -157,9 +157,9 @@ def run_gate(
         "failure_reasons": failures,
         "checks": checks,
         "source_artifacts": {
-            "evidence_reports": [_artifact_ref(path) for path in evidence_reports],
-            "replication_report": _artifact_ref(replication_report_path),
-            "prior_a9_reconciliation": _artifact_ref(
+            "evidence_reports": [artifact_ref(path) for path in evidence_reports],
+            "replication_report": artifact_ref(replication_report_path),
+            "prior_a9_reconciliation": artifact_ref(
                 prior_a9_reconciliation_path
             ),
         },
@@ -235,14 +235,14 @@ def _semantic_records(
     records: list[dict[str, Any]] = []
     for path, report in zip(paths, reports, strict=True):
         owner_id = str(report.get("owner_id") or "")
-        source_checks = _object(report.get("checks"))
-        for worker, summary_value in _object(
+        source_checks = object_value(report.get("checks"))
+        for worker, summary_value in object_value(
             report.get("worker_summaries")
         ).items():
-            summary = _object(summary_value)
-            relation = _object(summary.get("relation_update"))
-            authorization = _object(summary.get("authorization_change"))
-            action_bias = _object(relation.get("action_bias"))
+            summary = object_value(summary_value)
+            relation = object_value(summary.get("relation_update"))
+            authorization = object_value(summary.get("authorization_change"))
+            action_bias = object_value(relation.get("action_bias"))
             provenance = _first_provenance(relation)
             component = next(
                 (
@@ -252,7 +252,7 @@ def _semantic_records(
                 ),
                 {},
             )
-            auth_after = _object(authorization.get("after"))
+            auth_after = object_value(authorization.get("after"))
             continuity_names = (
                 f"{worker}_runtime_identity_continuous",
                 f"{worker}_memory_recalled",
@@ -303,8 +303,8 @@ def _first_provenance(relation: dict[str, Any]) -> dict[str, Any]:
     for update in relation.get("expectation_updates", []):
         if not isinstance(update, dict):
             continue
-        provenance = _object(
-            _object(update.get("update_params")).get("delta_provenance")
+        provenance = object_value(
+            object_value(update.get("update_params")).get("delta_provenance")
         )
         if provenance:
             return provenance
@@ -349,7 +349,7 @@ def _authorization_behavior_is_outcome_specific(
     stakes: dict[str, list[float]] = defaultdict(list)
     for record in records:
         outcome = record["event_kind"]
-        profile = _object(record.get("authorization_after"))
+        profile = object_value(record.get("authorization_after"))
         profiles[outcome].add(_canonical(profile))
         stakes[outcome].append(float(profile.get("required_stake_multiplier", 0)))
     if not EXPECTED_OUTCOMES.issubset(profiles):
@@ -373,7 +373,7 @@ def _sources_match_replication(
     replication: dict[str, Any],
 ) -> bool:
     expected = {
-        (str(path), _sha256(path))
+        (str(path), sha256_file(path))
         for path in evidence_reports
     }
     observed = {
@@ -395,27 +395,8 @@ def _check(
         failures.append(name)
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"expected JSON object: {path}")
-    return value
-
-
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
 def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path), "sha256": _sha256(path)}
 
 
 def main() -> None:

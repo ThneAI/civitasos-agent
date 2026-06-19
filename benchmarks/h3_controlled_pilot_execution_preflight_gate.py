@@ -9,6 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from benchmarks.h3_evidence import (
+    artifact_ref,
+    object_value,
+    objects_value,
+    read_json_object,
+    resolve_under_root,
+    sha256_file,
+    write_json_object,
+)
 from benchmarks.h3_controlled_pilot_authorization_decision_gate import (
     BOUNDARY as AUTHORIZATION_BOUNDARY,
 )
@@ -46,18 +55,18 @@ def build_execution_preflight(
     agent_root: Path,
     current_time: datetime | None = None,
 ) -> dict[str, Any]:
-    reconciliation_path = _resolve(authorization_reconciliation_path, agent_root)
-    output = _resolve(output_path, agent_root)
+    reconciliation_path = resolve_under_root(authorization_reconciliation_path, agent_root)
+    output = resolve_under_root(output_path, agent_root)
     now = _as_utc(current_time or datetime.now(timezone.utc))
     failures: list[str] = []
     checks: dict[str, bool] = {}
 
-    reconciliation = _read_json(
+    reconciliation = read_json_object(
         reconciliation_path,
         failures,
         "authorization reconciliation",
     )
-    profile = str(_object(reconciliation).get("validation_profile") or "qualification")
+    profile = str(object_value(reconciliation).get("validation_profile") or "qualification")
     receipt = _validate_reconciliation(
         reconciliation,
         receipt_id=authorization_receipt_id,
@@ -65,7 +74,7 @@ def build_execution_preflight(
         checks=checks,
     )
     packet_path = _source_packet_path(reconciliation)
-    packet = _read_json(packet_path, failures, "authorization decision packet")
+    packet = read_json_object(packet_path, failures, "authorization decision packet")
     _validate_packet_binding(
         packet,
         packet_path=packet_path,
@@ -81,7 +90,7 @@ def build_execution_preflight(
         failures=failures,
         checks=checks,
     )
-    controls = _object(receipt.get("controls"))
+    controls = object_value(receipt.get("controls"))
     _require_equal(
         checks,
         failures,
@@ -153,19 +162,19 @@ def build_execution_preflight(
         "failure_reasons": failures,
         "checks": checks,
         "checked_at": now.isoformat(),
-        "validation_profile": _object(reconciliation).get("validation_profile"),
-        "development_only": _object(reconciliation).get("development_only"),
-        "valid_for_qualification": _object(reconciliation).get(
+        "validation_profile": object_value(reconciliation).get("validation_profile"),
+        "development_only": object_value(reconciliation).get("development_only"),
+        "valid_for_qualification": object_value(reconciliation).get(
             "valid_for_qualification"
         ),
         "source_authorization_reconciliation": (
-            _artifact_ref(reconciliation_path)
+            artifact_ref(reconciliation_path)
             if reconciliation_path.is_file()
             else None
         ),
         "authorization_receipt": receipt if passed else None,
         "rollback_checkpoint": (
-            _artifact_ref(rollback_path)
+            artifact_ref(rollback_path)
             if passed and rollback_path is not None and rollback_path.is_file()
             else None
         ),
@@ -194,7 +203,7 @@ def build_execution_preflight(
         "boundary": boundary,
         "non_claims": _non_claims(profile=profile),
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
@@ -245,7 +254,7 @@ def _validate_reconciliation(
         value.get("valid_for_qualification"),
         profile == "qualification",
     )
-    readiness = _object(value.get("readiness"))
+    readiness = object_value(value.get("readiness"))
     _require(
         checks,
         failures,
@@ -256,7 +265,7 @@ def _validate_reconciliation(
     )
     receipts = [
         item
-        for item in _objects(value.get("authorization_receipts"))
+        for item in objects_value(value.get("authorization_receipts"))
         if item.get("authorization_receipt_id") == receipt_id
     ]
     _require(
@@ -288,12 +297,12 @@ def _validate_packet_binding(
         value.get("schema_version"),
         PACKET_SCHEMA_VERSION,
     )
-    source_ref = _object(_object(reconciliation).get("source_decision_packet"))
+    source_ref = object_value(object_value(reconciliation).get("source_decision_packet"))
     _require_equal(
         checks,
         failures,
         "authorization_decision_packet_hash",
-        _sha256(packet_path) if packet_path.is_file() else None,
+        sha256_file(packet_path) if packet_path.is_file() else None,
         source_ref.get("sha256"),
     )
     _require_equal(
@@ -305,7 +314,7 @@ def _validate_packet_binding(
     )
     matching = [
         item
-        for item in _objects(value.get("decisions"))
+        for item in objects_value(value.get("decisions"))
         if item.get("request_id") == receipt.get("request_id")
         and item.get("decision") == "authorize_once"
     ]
@@ -328,7 +337,7 @@ def _validate_receipt_window(
 ) -> None:
     valid_from = _timestamp(receipt.get("valid_from"))
     valid_until = _timestamp(receipt.get("valid_until"))
-    scope = _object(receipt.get("authorized_scope"))
+    scope = object_value(receipt.get("authorized_scope"))
     _require(
         checks,
         failures,
@@ -374,7 +383,7 @@ def _write_rollback_checkpoint(
         "created_at": created_at.isoformat(),
         "authorization_receipt_id": receipt["authorization_receipt_id"],
         "authorization_receipt_sha256": _canonical_sha256(receipt),
-        "source_authorization_reconciliation": _artifact_ref(
+        "source_authorization_reconciliation": artifact_ref(
             authorization_reconciliation_path
         ),
         "baseline": {
@@ -391,7 +400,7 @@ def _write_rollback_checkpoint(
             "restore the preflight baseline without changing production state",
         ],
     }
-    _write_json(path, checkpoint)
+    write_json_object(path, checkpoint)
     return checkpoint
 
 
@@ -446,7 +455,7 @@ def _non_claims(*, profile: str) -> list[str]:
 
 
 def _source_packet_path(value: dict[str, Any] | None) -> Path:
-    raw = _object(_object(value).get("source_decision_packet")).get("path")
+    raw = object_value(object_value(value).get("source_decision_packet")).get("path")
     return Path(str(raw or "/missing-authorization-decision-packet"))
 
 
@@ -457,16 +466,6 @@ def _resolve_ref(value: Any, root: Path) -> Path | None:
     return path.resolve() if path.is_absolute() else (root / path).resolve()
 
 
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _objects(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
 def _integer(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -474,11 +473,6 @@ def _integer(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
-
 
 def _canonical_sha256(value: Any) -> str:
     payload = json.dumps(
@@ -488,10 +482,6 @@ def _canonical_sha256(value: Any) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -510,26 +500,6 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("timestamp must include timezone")
     return value.astimezone(timezone.utc)
-
-
-def _read_json(
-    path: Path,
-    failures: list[str],
-    label: str,
-) -> dict[str, Any] | None:
-    if not path.is_file():
-        failures.append(f"{label} missing: {path}")
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        failures.append(f"{label} invalid: {exc}")
-        return None
-    if not isinstance(value, dict):
-        failures.append(f"{label} must be an object")
-        return None
-    return value
-
 
 def _require(
     checks: dict[str, bool],
@@ -553,19 +523,6 @@ def _require_equal(
     checks[name] = condition
     if not condition:
         failures.append(f"{name}: expected {expected!r}, got {actual!r}")
-
-
-def _resolve(path: Path, root: Path) -> Path:
-    return path.resolve() if path.is_absolute() else (root / path).resolve()
-
-
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)

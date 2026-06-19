@@ -9,6 +9,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from benchmarks.h3_evidence import (
+    artifact_ref,
+    object_value,
+    objects_value,
+    read_json_object,
+    resolve_under_root,
+    sha256_file,
+    write_json_object,
+)
 from benchmarks.h3_controlled_pilot_authorization_request_gate import (
     BOUNDARY as REQUEST_BOUNDARY,
 )
@@ -54,13 +63,13 @@ def create_authorization_decision_packet(
     agent_root: Path,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    source_path = _resolve(authorization_request_report_path, agent_root)
-    output = _resolve(output_path, agent_root)
+    source_path = resolve_under_root(authorization_request_report_path, agent_root)
+    output = resolve_under_root(output_path, agent_root)
     if output.exists() and not overwrite:
         raise FileExistsError(f"refusing to overwrite authorization packet: {output}")
 
     failures: list[str] = []
-    source = _read_json(source_path, failures, "authorization request report")
+    source = read_json_object(source_path, failures, "authorization request report")
     requests = _validate_request_report(source, failures=failures)
     if failures:
         raise ValueError(f"cannot create authorization packet: {failures}")
@@ -72,14 +81,14 @@ def create_authorization_decision_packet(
         "validation_profile": profile,
         "development_only": profile == "development",
         "valid_for_qualification": profile == "qualification",
-        "source_authorization_request_report": _artifact_ref(source_path),
+        "source_authorization_request_report": artifact_ref(source_path),
         "request_count": len(requests),
         "allowed_decisions": sorted(ALLOWED_DECISIONS),
         "decisions": [_pending_decision(request) for request in requests],
         "boundary": dict(BOUNDARY),
         "non_claims": _non_claims(profile=profile),
     }
-    _write_json(output, packet)
+    write_json_object(output, packet)
     return packet
 
 
@@ -100,9 +109,9 @@ def record_authorization_decision(
     post_run_receipt_sink_ref: str | None = None,
     current_time: datetime | None = None,
 ) -> dict[str, Any]:
-    packet_path = _resolve(decision_packet_path, agent_root)
+    packet_path = resolve_under_root(decision_packet_path, agent_root)
     failures: list[str] = []
-    packet = _read_json(packet_path, failures, "authorization decision packet")
+    packet = read_json_object(packet_path, failures, "authorization decision packet")
     if packet is None or failures:
         raise ValueError(f"cannot record authorization decision: {failures}")
     if packet.get("schema_version") != PACKET_SCHEMA_VERSION:
@@ -116,7 +125,7 @@ def record_authorization_decision(
 
     matches = [
         item
-        for item in _objects(packet.get("decisions"))
+        for item in objects_value(packet.get("decisions"))
         if item.get("request_id") == request_id
     ]
     if len(matches) != 1:
@@ -131,7 +140,7 @@ def record_authorization_decision(
     valid_until = None
     if decision == "authorize_once":
         max_seconds = _integer(
-            _object(item.get("requested_scope")).get("max_duration_seconds")
+            object_value(item.get("requested_scope")).get("max_duration_seconds")
         )
         duration = _integer(valid_for_seconds)
         if duration < 1 or duration > max_seconds:
@@ -197,7 +206,7 @@ def record_authorization_decision(
         "decision": decision,
         "operator_id": operator_id.strip(),
         "decided_at": now.isoformat(),
-        "packet_sha256": _sha256(packet_path),
+        "packet_sha256": sha256_file(packet_path),
         "controlled_pilot_execution_allowed": False,
     }
 
@@ -211,14 +220,14 @@ def reconcile_authorization_decisions(
     current_time: datetime | None = None,
     max_future_skew_seconds: float = 300.0,
 ) -> dict[str, Any]:
-    source_path = _resolve(authorization_request_report_path, agent_root)
-    packet_path = _resolve(decision_packet_path, agent_root)
-    output = _resolve(output_path, agent_root)
+    source_path = resolve_under_root(authorization_request_report_path, agent_root)
+    packet_path = resolve_under_root(decision_packet_path, agent_root)
+    output = resolve_under_root(output_path, agent_root)
     failures: list[str] = []
     checks: dict[str, bool] = {}
 
-    source = _read_json(source_path, failures, "authorization request report")
-    packet = _read_json(packet_path, failures, "authorization decision packet")
+    source = read_json_object(source_path, failures, "authorization request report")
+    packet = read_json_object(packet_path, failures, "authorization decision packet")
     requests = _validate_request_report(source, failures=failures, checks=checks)
     decisions = _validate_decision_packet(
         packet,
@@ -229,7 +238,7 @@ def reconcile_authorization_decisions(
         current_time=_as_utc(current_time or datetime.now(timezone.utc)),
         max_future_skew_seconds=max_future_skew_seconds,
     )
-    profile = str(_object(source).get("validation_profile") or "qualification")
+    profile = str(object_value(source).get("validation_profile") or "qualification")
     pending_ids = sorted(
         str(item.get("request_id") or "")
         for item in decisions
@@ -263,10 +272,10 @@ def reconcile_authorization_decisions(
         "development_only": profile == "development",
         "valid_for_qualification": profile == "qualification",
         "source_authorization_request_report": (
-            _artifact_ref(source_path) if source_path.is_file() else None
+            artifact_ref(source_path) if source_path.is_file() else None
         ),
         "source_decision_packet": (
-            _artifact_ref(packet_path) if packet_path.is_file() else None
+            artifact_ref(packet_path) if packet_path.is_file() else None
         ),
         "decision_summary": {
             "request_count": len(requests),
@@ -299,7 +308,7 @@ def reconcile_authorization_decisions(
         "boundary": dict(BOUNDARY),
         "non_claims": _non_claims(profile=profile),
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
@@ -308,10 +317,10 @@ def authorization_decision_status(
     decision_packet_path: Path,
     agent_root: Path,
 ) -> dict[str, Any]:
-    packet_path = _resolve(decision_packet_path, agent_root)
+    packet_path = resolve_under_root(decision_packet_path, agent_root)
     failures: list[str] = []
-    packet = _read_json(packet_path, failures, "authorization decision packet") or {}
-    decisions = _objects(packet.get("decisions"))
+    packet = read_json_object(packet_path, failures, "authorization decision packet") or {}
+    decisions = objects_value(packet.get("decisions"))
     pending = [
         str(item.get("request_id") or "")
         for item in decisions
@@ -378,7 +387,7 @@ def _validate_request_report(
         value.get("valid_for_qualification"),
         profile == "qualification",
     )
-    readiness = _object(value.get("readiness"))
+    readiness = object_value(value.get("readiness"))
     _require(
         checks,
         failures,
@@ -387,8 +396,8 @@ def _validate_request_report(
         and readiness.get("authorization_granted") is False
         and readiness.get("controlled_pilot_execution_ready") is False,
     )
-    surface = _object(value.get("authorization_request_surface"))
-    requests = _objects(surface.get("requests"))
+    surface = object_value(value.get("authorization_request_surface"))
+    requests = objects_value(surface.get("requests"))
     request_ids = [str(item.get("request_id") or "") for item in requests]
     _require(checks, failures, "authorization_requests_present", bool(requests))
     _require_equal(
@@ -414,8 +423,8 @@ def _validate_request_report(
 
 
 def _valid_request(item: dict[str, Any], profile: str) -> bool:
-    controls = _object(item.get("requested_controls"))
-    scope = _object(item.get("requested_scope"))
+    controls = object_value(item.get("requested_controls"))
+    scope = object_value(item.get("requested_scope"))
     state = (
         "development_authorization_request_review_required"
         if profile == "development"
@@ -443,9 +452,10 @@ def _valid_request(item: dict[str, Any], profile: str) -> bool:
             "post_run_receipt_required",
         ))
         and controls.get("automatic_approval_allowed") is False
-        and _object(item.get("authorization_state")).get("authorization_granted")
+        and object_value(item.get("authorization_state")).get("authorization_granted")
         is False
-        and _object(item.get("authorization_state")).get("execution_allowed") is False
+        and object_value(item.get("authorization_state")).get("execution_allowed")
+        is False
     )
 
 
@@ -482,7 +492,7 @@ def _validate_decision_packet(
         failures,
         "authorization_decision_source_binding",
         value.get("source_authorization_request_report"),
-        _artifact_ref(source_path) if source_path.is_file() else None,
+        artifact_ref(source_path) if source_path.is_file() else None,
     )
     _require_equal(
         checks,
@@ -521,7 +531,7 @@ def _validate_decision_packet(
         profile == "qualification",
     )
 
-    decisions = _objects(value.get("decisions"))
+    decisions = objects_value(value.get("decisions"))
     request_by_id = {str(item["request_id"]): item for item in requests}
     decision_ids = [str(item.get("request_id") or "") for item in decisions]
     _require_equal(
@@ -587,9 +597,9 @@ def _valid_decision(
     valid_from = _timestamp(item.get("valid_from"))
     valid_until = _timestamp(item.get("valid_until"))
     max_duration = _integer(
-        _object(request.get("requested_scope")).get("max_duration_seconds")
+        object_value(request.get("requested_scope")).get("max_duration_seconds")
     )
-    controls = _object(item.get("controls"))
+    controls = object_value(item.get("controls"))
     return (
         bool(str(item.get("monitoring_owner_id") or "").strip())
         and bool(str(item.get("audit_owner_id") or "").strip())
@@ -621,7 +631,7 @@ def _build_receipt(item: dict[str, Any], packet_path: Path) -> dict[str, Any]:
     seed = {
         "request_id": item["request_id"],
         "request_sha256": item["request_sha256"],
-        "decision_packet_sha256": _sha256(packet_path),
+        "decision_packet_sha256": sha256_file(packet_path),
         "decided_at": item["decided_at"],
     }
     return {
@@ -631,7 +641,7 @@ def _build_receipt(item: dict[str, Any], packet_path: Path) -> dict[str, Any]:
         "state": "one_time_authorization_granted_pending_execution_preflight",
         "request_id": item["request_id"],
         "request_sha256": item["request_sha256"],
-        "decision_packet_sha256": _sha256(packet_path),
+        "decision_packet_sha256": sha256_file(packet_path),
         "authorized_scope": item["requested_scope"],
         "operator_id": item["operator_id"],
         "monitoring_owner_id": item["monitoring_owner_id"],
@@ -655,7 +665,7 @@ def _pending_fields_empty(item: dict[str, Any]) -> bool:
 
 
 def _non_authorization_fields_empty(item: dict[str, Any]) -> bool:
-    controls = _object(item.get("controls"))
+    controls = object_value(item.get("controls"))
     return (
         item.get("monitoring_owner_id") is None
         and item.get("audit_owner_id") is None
@@ -682,16 +692,6 @@ def _non_claims(*, profile: str) -> list[str]:
     return claims
 
 
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _objects(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
 def _integer(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -699,11 +699,6 @@ def _integer(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
-
 
 def _canonical_sha256(value: Any) -> str:
     payload = json.dumps(
@@ -713,10 +708,6 @@ def _canonical_sha256(value: Any) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -735,26 +726,6 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("timestamp must include timezone")
     return value.astimezone(timezone.utc)
-
-
-def _read_json(
-    path: Path,
-    failures: list[str],
-    label: str,
-) -> dict[str, Any] | None:
-    if not path.is_file():
-        failures.append(f"{label} missing: {path}")
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        failures.append(f"{label} invalid: {exc}")
-        return None
-    if not isinstance(value, dict):
-        failures.append(f"{label} must be an object")
-        return None
-    return value
-
 
 def _require(
     checks: dict[str, bool],
@@ -779,22 +750,9 @@ def _require_equal(
     if not condition:
         failures.append(f"{name}: expected {expected!r}, got {actual!r}")
 
-
-def _resolve(path: Path, root: Path) -> Path:
-    return path.resolve() if path.is_absolute() else (root / path).resolve()
-
-
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
 def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
-    _write_json(temporary, value)
+    write_json_object(temporary, value)
     temporary.replace(path)
 
 

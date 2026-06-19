@@ -8,6 +8,15 @@ import json
 from pathlib import Path
 from typing import Any
 
+from benchmarks.h3_evidence import (
+    artifact_ref,
+    object_value,
+    objects_value,
+    read_json_object,
+    resolve_under_root,
+    sha256_file,
+    write_json_object,
+)
 from benchmarks.h3_bounded_plan_challenge_review_gate import (
     RECONCILIATION_SCHEMA_VERSION,
 )
@@ -45,13 +54,13 @@ def build_authorization_request_gate(
     challenge_reconciliation_path: Path,
     agent_root: Path,
 ) -> dict[str, Any]:
-    bounded_path = _resolve(bounded_plan_report_path, agent_root)
-    reconciliation_path = _resolve(challenge_reconciliation_path, agent_root)
+    bounded_path = resolve_under_root(bounded_plan_report_path, agent_root)
+    reconciliation_path = resolve_under_root(challenge_reconciliation_path, agent_root)
     failures: list[str] = []
     checks: dict[str, bool] = {}
 
-    bounded = _read_json(bounded_path, failures, "bounded plan report")
-    reconciliation = _read_json(
+    bounded = read_json_object(bounded_path, failures, "bounded plan report")
+    reconciliation = read_json_object(
         reconciliation_path,
         failures,
         "challenge reconciliation",
@@ -103,10 +112,10 @@ def build_authorization_request_gate(
         "development_only": development,
         "valid_for_qualification": not development,
         "source_bounded_plan_report": (
-            _artifact_ref(bounded_path) if bounded_path.is_file() else None
+            artifact_ref(bounded_path) if bounded_path.is_file() else None
         ),
         "source_challenge_reconciliation": (
-            _artifact_ref(reconciliation_path)
+            artifact_ref(reconciliation_path)
             if reconciliation_path.is_file()
             else None
         ),
@@ -168,7 +177,7 @@ def _validate_bounded_plan(
         value.get("boundary"),
         BOUNDED_PLAN_BOUNDARY,
     )
-    drafts = _objects(_object(value.get("draft_surface")).get("drafts"))
+    drafts = objects_value(object_value(value.get("draft_surface")).get("drafts"))
     _require(checks, failures, "bounded_plan_drafts_present", bool(drafts))
     _require(
         checks,
@@ -176,10 +185,10 @@ def _validate_bounded_plan(
         "bounded_plan_drafts_non_executable",
         all(
             draft.get("state") == "bounded_plan_draft_review_required"
-            and _object(draft.get("execution_policy")).get("draft_only") is True
+            and object_value(draft.get("execution_policy")).get("draft_only") is True
             and not any(
                 setting
-                for name, setting in _object(
+                for name, setting in object_value(
                     draft.get("execution_policy")
                 ).items()
                 if name != "draft_only"
@@ -219,7 +228,7 @@ def _validate_reconciliation(
         failures,
         "challenge_reconciliation_source_binding",
         value.get("source_bounded_plan_report"),
-        _artifact_ref(bounded_path) if bounded_path.is_file() else None,
+        artifact_ref(bounded_path) if bounded_path.is_file() else None,
     )
     profile = str(value.get("validation_profile") or "qualification")
     _require(
@@ -228,7 +237,7 @@ def _validate_reconciliation(
         "challenge_reconciliation_profile_supported",
         profile in {"qualification", "development"},
     )
-    readiness = _object(value.get("readiness"))
+    readiness = object_value(value.get("readiness"))
     if profile == "development":
         profile_ready = (
             value.get("development_only") is True
@@ -251,7 +260,7 @@ def _validate_reconciliation(
         "challenge_reconciliation_profile_ready",
         profile_ready,
     )
-    boundary = _object(value.get("boundary"))
+    boundary = object_value(value.get("boundary"))
     _require(
         checks,
         failures,
@@ -265,7 +274,7 @@ def _validate_reconciliation(
     )
     approved = [
         str(item)
-        for item in _object(value.get("reconciliation")).get(
+        for item in object_value(value.get("reconciliation")).get(
             "approved_draft_ids",
             [],
         )
@@ -286,7 +295,7 @@ def _build_request(
     reconciliation_path: Path,
 ) -> dict[str, Any]:
     development = profile == "development"
-    source_scope = _object(draft.get("bounded_scope"))
+    source_scope = object_value(draft.get("bounded_scope"))
     requested_scope = {
         "environment": (
             "development_local_controlled_only"
@@ -308,7 +317,7 @@ def _build_request(
     seed = {
         "draft_id": draft["draft_id"],
         "draft_sha256": _canonical_sha256(draft),
-        "challenge_reconciliation_sha256": _sha256(reconciliation_path),
+        "challenge_reconciliation_sha256": sha256_file(reconciliation_path),
         "validation_profile": profile,
         "requested_scope": requested_scope,
     }
@@ -325,9 +334,9 @@ def _build_request(
         "source_binding": {
             "draft_id": draft["draft_id"],
             "draft_sha256": _canonical_sha256(draft),
-            "challenge_reconciliation_sha256": _sha256(reconciliation_path),
+            "challenge_reconciliation_sha256": sha256_file(reconciliation_path),
             "proposal_kind": draft["proposal_kind"],
-            "evidence_refs": _object(draft.get("source_binding")).get(
+            "evidence_refs": object_value(draft.get("source_binding")).get(
                 "evidence_refs",
                 [],
             ),
@@ -355,11 +364,6 @@ def _build_request(
         },
     }
 
-
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
 def _non_claims(*, development: bool) -> list[str]:
     claims = [
         "request_is_not_an_authorization_receipt",
@@ -376,13 +380,6 @@ def _non_claims(*, development: bool) -> list[str]:
     )
     return claims
 
-
-def _objects(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
 def _integer(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -390,11 +387,6 @@ def _integer(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
-
 
 def _canonical_sha256(value: Any) -> str:
     payload = json.dumps(
@@ -404,29 +396,6 @@ def _canonical_sha256(value: Any) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _read_json(
-    path: Path,
-    failures: list[str],
-    label: str,
-) -> dict[str, Any] | None:
-    if not path.is_file():
-        failures.append(f"{label} missing: {path}")
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        failures.append(f"{label} invalid: {exc}")
-        return None
-    if not isinstance(value, dict):
-        failures.append(f"{label} must be an object")
-        return None
-    return value
 
 
 def _require(
@@ -452,19 +421,6 @@ def _require_equal(
     if not condition:
         failures.append(f"{name}: expected {expected!r}, got {actual!r}")
 
-
-def _resolve(path: Path, root: Path) -> Path:
-    return path.resolve() if path.is_absolute() else (root / path).resolve()
-
-
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bounded-plan-report", type=Path, required=True)
@@ -481,8 +437,8 @@ def main() -> None:
         challenge_reconciliation_path=args.challenge_reconciliation,
         agent_root=agent_root,
     )
-    output = _resolve(args.output, agent_root)
-    _write_json(output, report)
+    output = resolve_under_root(args.output, agent_root)
+    write_json_object(output, report)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     raise SystemExit(0 if report["passed"] else 2)
 
