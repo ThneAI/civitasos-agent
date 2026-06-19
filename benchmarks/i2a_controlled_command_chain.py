@@ -28,6 +28,7 @@ from benchmarks.i_gate_evidence import (
     sha256_text,
     write_json_object,
 )
+from benchmarks.i2a_controlled_runner import execute_controlled_read_only_command
 
 CHAIN_SCHEMA = "i2a-controlled-command-chain:v1"
 OPERATOR_REVIEW_SCHEMA = "i2-operator-review:v1"
@@ -413,21 +414,7 @@ def write_execution_receipt(*, authorization_path: Path, acceptance_path: Path, 
     check(checks, failures, "command_is_read_only", command.get("command_class") == "read_only_boundary_attestation")
 
     if all_checks_passed(checks, failures):
-        response = {
-            "schema_version": "i2a-controlled-external-agent-response:v1",
-            "command_id": command.get("command_id"),
-            "executor_alias": command.get("executor_alias"),
-            "verdict": "accepted_scope_executed_read_only",
-            "summary": "Controlled adapter inspected the command envelope and wrote this read-only attestation under the isolation workspace.",
-            "boundary_attestation": {
-                "network_used": False,
-                "source_tree_modified": False,
-                "git_used": False,
-                "runtime_state_mutated": False,
-                "production_touched": False,
-            },
-        }
-        write_json_object(response_path, response)
+        execute_controlled_read_only_command(command=command, workspace=workspace)
     check(checks, failures, "response_written_under_workspace", response_path.is_file() and response_path.parent.resolve() == workspace.resolve())
 
     passed = all_checks_passed(checks, failures)

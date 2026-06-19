@@ -33,6 +33,7 @@ from benchmarks.i2_provider_runner import (
     call_openai_compatible,
     parse_json_object_response,
 )
+from benchmarks.i2b_provider_execution import execute_provider_readonly_command
 
 CHAIN_SCHEMA = "i2b-real-external-readonly-command-chain:v1"
 OPERATOR_REVIEW_SCHEMA = "i2b-operator-review:v1"
@@ -397,23 +398,29 @@ def write_api_call_report(
 
     content = ""
     http_status: int | None = None
+    prompt_sha256: str | None = None
+    response_content_sha256: str | None = None
     if all_checks_passed(checks, failures):
-        if api_response_override is not None:
-            content = api_response_override.replace("__COMMAND_ID__", str(command.get("command_id") or ""))
-            http_status = 200
-        else:
-            try:
-                content, http_status = _call_openai_compatible(
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=model,
-                    prompt=_prompt(command=command, i2a_excerpt=i2a_excerpt),
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-            except RuntimeError as exc:
-                failures.append(f"external provider call failed: {exc}")
-    parsed = _parse_response(content, failures) if content else {}
+        execution = execute_provider_readonly_command(
+            response_schema=RESPONSE_SCHEMA,
+            command=command,
+            i2a_excerpt=i2a_excerpt,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            api_response_override=api_response_override,
+            provider_call=_call_openai_compatible,
+        )
+        content = str(execution.get("content") or "")
+        http_status = execution.get("http_status") if isinstance(execution.get("http_status"), int) else None
+        parsed = object_value(execution.get("parsed"))
+        failures.extend(str(item) for item in execution.get("failures", []))
+        prompt_sha256 = str(execution.get("prompt_sha256") or "")
+        response_content_sha256 = execution.get("response_content_sha256") if isinstance(execution.get("response_content_sha256"), str) else None
+    else:
+        parsed = {}
     check(checks, failures, "provider_returned_http_200", http_status == 200)
     check(checks, failures, "response_schema_valid", parsed.get("schema_version") == RESPONSE_SCHEMA)
     check(checks, failures, "response_accepts_scope", parsed.get("accepted") is True)
@@ -437,8 +444,8 @@ def write_api_call_report(
             "http_status": http_status,
             "api_key_present": bool(api_key),
             "api_key_recorded": False,
-            "request_prompt_sha256": sha256_text(_prompt(command=command, i2a_excerpt=i2a_excerpt)) if command else None,
-            "response_content_sha256": sha256_text(content) if content else None,
+            "request_prompt_sha256": prompt_sha256 if command else None,
+            "response_content_sha256": response_content_sha256,
             "response_artifact": artifact_ref(response_output) if response_output.is_file() else None,
         },
         "readiness": {"state": "i2b_external_agent_response_ready" if passed else "blocked_i2b_api_call", "external_agent_api_call_receipt_present": passed},

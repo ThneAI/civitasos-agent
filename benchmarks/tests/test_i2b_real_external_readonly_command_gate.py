@@ -1,34 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import benchmarks.i2b_real_external_readonly_command_gate as gate
-from benchmarks.i2b_real_external_readonly_command_gate import RESPONSE_SCHEMA, run_gate, write_operator_review
+from benchmarks.i2b_real_external_readonly_command_gate import run_gate, write_operator_review
+from benchmarks.tests.i_gate_fixtures import i2b_response, write_external_env, write_i2a_summary
 
 
 def test_i2b_chain_uses_mock_external_response_without_granting_write_authority(tmp_path: Path) -> None:
-    i2a = _write_i2a_summary(tmp_path, passed=True)
-    env_file = _write_env(tmp_path)
-    response = json.dumps(
-        {
-            "schema_version": RESPONSE_SCHEMA,
-            "command_id": "__COMMAND_ID__",
-            "accepted": True,
-            "verdict": "accepted_scope_executed_read_only",
-            "summary": "Read-only review completed.",
-            "observations": ["I.2-A remained no-side-effect.", "A separate operator gate is still required."],
-            "recommendation": "remain_blocked_for_real_task_commanding",
-            "boundary_attestation": {
-                "network_used_only_for_provider_api": True,
-                "source_tree_modified": False,
-                "git_used": False,
-                "runtime_state_mutated": False,
-                "production_touched": False,
-            },
-        }
-    )
+    i2a = write_i2a_summary(tmp_path, passed=True)
+    env_file = write_external_env(tmp_path / ".env.beta6.external.local")
+    response = i2b_response(recommendation="remain_blocked_for_real_task_commanding")
 
     summary = run_gate(
         i2a_summary_path=i2a,
@@ -52,7 +35,7 @@ def test_i2b_chain_uses_mock_external_response_without_granting_write_authority(
 
 
 def test_i2b_operator_review_blocks_failed_i2a(tmp_path: Path) -> None:
-    i2a = _write_i2a_summary(tmp_path, passed=False)
+    i2a = write_i2a_summary(tmp_path, passed=False)
 
     report = write_operator_review(
         i2a_summary_path=i2a,
@@ -65,8 +48,8 @@ def test_i2b_operator_review_blocks_failed_i2a(tmp_path: Path) -> None:
 
 
 def test_i2b_provider_exception_writes_fail_closed_receipts(tmp_path: Path, monkeypatch) -> None:
-    i2a = _write_i2a_summary(tmp_path, passed=True)
-    env_file = _write_env(tmp_path)
+    i2a = write_i2a_summary(tmp_path, passed=True)
+    env_file = write_external_env(tmp_path / ".env.beta6.external.local")
 
     def fail_provider(**_: object) -> tuple[str, int]:
         raise RuntimeError("provider unavailable")
@@ -84,39 +67,3 @@ def test_i2b_provider_exception_writes_fail_closed_receipts(tmp_path: Path, monk
     assert api_call["passed"] is False
     assert "external provider call failed: provider unavailable" in api_call["failure_reasons"]
     assert summary["readiness"]["real_task_command_allowed"] is False
-
-
-def _write_i2a_summary(tmp_path: Path, *, passed: bool) -> Path:
-    path = tmp_path / "i2a_summary.json"
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": "i2a-controlled-command-chain:v1",
-                "passed": passed,
-                "readiness": {
-                    "operator_discussion_required_for_i2b": True,
-                    "real_task_command_allowed": False,
-                },
-                "boundary": {"real_task_command_allowed": False},
-            }
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-def _write_env(tmp_path: Path) -> Path:
-    path = tmp_path / ".env.beta6.external.local"
-    path.write_text(
-        "\n".join(
-            [
-                "BETA6_EXTERNAL_AGENT_PROVIDER=openai_compatible",
-                "BETA6_EXTERNAL_AGENT_API_BASE_URL=https://api.example.test",
-                "BETA6_EXTERNAL_AGENT_MODEL=example-model",
-                "BETA6_EXTERNAL_AGENT_API_KEY=secret-test-key",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    os.chmod(path, 0o600)
-    return path

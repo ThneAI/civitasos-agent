@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 
 from benchmarks.i2a_controlled_command_chain import run_chain, write_operator_review
+from benchmarks.tests.i_gate_fixtures import write_i2_request
 
 
 def test_i2a_chain_passes_without_real_external_commanding(tmp_path: Path) -> None:
-    request = _write_i2_request(tmp_path, passed=True)
+    request = write_i2_request(tmp_path, passed=True)
 
     summary = run_chain(i2_request_path=request, output_root=tmp_path / "i2a")
 
@@ -29,7 +30,7 @@ def test_i2a_chain_passes_without_real_external_commanding(tmp_path: Path) -> No
 
 
 def test_i2a_operator_review_blocks_failed_i2_request(tmp_path: Path) -> None:
-    request = _write_i2_request(tmp_path, passed=False)
+    request = write_i2_request(tmp_path, passed=False)
 
     report = write_operator_review(
         i2_request_path=request,
@@ -40,35 +41,3 @@ def test_i2a_operator_review_blocks_failed_i2_request(tmp_path: Path) -> None:
     assert report["passed"] is False
     assert report["checks"]["i2_request_passed"] is False
     assert report["readiness"]["i2_execution_allowed"] is False
-
-
-def _write_i2_request(tmp_path: Path, *, passed: bool) -> Path:
-    path = tmp_path / "i2_request.json"
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": "i2-external-command-gate-request:v1",
-                "passed": passed,
-                "request": {
-                    "request_id": "i2-request:test",
-                    "required_future_evidence": [
-                        "external_agent_registration_receipt",
-                        "scoped_command_authorization_request",
-                        "external_agent_acceptance_receipt",
-                        "isolation_policy_preflight",
-                        "command_execution_receipt",
-                        "rollback_or_abort_receipt",
-                        "operator_reconciliation",
-                    ],
-                },
-                "readiness": {
-                    "i2_gate_requested": True,
-                    "operator_authorization_required": True,
-                    "i2_execution_allowed": False,
-                },
-                "boundary": {"external_agent_command_allowed": False},
-            }
-        ),
-        encoding="utf-8",
-    )
-    return path
