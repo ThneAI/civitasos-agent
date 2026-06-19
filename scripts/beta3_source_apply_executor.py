@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,9 +22,6 @@ try:
         artifact_ref as _evidence_artifact_ref,
         artifact_ref_or_path as _evidence_artifact_ref_or_path,
         read_json_object,
-        safe_read_json_object,
-        sha256_file,
-        validate_ref_bytes,
         write_json,
     )
 except ModuleNotFoundError:
@@ -33,9 +29,6 @@ except ModuleNotFoundError:
         artifact_ref as _evidence_artifact_ref,
         artifact_ref_or_path as _evidence_artifact_ref_or_path,
         read_json_object,
-        safe_read_json_object,
-        sha256_file,
-        validate_ref_bytes,
         write_json,
     )
 
@@ -46,8 +39,6 @@ try:
         source_apply_operator_followup as _source_apply_operator_followup,
         source_apply_outcome as _source_apply_outcome,
         test_evidence_status as _test_evidence_status,
-        validate_false_boundary_flags as _validate_false_boundary_flags,
-        validate_h3_boundary as _validate_h3_boundary,
     )
 except ModuleNotFoundError:
     from scripts.beta3_source_apply_boundaries import (
@@ -56,18 +47,41 @@ except ModuleNotFoundError:
         source_apply_operator_followup as _source_apply_operator_followup,
         source_apply_outcome as _source_apply_outcome,
         test_evidence_status as _test_evidence_status,
-        validate_false_boundary_flags as _validate_false_boundary_flags,
-        validate_h3_boundary as _validate_h3_boundary,
     )
 
-from beta2_patch_proposal import parse_patch_target_paths
-from beta3_source_apply_authorization import AUTHORIZATION_SCHEMA
-from beta3_source_apply_authorization import validate_source_apply_authorization
+try:
+    from beta3_source_apply_authorization import validate_source_apply_authorization
+    from beta3_source_apply_receipts import (
+        RECEIPT_SCHEMA,
+        validate_post_source_apply_receipt,
+        write_post_apply_receipt,
+    )
+    from beta3_source_apply_worktree import (
+        append_code as _append_code,
+        git as _git,
+        git_text as _git_text,
+        repo_snapshot as _repo_snapshot,
+        run_test_commands as _run_test_commands,
+    )
+except ModuleNotFoundError:
+    from scripts.beta3_source_apply_authorization import (
+        validate_source_apply_authorization,
+    )
+    from scripts.beta3_source_apply_receipts import (
+        RECEIPT_SCHEMA,
+        validate_post_source_apply_receipt,
+        write_post_apply_receipt,
+    )
+    from scripts.beta3_source_apply_worktree import (
+        append_code as _append_code,
+        git as _git,
+        git_text as _git_text,
+        repo_snapshot as _repo_snapshot,
+        run_test_commands as _run_test_commands,
+    )
 
 
 EXECUTION_SCHEMA = "beta3-source-apply-execution-report:v1"
-RECEIPT_SCHEMA = "beta3-post-source-apply-receipt:v1"
-RECEIPT_VALIDATION_SCHEMA = "beta3-post-source-apply-receipt-validation:v1"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -147,7 +161,7 @@ def run_source_apply(
     receipt_path = output_root / "beta3_post_source_apply_receipt.json"
     receipt_validation = None
     if source_apply_performed and diff_ref is not None:
-        _write_post_apply_receipt(
+        write_post_apply_receipt(
             receipt_path=receipt_path,
             authorization_path=authorization_path,
             authorization=authorization,
@@ -206,132 +220,6 @@ def run_source_apply(
     return report
 
 
-def validate_post_source_apply_receipt(receipt_path: Path) -> dict[str, Any]:
-    failures: list[str] = []
-    receipt = _safe_read_json(receipt_path, failures, "receipt")
-    if not isinstance(receipt, dict):
-        return _receipt_validation_report(receipt_path, failures or ["receipt must be a JSON object"])
-    if receipt.get("schema_version") != RECEIPT_SCHEMA:
-        failures.append(f"schema_version must be {RECEIPT_SCHEMA}")
-    if receipt.get("receipt_scope") != "source_worktree_apply_only":
-        failures.append("receipt_scope must be source_worktree_apply_only")
-    if receipt.get("source_repo_apply_performed") is not True:
-        failures.append("source_repo_apply_performed must be true")
-    if receipt.get("test_evidence_status") not in {"not_run", "passed", "failed"}:
-        failures.append("test_evidence_status must be not_run, passed, or failed")
-    _validate_false_boundary_flags(receipt, failures)
-    _validate_h3_boundary(receipt, failures)
-
-    authorization_ref = _as_ref(receipt.get("source_authorization"), failures, "source_authorization")
-    authorization_path = _validate_ref_bytes(authorization_ref, failures, "source_authorization")
-    authorization = _safe_read_json(authorization_path, failures, "source authorization")
-    if not isinstance(authorization, dict):
-        authorization = {}
-    if authorization.get("schema_version") != AUTHORIZATION_SCHEMA:
-        failures.append(f"source authorization schema_version must be {AUTHORIZATION_SCHEMA}")
-    if authorization.get("source_repo_apply_authorized") is not True:
-        failures.append("source authorization must authorize source repo apply")
-    if authorization.get("source_repo_apply_performed") is not False:
-        failures.append("source authorization must not claim source repo apply performed")
-    if receipt.get("request_id") != authorization.get("request_id"):
-        failures.append("request_id must match source authorization")
-    if receipt.get("source_patch_proposal") != authorization.get("source_patch_proposal"):
-        failures.append("source_patch_proposal must match source authorization")
-
-    patch_path = _validate_ref_bytes(
-        _as_ref(receipt.get("source_patch_proposal"), failures, "source_patch_proposal"),
-        failures,
-        "source_patch_proposal",
-    )
-    if patch_path is not None:
-        target_paths = parse_patch_target_paths(patch_path.read_text(encoding="utf-8"))
-        if receipt.get("applied_target_paths") != target_paths:
-            failures.append("applied_target_paths must match source patch proposal")
-        _validate_allowlist(target_paths, authorization.get("allowed_path_prefixes"), failures)
-    _validate_ref_bytes(_as_ref(receipt.get("applied_diff"), failures, "applied_diff"), failures, "applied_diff")
-
-    target_repo = _as_dict(receipt.get("target_repo"), failures, "target_repo")
-    repo = Path(str(target_repo.get("repo_root") or ""))
-    snapshot = _repo_snapshot(repo, failures)
-    if target_repo.get("before") != authorization.get("target_repo", {}).get("authorization_snapshot"):
-        failures.append("target_repo.before must match authorization snapshot")
-    if target_repo.get("after") != snapshot:
-        failures.append("target repo snapshot drifted after post-apply receipt")
-    if target_repo.get("after", {}).get("head_commit") != authorization.get("target_repo", {}).get(
-        "expected_head_commit"
-    ):
-        failures.append("post-apply HEAD must remain at authorized expected_head_commit")
-    tests = receipt.get("tests")
-    if not isinstance(tests, list):
-        failures.append("tests must be a list")
-    elif receipt.get("tests_passed") is True and any(
-        not isinstance(run, dict) or run.get("returncode") != 0 for run in tests
-    ):
-        failures.append("tests_passed receipt requires all test returncodes to be zero")
-    elif receipt.get("test_evidence_status") != _test_evidence_status([run for run in tests if isinstance(run, dict)]):
-        failures.append("test_evidence_status must match tests")
-    return _receipt_validation_report(receipt_path, failures)
-
-
-def _write_post_apply_receipt(
-    *,
-    receipt_path: Path,
-    authorization_path: Path,
-    authorization: dict[str, Any],
-    before: dict[str, str],
-    after: dict[str, str],
-    applied_diff: dict[str, str],
-    test_runs: list[dict[str, Any]],
-    tests_passed: bool,
-) -> None:
-    patch_path = _validate_ref_path(authorization["source_patch_proposal"], "source_patch_proposal")
-    receipt = {
-        "schema_version": RECEIPT_SCHEMA,
-        "recorded_at": _now(),
-        "request_id": authorization.get("request_id"),
-        "receipt_scope": "source_worktree_apply_only",
-        "source_authorization": _artifact_ref(authorization_path),
-        "source_patch_proposal": authorization["source_patch_proposal"],
-        "applied_target_paths": parse_patch_target_paths(patch_path.read_text(encoding="utf-8")),
-        "target_repo": {
-            "repo_root": authorization["target_repo"]["repo_root"],
-            "before": before,
-            "after": after,
-        },
-        "applied_diff": applied_diff,
-        "tests": test_runs,
-        "tests_passed": tests_passed,
-        "test_evidence_status": _test_evidence_status(test_runs),
-        "source_repo_apply_performed": True,
-        "commit_allowed": False,
-        "push_allowed": False,
-        "merge_allowed": False,
-        "deploy_allowed": False,
-        "production_runtime_execution_allowed": False,
-        "production_receipt_write_allowed": False,
-        "h3_boundary": _h3_boundary(),
-        "non_claims": list(NON_CLAIMS),
-    }
-    _write_json(receipt_path, receipt)
-
-
-def _run_test_commands(
-    repo: Path,
-    commands: list[str],
-    failures: list[str],
-    failure_codes: list[str],
-) -> list[dict[str, Any]]:
-    runs: list[dict[str, Any]] = []
-    for command in commands:
-        result = subprocess.run(command, cwd=repo, shell=True, check=False, text=True, capture_output=True)
-        run = _command_report(command, result)
-        runs.append(run)
-        if run["returncode"] != 0:
-            failures.append(f"source apply test command failed: {command}")
-            _append_code(failure_codes, "post_apply_test_failed")
-    return runs
-
-
 def _authorization_refusal_report(authorization_path: Path, validation: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": EXECUTION_SCHEMA,
@@ -368,44 +256,6 @@ def _authorization_refusal_report(authorization_path: Path, validation: dict[str
     }
 
 
-def _validate_allowlist(target_paths: list[str], prefixes: Any, failures: list[str]) -> None:
-    allowed = [item for item in prefixes if isinstance(item, str)] if isinstance(prefixes, list) else []
-    if not allowed:
-        failures.append("source authorization allowed_path_prefixes must not be empty")
-    for target in target_paths:
-        if not any(target.startswith(prefix) if prefix.endswith("/") else target == prefix for prefix in allowed):
-            failures.append(f"applied target path is outside authorization allowlist: {target}")
-
-
-def _repo_snapshot(repo: Path, failures: list[str]) -> dict[str, str]:
-    return {
-        "head_commit": _git_text(repo, failures, "rev-parse", "HEAD").strip(),
-        "status_short": _git_text(repo, failures, "status", "--short"),
-    }
-
-
-def _git(repo: Path, failures: list[str], *args: str) -> dict[str, Any]:
-    result = subprocess.run(["git", *args], cwd=repo, check=False, text=True, capture_output=True)
-    run = _command_report(" ".join(["git", *args]), result)
-    if run["returncode"] != 0:
-        failures.append(f"{run['command']} failed")
-    return run
-
-
-def _git_text(repo: Path, failures: list[str], *args: str) -> str:
-    run = _git(repo, failures, *args)
-    return str(run["stdout"])
-
-
-def _command_report(command: str, result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
-    return {
-        "command": command,
-        "returncode": result.returncode,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-    }
-
-
 def _validate_ref_path(ref: dict[str, Any], label: str) -> Path:
     path = Path(str(ref.get("path") or ""))
     if not path.is_file():
@@ -421,55 +271,12 @@ def _artifact_ref_or_path(path: Path) -> dict[str, str | None]:
     return _evidence_artifact_ref_or_path(path)
 
 
-def _append_code(codes: list[str], code: str) -> None:
-    if code not in codes:
-        codes.append(code)
-
-
-def _as_ref(value: Any, failures: list[str], label: str) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    failures.append(f"{label} must be an object")
-    return {}
-
-
-def _as_dict(value: Any, failures: list[str], label: str) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    failures.append(f"{label} must be an object")
-    return {}
-
-
-def _validate_ref_bytes(ref: dict[str, Any], failures: list[str], label: str) -> Path | None:
-    return validate_ref_bytes(ref, failures, label)
-
-
-def _safe_read_json(path: Path | None, failures: list[str], label: str) -> Any:
-    return safe_read_json_object(path, failures, label)
-
-
 def _read_json_object(path: Path) -> dict[str, Any]:
     return read_json_object(path)
 
 
-def _receipt_validation_report(path: Path, failures: list[str]) -> dict[str, Any]:
-    return {
-        "schema_version": RECEIPT_VALIDATION_SCHEMA,
-        "passed": not failures,
-        "failure_reasons": failures,
-        "checked_at": _now(),
-        "receipt_path": str(path.resolve()),
-        "receipt_sha256": _sha256(path) if path.is_file() else None,
-        "non_claims": list(NON_CLAIMS),
-    }
-
-
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     write_json(path, payload)
-
-
-def _sha256(path: Path) -> str:
-    return sha256_file(path)
 
 
 def _now() -> str:
