@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +19,8 @@ from benchmarks.h3_evidence import (
 )
 from benchmarks.h3_controlled_pilot_receipts import (
     AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
+    ROLLBACK_SCHEMA_VERSION,
+    write_rollback_checkpoint,
 )
 from benchmarks.h3_controlled_pilot_authorization_decision_gate import (
     BOUNDARY as AUTHORIZATION_BOUNDARY,
@@ -31,7 +32,6 @@ from benchmarks.h3_controlled_pilot_authorization_decision_gate import (
 
 
 SCHEMA_VERSION = "h3-controlled-pilot-execution-preflight-gate:v1"
-ROLLBACK_SCHEMA_VERSION = "h3-controlled-pilot-rollback-checkpoint:v1"
 BOUNDARY = {
     "artifact_only": True,
     "execution_preflight_validation_allowed": True,
@@ -135,7 +135,7 @@ def build_execution_preflight(
     structural_passed = not failures and all(checks.values())
     rollback_checkpoint = None
     if structural_passed and rollback_path is not None:
-        rollback_checkpoint = _write_rollback_checkpoint(
+        rollback_checkpoint = write_rollback_checkpoint(
             path=rollback_path,
             receipt=receipt,
             authorization_reconciliation_path=reconciliation_path,
@@ -378,41 +378,6 @@ def _validate_receipt_window(
     )
 
 
-def _write_rollback_checkpoint(
-    *,
-    path: Path,
-    receipt: dict[str, Any],
-    authorization_reconciliation_path: Path,
-    created_at: datetime,
-    profile: str,
-) -> dict[str, Any]:
-    checkpoint = {
-        "schema_version": ROLLBACK_SCHEMA_VERSION,
-        "state": "baseline_captured_before_controlled_runner",
-        "created_at": created_at.isoformat(),
-        "authorization_receipt_id": receipt["authorization_receipt_id"],
-        "authorization_receipt_sha256": _canonical_sha256(receipt),
-        "source_authorization_reconciliation": artifact_ref(
-            authorization_reconciliation_path
-        ),
-        "baseline": {
-            "controlled_runner_started": False,
-            "production_state_mutated": False,
-            "iem_state_mutated": False,
-            "relation_state_mutated": False,
-            "authorization_state_mutated": False,
-            "normative_state_mutated": False,
-        },
-        "rollback_actions": [
-            f"stop the {profile} controlled runner through the operator kill switch",
-            "discard transient pilot outputs while retaining audit evidence",
-            "restore the preflight baseline without changing production state",
-        ],
-    }
-    write_json_object(path, checkpoint)
-    return checkpoint
-
-
 def _authorization_scope_valid(
     scope: dict[str, Any],
     *,
@@ -482,16 +447,6 @@ def _integer(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
-def _canonical_sha256(value: Any) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
 
 def _timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:

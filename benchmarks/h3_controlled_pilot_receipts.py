@@ -13,6 +13,7 @@ from benchmarks.h3_evidence import artifact_ref, sha256_file, write_json_object
 
 CONSUMPTION_SCHEMA_VERSION = "h3-controlled-pilot-authorization-consumption:v1"
 AUTHORIZATION_RECEIPT_SCHEMA_VERSION = "h3-one-time-authorization-receipt:v1"
+ROLLBACK_SCHEMA_VERSION = "h3-controlled-pilot-rollback-checkpoint:v1"
 POST_RUN_RECEIPT_SCHEMA_VERSION = "h3-controlled-pilot-post-run-receipt:v1"
 
 
@@ -81,6 +82,41 @@ def claim_authorization(
         handle.flush()
         os.fsync(handle.fileno())
     return value
+
+
+def write_rollback_checkpoint(
+    *,
+    path: Path,
+    receipt: dict[str, Any],
+    authorization_reconciliation_path: Path,
+    created_at: datetime,
+    profile: str,
+) -> dict[str, Any]:
+    checkpoint = {
+        "schema_version": ROLLBACK_SCHEMA_VERSION,
+        "state": "baseline_captured_before_controlled_runner",
+        "created_at": created_at.isoformat(),
+        "authorization_receipt_id": receipt["authorization_receipt_id"],
+        "authorization_receipt_sha256": _canonical_sha256(receipt),
+        "source_authorization_reconciliation": artifact_ref(
+            authorization_reconciliation_path
+        ),
+        "baseline": {
+            "controlled_runner_started": False,
+            "production_state_mutated": False,
+            "iem_state_mutated": False,
+            "relation_state_mutated": False,
+            "authorization_state_mutated": False,
+            "normative_state_mutated": False,
+        },
+        "rollback_actions": [
+            f"stop the {profile} controlled runner through the operator kill switch",
+            "discard transient pilot outputs while retaining audit evidence",
+            "restore the preflight baseline without changing production state",
+        ],
+    }
+    write_json_object(path, checkpoint)
+    return checkpoint
 
 
 def write_post_run_receipt(

@@ -11,9 +11,25 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from civitasos_contracts.artifacts import validate_artifact_envelope
+    from civitasos_contracts.artifacts import (
+        build_artifact_envelope,
+        validate_artifact_envelope,
+    )
+    from civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+        build_runtime_evidence,
+    )
 except ModuleNotFoundError:
-    from scripts.civitasos_contracts.artifacts import validate_artifact_envelope
+    from scripts.civitasos_contracts.artifacts import (
+        build_artifact_envelope,
+        validate_artifact_envelope,
+    )
+    from scripts.civitasos_contracts.provenance import (
+        build_git_release_provenance,
+        build_governance_evidence,
+        build_runtime_evidence,
+    )
 
 try:
     from beta_evidence import read_json_or_empty, sha256_file
@@ -195,6 +211,233 @@ def metrics(mediation: dict[str, Any], stages: dict[str, dict[str, Any]]) -> dic
         "preview_check_count": len(frontend_checks or []) + len(backend_checks or []),
         "preview_auth_method": (stages["fe10"].get("backend_auth") or {}).get("auth_method"),
     }
+
+
+def build_chain_summary(
+    *,
+    chain_id: str,
+    mediation_ref: dict[str, Any],
+    stage_refs: dict[str, dict[str, Any]],
+    mediation: dict[str, Any],
+    stages: dict[str, dict[str, Any]],
+    failures: list[str],
+    checked_at: str,
+) -> dict[str, Any]:
+    chain_metrics = metrics(mediation, stages)
+    runtime_evidence = build_runtime_evidence_bundle(
+        mediation_ref=mediation_ref,
+        stage_refs=stage_refs,
+        chain_metrics=chain_metrics,
+    )
+    governance_evidence = build_governance_evidence_bundle(
+        stage_refs=stage_refs,
+        chain_metrics=chain_metrics,
+    )
+    release_provenance = build_release_provenance_bundle(stage_refs=stage_refs)
+    return {
+        "schema_version": CHAIN_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="governance",
+            schema_version=CHAIN_SCHEMA,
+            artifact_id=f"frontend-chain-closeout:{chain_id}",
+            subject_id=f"frontend-release-chain:{chain_id}",
+            producer="beta_fe_frontend_chain_closeout",
+            source_refs=[mediation_ref, *stage_refs.values()],
+            scope="read_only_chain_closeout",
+        ),
+        "checked_at": checked_at,
+        "passed": not failures,
+        "decision": "beta_fe_frontend_chain_closeout_passed" if not failures else "blocked",
+        "failure_reasons": failures,
+        "chain_id": chain_id,
+        "mediation_summary": mediation_ref,
+        "gate_receipts": stage_refs,
+        "runtime_evidence": runtime_evidence,
+        "governance_evidence": governance_evidence,
+        "release_provenance": release_provenance,
+        "metrics": chain_metrics,
+        "historical_actions_observed": {
+            "civitasos_pool_mediation": chain_metrics["mediation_observed"],
+            "apply": True,
+            "commit": True,
+            "push": True,
+            "pr": True,
+            "review": True,
+            "merge": True,
+            "post_merge_smoke": True,
+            "local_private_preview": True,
+            "deploy": False,
+        },
+        "closeout_boundary": boundary(),
+        "h3_boundary": h3_boundary(),
+        "non_claims": list(NON_CLAIMS),
+    }
+
+
+def build_operator_handoff(
+    *,
+    chain_id: str,
+    chain_summary_ref: dict[str, Any],
+    roles: dict[str, str],
+    chain_summary: dict[str, Any],
+    failures: list[str],
+    checked_at: str,
+) -> dict[str, Any]:
+    chain_metrics = chain_summary.get("metrics")
+    chain_metrics = chain_metrics if isinstance(chain_metrics, dict) else {}
+    return {
+        "schema_version": HANDOFF_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="approval",
+            plane="governance",
+            schema_version=HANDOFF_SCHEMA,
+            artifact_id=f"frontend-operator-handoff:{chain_id}",
+            subject_id=f"frontend-release-chain:{chain_id}",
+            producer="beta_fe_frontend_chain_closeout",
+            source_refs=[chain_summary_ref],
+            scope="operator_handoff_review_required",
+        ),
+        "checked_at": checked_at,
+        "passed": not failures,
+        "decision": "beta_fe_frontend_operator_handoff_ready" if not failures else "blocked",
+        "failure_reasons": failures,
+        "chain_id": chain_id,
+        "chain_summary": chain_summary_ref,
+        "roles": roles,
+        "handoff_metrics": chain_metrics,
+        "runtime_evidence": chain_summary.get("runtime_evidence"),
+        "governance_evidence": chain_summary.get("governance_evidence"),
+        "release_provenance": chain_summary.get("release_provenance"),
+        "required_operator_checks": [
+            {"check": "all_gate_receipts_hash_bound", "passed": not failures},
+            {"check": "civitasos_pool_mediation_observed", "passed": chain_metrics.get("mediation_observed") is True},
+            {"check": "all_release_gates_passed", "passed": chain_metrics.get("passed_gate_count") == len(STAGES)},
+            {"check": "review_reconciliation_ready", "passed": chain_metrics.get("review_merge_ready") is True},
+            {"check": "preview_read_models_observed", "passed": int(chain_metrics.get("preview_check_count") or 0) >= 1},
+            {"check": "production_boundary_preserved", "passed": True},
+        ],
+        "next_operator_actions": [
+            "review the chain summary and all referenced SHA-256 values",
+            "record monitoring or audit follow-up separately if any regression appears",
+            "start the next frontend slice only through a new CivitasOS-mediated planning gate",
+            "do not treat this handoff as deploy or production authorization",
+        ],
+        "handoff_boundary": boundary(),
+        "h3_boundary": h3_boundary(),
+        "non_claims": list(NON_CLAIMS),
+    }
+
+
+def build_cumulative_index(
+    *,
+    records: list[dict[str, Any]],
+    failures: list[str],
+    min_chains: int,
+    indexed_at: str,
+) -> dict[str, Any]:
+    participant_ids = sorted({
+        participant
+        for record in records
+        for participant in record["participant_ids"]
+        if isinstance(participant, str) and participant
+    })
+    return {
+        "schema_version": INDEX_SCHEMA,
+        "artifact_envelope": build_artifact_envelope(
+            artifact_kind="receipt",
+            plane="governance",
+            schema_version=INDEX_SCHEMA,
+            artifact_id=f"frontend-cumulative-index:{len(records)}",
+            subject_id="frontend-release-chains",
+            producer="beta_fe_frontend_chain_closeout",
+            source_refs=[
+                record["handoff"]
+                for record in records
+                if isinstance(record.get("handoff"), dict)
+            ],
+            scope="read_only_multi_chain_index",
+        ),
+        "indexed_at": indexed_at,
+        "passed": not failures,
+        "decision": "beta_fe_frontend_cumulative_evidence_index_ready" if not failures else "blocked",
+        "failure_reasons": failures,
+        "chain_count": len(records),
+        "min_chains": min_chains,
+        "total_gate_receipt_count": len(records) * len(STAGES),
+        "total_pool_task_count": sum(record["pool_task_count"] for record in records),
+        "total_reviewer_count": sum(record["reviewer_count"] for record in records),
+        "total_preview_check_count": sum(record["preview_check_count"] for record in records),
+        "total_changed_file_count": sum(record["changed_file_count"] for record in records),
+        "total_runtime_evidence_ref_count": sum(
+            bundle_ref_count(record.get("runtime_evidence")) for record in records
+        ),
+        "total_governance_evidence_ref_count": sum(
+            bundle_ref_count(record.get("governance_evidence")) for record in records
+        ),
+        "total_release_provenance_ref_count": sum(
+            bundle_ref_count(record.get("release_provenance")) for record in records
+        ),
+        "unique_participant_count": len(participant_ids),
+        "unique_participant_ids": participant_ids,
+        "chains": records,
+        "index_boundary": boundary(),
+        "h3_boundary": h3_boundary(),
+        "non_claims": list(NON_CLAIMS),
+    }
+
+
+def build_runtime_evidence_bundle(
+    *,
+    mediation_ref: dict[str, Any],
+    stage_refs: dict[str, dict[str, Any]],
+    chain_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    return build_runtime_evidence(
+        {
+            "agent_mediation": mediation_ref,
+            "bounded_apply": stage_refs["fe3"],
+            "post_merge_smoke": stage_refs["fe9"],
+            "private_preview": stage_refs["fe10"],
+        },
+        assertions={
+            "pool_task_count": chain_metrics["pool_task_count"],
+            "delivery_observed_count": chain_metrics["delivery_observed_count"],
+            "post_merge_command_count": chain_metrics["post_merge_command_count"],
+            "preview_check_count": chain_metrics["preview_check_count"],
+        },
+    )
+
+
+def build_governance_evidence_bundle(
+    *,
+    stage_refs: dict[str, dict[str, Any]],
+    chain_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    return build_governance_evidence(
+        {"release_review_reconciliation": stage_refs["fe7"]},
+        assertions={
+            "reviewer_count": chain_metrics["reviewer_count"],
+            "review_merge_ready": chain_metrics["review_merge_ready"],
+            "operator_handoff_required": True,
+        },
+    )
+
+
+def build_release_provenance_bundle(
+    *,
+    stage_refs: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    return build_git_release_provenance(
+        {
+            "commit_receipt": stage_refs["fe4"],
+            "push_receipt": stage_refs["fe5"],
+            "draft_pr_receipt": stage_refs["fe6"],
+            "merge_receipt": stage_refs["fe8"],
+        },
+        actions_observed={"commit": True, "push": True, "pr": True, "merge": True},
+        actions_performed_by_current_step={},
+    )
 
 
 def validate_handoff(value: dict[str, Any], path: Path, failures: list[str]) -> None:
