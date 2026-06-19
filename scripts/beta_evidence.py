@@ -112,3 +112,13 @@ def validate_ref_bytes(value: Any, failures: list[str], label: str) -> Path | No
     if value.get("sha256") != sha256_file(path):
         failures.append(f"{label}.sha256 does not match file bytes")
     return path
+
+
+def require_schema(value: Any, expected_schema: str, failures: list[str], label: str) -> bool:
+    if not isinstance(value, dict):
+        failures.append(f"{label} must be a JSON object")
+        return False
+    if value.get("schema_version") != expected_schema:
+        failures.append(f"{label}.schema_version must be {expected_schema}")
+        return False
+    return True

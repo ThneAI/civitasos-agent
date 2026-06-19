@@ -10,7 +10,6 @@ or write production receipts.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import ipaddress
 import json
 import sys
@@ -21,6 +20,24 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from beta_evidence import (
+        artifact_ref as _evidence_artifact_ref,
+        require_schema,
+        safe_read_json_object,
+        sha256_file,
+        validate_ref_bytes,
+        write_json,
+    )
+except ModuleNotFoundError:
+    from scripts.beta_evidence import (
+        artifact_ref as _evidence_artifact_ref,
+        require_schema,
+        safe_read_json_object,
+        sha256_file,
+        validate_ref_bytes,
+        write_json,
+    )
 
 INVITATION_SCHEMA = "beta6-external-agent-invitation:v1"
 INVITATION_VALIDATION_SCHEMA = "beta6-external-agent-invitation-validation:v1"
@@ -377,8 +394,7 @@ def validate_registration_request(path: Path) -> dict[str, Any]:
             path,
             failures or ["external Agent registration request must be an object"],
         )
-    if request.get("schema_version") != REGISTRATION_REQUEST_SCHEMA:
-        failures.append(f"schema_version must be {REGISTRATION_REQUEST_SCHEMA}")
+    require_schema(request, REGISTRATION_REQUEST_SCHEMA, failures, "external Agent registration request")
     if request.get("request_scope") != "external_agent_registration_intake_only":
         failures.append("request_scope must be external_agent_registration_intake_only")
     if not _text(request.get("requester_id")):
@@ -390,8 +406,7 @@ def validate_registration_request(path: Path) -> dict[str, Any]:
     if not isinstance(expected_card, dict):
         failures.append("expected_agent_card must be an object")
         expected_card = {}
-    if expected_card.get("schema_version") != AGENT_CARD_SCHEMA:
-        failures.append(f"expected_agent_card.schema_version must be {AGENT_CARD_SCHEMA}")
+    require_schema(expected_card, AGENT_CARD_SCHEMA, failures, "expected_agent_card")
     _validate_agent_card_matches_invitation(expected_card, invitation, failures)
     required_attestation = request.get("required_attestation")
     if not isinstance(required_attestation, dict):
@@ -619,8 +634,7 @@ def validate_registration(path: Path) -> dict[str, Any]:
     registration = _safe_read_json(path, failures, "external Agent registration")
     if not isinstance(registration, dict):
         return _registration_validation_report(path, failures or ["external Agent registration must be an object"])
-    if registration.get("schema_version") != REGISTRATION_SCHEMA:
-        failures.append(f"schema_version must be {REGISTRATION_SCHEMA}")
+    require_schema(registration, REGISTRATION_SCHEMA, failures, "external Agent registration")
     if registration.get("registration_scope") != "external_agent_l1_controlled_pilot_registration_only":
         failures.append("registration_scope must be external_agent_l1_controlled_pilot_registration_only")
     for field in ("observer_actor_id", "attestation_ref", "external_agent_id", "display_name", "contact_ref"):
@@ -648,8 +662,7 @@ def validate_registration(path: Path) -> dict[str, Any]:
 
 
 def _validate_invitation_shape(invitation: dict[str, Any], failures: list[str]) -> None:
-    if invitation.get("schema_version") != INVITATION_SCHEMA:
-        failures.append(f"schema_version must be {INVITATION_SCHEMA}")
+    require_schema(invitation, INVITATION_SCHEMA, failures, "external Agent invitation")
     if invitation.get("authorization_scope") != "external_agent_invitation_only":
         failures.append("authorization_scope must be external_agent_invitation_only")
     for field in ("operator_id", "reason", "external_agent_id", "display_name", "contact_ref", "expires_at"):
@@ -714,8 +727,7 @@ def _load_valid_readiness(path: Path | None, failures: list[str]) -> dict[str, A
 
 
 def _validate_readiness_artifact_shape(readiness: dict[str, Any], failures: list[str]) -> None:
-    if readiness.get("schema_version") != READINESS_SCHEMA:
-        failures.append(f"readiness schema_version must be {READINESS_SCHEMA}")
+    require_schema(readiness, READINESS_SCHEMA, failures, "Beta-6 onboarding readiness")
     if readiness.get("passed") is not True:
         failures.append("readiness must have passed=true")
     if readiness.get("controlled_external_agent_invitation_allowed") is not True:
@@ -763,8 +775,7 @@ def _validate_feedback_index_shape(
     min_accepted_ratio: float,
     failures: list[str],
 ) -> None:
-    if index.get("schema_version") != BETA5_FEEDBACK_INDEX_SCHEMA:
-        failures.append(f"feedback index schema_version must be {BETA5_FEEDBACK_INDEX_SCHEMA}")
+    require_schema(index, BETA5_FEEDBACK_INDEX_SCHEMA, failures, "feedback index")
     if index.get("passed") is not True:
         failures.append("feedback index must have passed=true")
     packet_count = index.get("packet_count")
@@ -819,8 +830,7 @@ def _load_agent_card(path: Path | None, failures: list[str]) -> dict[str, Any]:
     card = _safe_read_json(path, failures, "external Agent card")
     if not isinstance(card, dict):
         return {}
-    if card.get("schema_version") != AGENT_CARD_SCHEMA:
-        failures.append(f"external Agent card schema_version must be {AGENT_CARD_SCHEMA}")
+    require_schema(card, AGENT_CARD_SCHEMA, failures, "external Agent card")
     for field in ("agent_id", "display_name", "agent_kind", "contact_ref"):
         if not _text(card.get(field)):
             failures.append(f"external Agent card {field} must be a non-empty string")
@@ -995,23 +1005,11 @@ def _registration_validation_report(path: Path, failures: list[str]) -> dict[str
 
 
 def _artifact_ref(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise FileNotFoundError(f"artifact path is not a file: {path}")
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
+    return _evidence_artifact_ref(path)
 
 
 def _validate_ref_bytes(ref: dict[str, Any], failures: list[str], label: str) -> Path | None:
-    path_text = _text(ref.get("path"))
-    if not path_text:
-        failures.append(f"{label}.path must be a non-empty string")
-        return None
-    path = Path(path_text)
-    if not path.is_file():
-        failures.append(f"{label}.path is not a file: {path}")
-        return None
-    if ref.get("sha256") != _sha256(path):
-        failures.append(f"{label}.sha256 does not match file bytes")
-    return path
+    return validate_ref_bytes(ref, failures, label)
 
 
 def _as_ref(value: Any, failures: list[str], label: str) -> dict[str, Any]:
@@ -1022,17 +1020,7 @@ def _as_ref(value: Any, failures: list[str], label: str) -> dict[str, Any]:
 
 
 def _safe_read_json(path: Path | None, failures: list[str], label: str) -> Any:
-    if path is None:
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 - validators preserve artifact detail.
-        failures.append(f"{label} could not be read: {exc}")
-        return None
-    if not isinstance(payload, dict):
-        failures.append(f"{label} must be a JSON object")
-        return None
-    return payload
+    return safe_read_json_object(path, failures, label)
 
 
 def _read_env_file(path: Path, failures: list[str]) -> dict[str, str]:
@@ -1133,16 +1121,11 @@ def _text(value: Any) -> str:
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json(path, payload)
 
 
 def _now() -> str:

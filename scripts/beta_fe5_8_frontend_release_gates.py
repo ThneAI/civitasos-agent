@@ -44,6 +44,23 @@ try:
 except ModuleNotFoundError:
     from scripts.beta_fe_ollama_native_reviewer import OllamaNativeReviewer
 
+try:
+    from beta_evidence import (
+        artifact_ref as _evidence_artifact_ref,
+        read_json_any_or_empty,
+        require_schema,
+        sha256_file,
+        write_json,
+    )
+except ModuleNotFoundError:
+    from scripts.beta_evidence import (
+        artifact_ref as _evidence_artifact_ref,
+        read_json_any_or_empty,
+        require_schema,
+        sha256_file,
+        write_json,
+    )
+
 FE4_RECEIPT_SCHEMA = "beta-fe4-frontend-commit-receipt:v1"
 FE5_RECEIPT_SCHEMA = "beta-fe5-frontend-push-receipt:v1"
 FE6_RECEIPT_SCHEMA = "beta-fe6-frontend-draft-pr-receipt:v1"
@@ -811,11 +828,8 @@ def run_fe8_merge(*, source_fe7_reconciliation: Path, frontend_root: Path, outpu
 
 
 def _validate_fe4(value: Any, failures: list[str]) -> None:
-    if not isinstance(value, dict):
-        failures.append("FE-4 receipt must be an object")
+    if not require_schema(value, FE4_RECEIPT_SCHEMA, failures, "FE-4 receipt"):
         return
-    if value.get("schema_version") != FE4_RECEIPT_SCHEMA:
-        failures.append(f"FE-4 schema_version must be {FE4_RECEIPT_SCHEMA}")
     if value.get("passed") is not True or value.get("decision") != "beta_fe4_frontend_commit_receipt_passed":
         failures.append("FE-4 receipt must be passed")
     boundary = value.get("boundary") if isinstance(value.get("boundary"), dict) else {}
@@ -828,7 +842,9 @@ def _validate_fe4(value: Any, failures: list[str]) -> None:
 
 
 def _validate_fe5(value: Any, failures: list[str]) -> None:
-    if not isinstance(value, dict) or value.get("schema_version") != FE5_RECEIPT_SCHEMA or value.get("passed") is not True:
+    if not require_schema(value, FE5_RECEIPT_SCHEMA, failures, "FE-5 receipt"):
+        return
+    if value.get("passed") is not True:
         failures.append("FE-5 receipt must be passed")
         return
     if value.get("remote_branch_after_head") != value.get("commit_id"):
@@ -837,7 +853,9 @@ def _validate_fe5(value: Any, failures: list[str]) -> None:
 
 
 def _validate_fe6(value: Any, failures: list[str]) -> None:
-    if not isinstance(value, dict) or value.get("schema_version") != FE6_RECEIPT_SCHEMA or value.get("passed") is not True:
+    if not require_schema(value, FE6_RECEIPT_SCHEMA, failures, "FE-6 receipt"):
+        return
+    if value.get("passed") is not True:
         failures.append("FE-6 receipt must be passed")
         return
     pr = value.get("draft_pr") if isinstance(value.get("draft_pr"), dict) else {}
@@ -849,7 +867,9 @@ def _validate_fe6(value: Any, failures: list[str]) -> None:
 
 
 def _validate_fe7(value: Any, failures: list[str]) -> None:
-    if not isinstance(value, dict) or value.get("schema_version") != FE7_RECEIPT_SCHEMA or value.get("passed") is not True:
+    if not require_schema(value, FE7_RECEIPT_SCHEMA, failures, "FE-7 reconciliation"):
+        return
+    if value.get("passed") is not True:
         failures.append("FE-7 reconciliation must be passed")
         return
     if value.get("operator_decision") != "ready_to_merge":
@@ -1145,30 +1165,19 @@ def _gh_json(repo: Path, failures: list[str], *args: str) -> Any:
 
 
 def _read_json(path: Path, failures: list[str], label: str) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        failures.append(f"{label} not found: {path}")
-    except json.JSONDecodeError as exc:
-        failures.append(f"{label} invalid JSON: {exc}")
-    return {}
+    return read_json_any_or_empty(path, failures, label)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json(path, payload)
 
 
 def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
+    return _evidence_artifact_ref(path)
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path)
 
 
 def _text(value: Any) -> str:
