@@ -10,6 +10,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from benchmarks.h3_evidence import (
+    artifact_ref,
+    object_value,
+    objects_value,
+    read_json_object,
+    resolve_under_root,
+    sha256_file,
+    write_json_object,
+)
 from benchmarks.h3_controlled_pilot_post_run_review import (
     SCHEMA_VERSION as POST_RUN_REVIEW_SCHEMA_VERSION,
 )
@@ -55,26 +64,26 @@ def create_operator_review_packet(
     agent_root: Path,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    review_path = _resolve(post_run_review_path, agent_root)
-    output = _resolve(output_path, agent_root)
+    review_path = resolve_under_root(post_run_review_path, agent_root)
+    output = resolve_under_root(output_path, agent_root)
     if output.exists() and not overwrite:
         raise FileExistsError(f"refusing to overwrite operator packet: {output}")
 
     failures: list[str] = []
-    source = _read_json(review_path, failures, "post-run contract review")
+    source = read_json_object(review_path, failures, "post-run contract review")
     candidates = _validate_source_review(source, failures)
     if failures:
         raise ValueError(f"cannot create A9 operator packet: {failures}")
 
     profile = str(source.get("validation_profile") or "development")
-    reconciliation = _object(source.get("reconciliation"))
+    reconciliation = object_value(source.get("reconciliation"))
     packet = {
         "schema_version": PACKET_SCHEMA_VERSION,
         "state": "operator_input_required",
         "validation_profile": profile,
         "development_only": profile == "development",
         "valid_for_qualification": False,
-        "source_post_run_contract_review": _artifact_ref(review_path),
+        "source_post_run_contract_review": artifact_ref(review_path),
         "source_post_run_receipt": source.get("source_post_run_receipt"),
         "source_task": source.get("source_task"),
         "allowed_finding_decisions": sorted(ALLOWED_FINDING_DECISIONS),
@@ -118,7 +127,7 @@ def create_operator_review_packet(
         "boundary": _boundary(profile),
         "non_claims": _non_claims(),
     }
-    _write_json(output, packet)
+    write_json_object(output, packet)
     return packet
 
 
@@ -130,15 +139,15 @@ def reconcile_operator_review(
     agent_root: Path,
     max_future_skew_seconds: float = 300.0,
 ) -> dict[str, Any]:
-    review_path = _resolve(post_run_review_path, agent_root)
-    packet_path = _resolve(operator_packet_path, agent_root)
-    output = _resolve(output_path, agent_root)
+    review_path = resolve_under_root(post_run_review_path, agent_root)
+    packet_path = resolve_under_root(operator_packet_path, agent_root)
+    output = resolve_under_root(output_path, agent_root)
     failures: list[str] = []
     checks: dict[str, bool] = {}
 
-    source = _read_json(review_path, failures, "post-run contract review")
-    packet = _read_json(packet_path, failures, "operator review packet")
-    profile = str(_object(source).get("validation_profile") or "development")
+    source = read_json_object(review_path, failures, "post-run contract review")
+    packet = read_json_object(packet_path, failures, "operator review packet")
+    profile = str(object_value(source).get("validation_profile") or "development")
     candidates = _validate_source_review(source, failures, checks)
     reviews = _validate_packet(
         packet,
@@ -161,7 +170,7 @@ def reconcile_operator_review(
     rejected = [
         review for review in reviews if review.get("decision") == "reject"
     ]
-    synthesis = _object(_object(packet).get("operator_synthesis"))
+    synthesis = object_value(object_value(packet).get("operator_synthesis"))
     passed = not failures and all(checks.values())
     replication_ready = (
         passed
@@ -180,10 +189,10 @@ def reconcile_operator_review(
         "development_only": profile == "development",
         "valid_for_qualification": False,
         "source_post_run_contract_review": (
-            _artifact_ref(review_path) if review_path.is_file() else None
+            artifact_ref(review_path) if review_path.is_file() else None
         ),
         "source_operator_review_packet": (
-            _artifact_ref(packet_path) if packet_path.is_file() else None
+            artifact_ref(packet_path) if packet_path.is_file() else None
         ),
         "review_summary": {
             "candidate_count": len(candidates),
@@ -207,13 +216,13 @@ def reconcile_operator_review(
             "deferred_candidate_reviews": deferred if passed else [],
             "rejected_candidate_reviews": rejected if passed else [],
             "counterexamples_acknowledged": (
-                _object(_object(packet).get("evidence_limitations")).get(
+                object_value(object_value(packet).get("evidence_limitations")).get(
                     "counterexamples_acknowledged"
                 )
                 is True
             ),
             "unresolved_assumptions_acknowledged": (
-                _object(_object(packet).get("evidence_limitations")).get(
+                object_value(object_value(packet).get("evidence_limitations")).get(
                     "unresolved_assumptions_acknowledged"
                 )
                 is True
@@ -238,7 +247,7 @@ def reconcile_operator_review(
         "boundary": boundary,
         "non_claims": _non_claims(),
     }
-    _write_json(output, report)
+    write_json_object(output, report)
     return report
 
 
@@ -281,7 +290,7 @@ def _validate_source_review(
         value.get("valid_for_qualification", False),
         False,
     )
-    readiness = _object(value.get("readiness"))
+    readiness = object_value(value.get("readiness"))
     _require(
         checks,
         failures,
@@ -294,7 +303,7 @@ def _validate_source_review(
         "automatic_state_change_blocked",
         readiness.get("automatic_state_change_allowed") is False,
     )
-    reconciliation = _object(value.get("reconciliation"))
+    reconciliation = object_value(value.get("reconciliation"))
     _require_equal(
         checks,
         failures,
@@ -314,7 +323,7 @@ def _validate_source_review(
         "source_trust_authorization_change_blocked",
         reconciliation.get("trust_or_authorization_change_allowed") is False,
     )
-    candidates = _objects(reconciliation.get("candidate_conditions"))
+    candidates = objects_value(reconciliation.get("candidate_conditions"))
     _require(checks, failures, "candidate_conditions_present", bool(candidates))
     _require(
         checks,
@@ -341,27 +350,27 @@ def _validate_source_review(
     )
     refs: dict[str, dict[str, Any]] = {}
     for name in ("source_post_run_receipt", "source_task"):
-        ref = _object(value.get(name))
+        ref = object_value(value.get(name))
         refs[name] = ref
         path = Path(str(ref.get("path") or "/missing"))
         _require(
             checks,
             failures,
             f"{name}_hash_valid",
-            path.is_file() and ref.get("sha256") == _sha256(path),
+            path.is_file() and ref.get("sha256") == sha256_file(path),
         )
     receipt_path = Path(
         str(refs.get("source_post_run_receipt", {}).get("path") or "/missing")
     )
-    receipt = _read_json(receipt_path, failures, "source post-run receipt")
+    receipt = read_json_object(receipt_path, failures, "source post-run receipt")
     _require_equal(
         checks,
         failures,
         "source_receipt_profile_binding",
-        _object(receipt).get("validation_profile", profile),
+        object_value(receipt).get("validation_profile", profile),
         profile,
     )
-    generation_refs = _objects(_object(receipt).get("generation_reports"))
+    generation_refs = objects_value(object_value(receipt).get("generation_reports"))
     _require_equal(
         checks,
         failures,
@@ -378,7 +387,7 @@ def _validate_source_review(
             (
                 path := Path(str(ref.get("path") or "/missing"))
             ).is_file()
-            and ref.get("sha256") == _sha256(path)
+            and ref.get("sha256") == sha256_file(path)
             for ref in generation_refs
         ),
     )
@@ -386,10 +395,10 @@ def _validate_source_review(
         checks,
         failures,
         "receipt_task_binding",
-        _object(receipt).get("task"),
+        object_value(receipt).get("task"),
         refs.get("source_task"),
     )
-    side_effects = _object(_object(receipt).get("side_effects"))
+    side_effects = object_value(object_value(receipt).get("side_effects"))
     _require(
         checks,
         failures,
@@ -430,7 +439,7 @@ def _validate_packet(
         checks, failures, "operator_packet_state",
         value.get("state"), "operator_input_required",
     )
-    profile = str(_object(source).get("validation_profile") or "development")
+    profile = str(object_value(source).get("validation_profile") or "development")
     _require_equal(
         checks,
         failures,
@@ -455,16 +464,16 @@ def _validate_packet(
     _require_equal(
         checks, failures, "operator_packet_source_binding",
         value.get("source_post_run_contract_review"),
-        _artifact_ref(review_path) if review_path.is_file() else None,
+        artifact_ref(review_path) if review_path.is_file() else None,
     )
     _require_equal(
         checks, failures, "operator_packet_receipt_binding",
         value.get("source_post_run_receipt"),
-        _object(source).get("source_post_run_receipt"),
+        object_value(source).get("source_post_run_receipt"),
     )
     _require_equal(
         checks, failures, "operator_packet_task_binding",
-        value.get("source_task"), _object(source).get("source_task"),
+        value.get("source_task"), object_value(source).get("source_task"),
     )
     _require_equal(
         checks, failures, "operator_packet_finding_decisions",
@@ -492,7 +501,7 @@ def _validate_packet(
         }
         for item in candidates
     }
-    reviews = _objects(value.get("candidate_reviews"))
+    reviews = objects_value(value.get("candidate_reviews"))
     review_ids = [str(item.get("candidate_id") or "") for item in reviews]
     _require(
         checks,
@@ -520,8 +529,8 @@ def _validate_packet(
         checks, failures, "candidate_review_fields_valid",
         bool(reviews) and review_fields_valid,
     )
-    limitations = _object(value.get("evidence_limitations"))
-    reconciliation = _object(_object(source).get("reconciliation"))
+    limitations = object_value(value.get("evidence_limitations"))
+    reconciliation = object_value(object_value(source).get("reconciliation"))
     counterexamples = _strings(reconciliation.get("counterexamples"))
     assumptions = _strings(reconciliation.get("unresolved_assumptions"))
     _require_equal(
@@ -550,7 +559,7 @@ def _validate_packet(
         checks, failures, "unresolved_assumptions_acknowledged",
         limitations.get("unresolved_assumptions_acknowledged") is True,
     )
-    synthesis = _object(value.get("operator_synthesis"))
+    synthesis = object_value(value.get("operator_synthesis"))
     reviewed_at = _timestamp(synthesis.get("reviewed_at"))
     now = datetime.now(timezone.utc)
     synthesis_valid = (
@@ -590,16 +599,6 @@ def _non_claims() -> list[str]:
     ]
 
 
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _objects(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
 def _strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -620,38 +619,11 @@ def _timestamp(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _read_json(
-    path: Path,
-    failures: list[str],
-    label: str,
-) -> dict[str, Any] | None:
-    if not path.is_file():
-        failures.append(f"{label} missing: {path}")
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        failures.append(f"{label} invalid: {exc}")
-        return None
-    if not isinstance(value, dict):
-        failures.append(f"{label} must be an object")
-        return None
-    return value
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
-
-
 def _canonical_sha256(value: Any) -> str:
     payload = json.dumps(
         value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _require(
@@ -673,18 +645,6 @@ def _require_equal(
     expected: Any,
 ) -> None:
     _require(checks, failures, name, actual == expected)
-
-
-def _resolve(path: Path, root: Path) -> Path:
-    return path.resolve() if path.is_absolute() else (root / path).resolve()
-
-
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _parser() -> argparse.ArgumentParser:

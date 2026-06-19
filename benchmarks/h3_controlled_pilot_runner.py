@@ -15,6 +15,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from benchmarks.h3_evidence import (
+    artifact_ref,
+    object_value,
+    objects_value,
+    read_json_object,
+    resolve_under_root,
+    sha256_file,
+    write_json_object,
+)
 from benchmarks.h3_controlled_pilot_execution_preflight_gate import (
     BOUNDARY as PREFLIGHT_BOUNDARY,
 )
@@ -79,13 +88,13 @@ def run_controlled_pilot(
     current_time: datetime | None = None,
     agent_call: AgentCall | None = None,
 ) -> dict[str, Any]:
-    preflight_file = _resolve(preflight_path, agent_root)
-    bounded_file = _resolve(bounded_plan_report_path, agent_root)
+    preflight_file = resolve_under_root(preflight_path, agent_root)
+    bounded_file = resolve_under_root(bounded_plan_report_path, agent_root)
     now = _as_utc(current_time or datetime.now(timezone.utc))
     failures: list[str] = []
     checks: dict[str, bool] = {}
-    preflight = _read_json(preflight_file, failures, "execution preflight")
-    profile = str(_object(preflight).get("validation_profile") or "development")
+    preflight = read_json_object(preflight_file, failures, "execution preflight")
+    profile = str(object_value(preflight).get("validation_profile") or "development")
     draft = _validate_inputs(
         preflight=preflight,
         bounded_plan_report_path=bounded_file,
@@ -94,10 +103,10 @@ def run_controlled_pilot(
         failures=failures,
         checks=checks,
     )
-    receipt = _object(_object(preflight).get("authorization_receipt"))
-    controls = _object(receipt.get("controls"))
+    receipt = object_value(object_value(preflight).get("authorization_receipt"))
+    controls = object_value(receipt.get("controls"))
     sink = _resolve_ref(controls.get("post_run_receipt_sink_ref"), agent_root)
-    kill_file = _resolve(kill_switch_file, agent_root) if kill_switch_file else None
+    kill_file = resolve_under_root(kill_switch_file, agent_root) if kill_switch_file else None
     _require(checks, failures, "post_run_receipt_sink_valid", sink is not None)
     _require(
         checks,
@@ -156,7 +165,7 @@ def run_controlled_pilot(
     else:
         run_failures = []
     task_path = sink.with_name(f"{sink.stem}.task.json")
-    _write_json(task_path, task)
+    write_json_object(task_path, task)
     generation_dir = sink.with_name(f"{sink.stem}.generations")
     generation_dir.mkdir(parents=True, exist_ok=True)
 
@@ -183,7 +192,7 @@ def run_controlled_pilot(
             run_failures,
             "agent_count_within_authorized_scope",
             1 <= len(generation_reports) <= int(
-                _object(receipt.get("authorized_scope")).get("max_agents", 0)
+                object_value(receipt.get("authorized_scope")).get("max_agents", 0)
             ),
         )
         _require(
@@ -203,7 +212,7 @@ def run_controlled_pilot(
         run_failures,
         "runner_duration_within_authorized_scope",
         duration_seconds
-        <= int(_object(receipt.get("authorized_scope")).get("max_duration_seconds", 0)),
+        <= int(object_value(receipt.get("authorized_scope")).get("max_duration_seconds", 0)),
     )
     passed = not run_failures and all(checks.values())
     reconciliation = _reconcile_generations(generation_reports)
@@ -221,12 +230,12 @@ def run_controlled_pilot(
         "valid_for_qualification": False,
         "authorization_receipt_id": receipt["authorization_receipt_id"],
         "authorization_receipt_sha256": _canonical_sha256(receipt),
-        "authorization_consumption": _artifact_ref(consumption_path),
-        "source_preflight": _artifact_ref(preflight_file),
-        "source_bounded_plan_report": _artifact_ref(bounded_file),
-        "task": _artifact_ref(task_path),
+        "authorization_consumption": artifact_ref(consumption_path),
+        "source_preflight": artifact_ref(preflight_file),
+        "source_bounded_plan_report": artifact_ref(bounded_file),
+        "task": artifact_ref(task_path),
         "generation_reports": [
-            _artifact_ref(Path(item["report_path"])) for item in generation_reports
+            artifact_ref(Path(item["report_path"])) for item in generation_reports
         ],
         "started_at": started_at.isoformat(),
         "completed_at": completed_at.isoformat(),
@@ -258,7 +267,7 @@ def run_controlled_pilot(
             "result_may_directly_change_normative_state": False,
         },
     }
-    _write_json(sink, post_run_receipt)
+    write_json_object(sink, post_run_receipt)
     return {
         "schema_version": SCHEMA_VERSION,
         "passed": passed,
@@ -267,9 +276,9 @@ def run_controlled_pilot(
         "development_only": profile == "development",
         "valid_for_qualification": False,
         "checks": checks,
-        "authorization_consumption": _artifact_ref(consumption_path),
-        "post_run_receipt": _artifact_ref(sink),
-        "task": _artifact_ref(task_path),
+        "authorization_consumption": artifact_ref(consumption_path),
+        "post_run_receipt": artifact_ref(sink),
+        "task": artifact_ref(task_path),
         "generation_report_count": len(generation_reports),
         "reconciliation": reconciliation,
         "readiness": {
@@ -315,7 +324,7 @@ def _validate_inputs(
         preflight.get("boundary"),
         expected_boundary,
     )
-    readiness = _object(preflight.get("readiness"))
+    readiness = object_value(preflight.get("readiness"))
     _require(
         checks,
         failures,
@@ -344,7 +353,7 @@ def _validate_inputs(
         preflight.get("valid_for_qualification"),
         profile == "qualification",
     )
-    receipt = _object(preflight.get("authorization_receipt"))
+    receipt = object_value(preflight.get("authorization_receipt"))
     valid_from = _timestamp(receipt.get("valid_from"))
     valid_until = _timestamp(receipt.get("valid_until"))
     _require(
@@ -359,7 +368,7 @@ def _validate_inputs(
             and valid_from <= current_time < valid_until
         ),
     )
-    scope = _object(receipt.get("authorized_scope"))
+    scope = object_value(receipt.get("authorized_scope"))
     _require(
         checks,
         failures,
@@ -372,8 +381,8 @@ def _validate_inputs(
         "kill_switch_explicitly_armed",
         ack_kill_switch_armed,
     )
-    bounded = _read_json(bounded_plan_report_path, failures, "bounded plan report")
-    drafts = _objects(_object(bounded).get("draft_surface", {}).get("drafts"))
+    bounded = read_json_object(bounded_plan_report_path, failures, "bounded plan report")
+    drafts = objects_value(object_value(bounded).get("draft_surface", {}).get("drafts"))
     matches = [
         item
         for item in drafts
@@ -391,7 +400,7 @@ def _build_task(
     agent_root: Path,
     profile: str,
 ) -> dict[str, Any]:
-    evidence_refs = _objects(_object(draft.get("source_binding")).get("evidence_refs"))
+    evidence_refs = objects_value(object_value(draft.get("source_binding")).get("evidence_refs"))
     task_evidence_refs = [
         {
             "record_id": item.get("record_id"),
@@ -416,12 +425,12 @@ def _build_task(
         "failure_conditions": draft.get("failure_conditions"),
         "success_metrics": draft.get("success_metrics"),
         "stop_conditions": draft.get("stop_conditions"),
-        "negative_control_checks": _object(
+        "negative_control_checks": object_value(
             draft.get("source_binding")
         ).get("negative_control_checks", {}),
         "evidence_refs": task_evidence_refs,
         "evidence_snapshots": evidence_snapshots,
-        "source_bounded_plan_report": _artifact_ref(bounded_file),
+        "source_bounded_plan_report": artifact_ref(bounded_file),
         "required_agent_roles": list(AGENT_ROLES),
         "required_output": sorted(REQUIRED_RESPONSE_FIELDS),
         "constraints": {
@@ -452,8 +461,8 @@ def _load_evidence_snapshots(
     }
     supplied: dict[str, Any] = {}
     for raw_path in evidence_report_paths:
-        path = _resolve(raw_path, agent_root)
-        digest = _sha256(path)
+        path = resolve_under_root(raw_path, agent_root)
+        digest = sha256_file(path)
         if digest not in expected_hashes:
             raise ValueError(f"evidence report is not authorized by the draft: {path}")
         supplied[digest] = json.loads(path.read_text(encoding="utf-8"))
@@ -467,8 +476,8 @@ def _load_evidence_snapshots(
         task_id = str(evidence_ref.get("task_id") or "")
         matches: list[tuple[str, dict[str, Any]]] = []
         for digest, value in supplied.items():
-            summaries = _object(value).get("worker_summaries")
-            for record in _object(summaries).values():
+            summaries = object_value(value).get("worker_summaries")
+            for record in object_value(summaries).values():
                 if isinstance(record, dict) and record.get("task_id") == task_id:
                     matches.append((digest, record))
         if len(matches) != 1:
@@ -488,14 +497,14 @@ def _load_evidence_snapshots(
 
 
 def _compact_worker_summary(record: dict[str, Any]) -> dict[str, Any]:
-    relation = _object(record.get("relation_update"))
-    iem = _object(record.get("iem_update"))
-    expectation_updates = _objects(relation.get("expectation_updates"))
+    relation = object_value(record.get("relation_update"))
+    iem = object_value(record.get("iem_update"))
+    expectation_updates = objects_value(relation.get("expectation_updates"))
     full_provenance = next(
         (
-            _object(_object(item.get("update_params")).get("delta_provenance"))
+            object_value(object_value(item.get("update_params")).get("delta_provenance"))
             for item in expectation_updates
-            if _object(_object(item.get("update_params")).get("delta_provenance"))
+            if object_value(object_value(item.get("update_params")).get("delta_provenance"))
         ),
         {},
     )
@@ -504,14 +513,14 @@ def _compact_worker_summary(record: dict[str, Any]) -> dict[str, Any]:
         "task_id": record.get("task_id"),
         "event_kind": record.get("event_kind"),
         "observed_at": record.get("observed_at"),
-        "authorization_changed": _object(
+        "authorization_changed": object_value(
             record.get("authorization_change")
         ).get("changed"),
         "relation_update": {
             "before": relation.get("before"),
             "after": relation.get("after"),
             "action_bias": _compact_action_bias(
-                _object(relation.get("action_bias"))
+                object_value(relation.get("action_bias"))
             ),
             "learning_provenance": provenance,
             "normative_guard_observed": any(
@@ -544,7 +553,7 @@ def _compact_learning_provenance(value: dict[str, Any]) -> dict[str, Any]:
                 "upstream_event_id",
             )
         }
-        for item in _objects(value.get("components"))
+        for item in objects_value(value.get("components"))
     ]
     compact = {
         key: value.get(key)
@@ -657,7 +666,7 @@ def _run_agents(
                 },
             }
             report_path = generation_dir / f"{role}.json"
-            _write_json(report_path, report)
+            write_json_object(report_path, report)
             report["report_path"] = str(report_path.resolve())
             reports.append(report)
     return sorted(reports, key=lambda item: str(item["agent_role"]))
@@ -703,7 +712,7 @@ def _ollama_agent_call(
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Ollama HTTP {exc.code}: {detail}") from exc
-        content = str(_object(provider.get("message")).get("content") or "")
+        content = str(object_value(provider.get("message")).get("content") or "")
         if not content.strip():
             raise RuntimeError(
                 "Ollama returned an empty response "
@@ -781,7 +790,7 @@ def _repair_prompt(
 ) -> str:
     evidence_ids = sorted(
         str(item.get("record_id") or "")
-        for item in _objects(task.get("evidence_refs"))
+        for item in objects_value(task.get("evidence_refs"))
         if str(item.get("record_id") or "")
     )
     return (
@@ -882,7 +891,7 @@ def _valid_agent_payload(
     boundary = payload.get("boundary_attestation")
     evidence_ids = {
         str(item.get("record_id") or "")
-        for item in _objects(task.get("evidence_refs"))
+        for item in objects_value(task.get("evidence_refs"))
     }
     claimed_refs = _normalize_evidence_refs(
         payload.get("evidence_refs"),
@@ -954,7 +963,7 @@ def _reconcile_generations(reports: list[dict[str, Any]]) -> dict[str, Any]:
     counterexamples: list[str] = []
     assumptions: list[str] = []
     for report in valid:
-        response = _object(report.get("response"))
+        response = object_value(report.get("response"))
         for condition in response.get("supported_conditions", []):
             normalized = str(condition).strip()
             if normalized:
@@ -999,7 +1008,7 @@ def _claim_authorization(
         "state": "authorization_consumed",
         "authorization_receipt_id": receipt["authorization_receipt_id"],
         "authorization_receipt_sha256": _canonical_sha256(receipt),
-        "source_preflight": _artifact_ref(preflight_file),
+        "source_preflight": artifact_ref(preflight_file),
         "consumed_at": started_at.isoformat(),
         "single_use": True,
         "immutable": True,
@@ -1030,7 +1039,7 @@ def _blocked_report(
     if preflight_file.is_file():
         try:
             profile = str(
-                _object(json.loads(preflight_file.read_text(encoding="utf-8"))).get(
+                object_value(json.loads(preflight_file.read_text(encoding="utf-8"))).get(
                     "validation_profile"
                 )
                 or "development"
@@ -1044,10 +1053,10 @@ def _blocked_report(
         "validation_profile": profile,
         "checks": checks,
         "source_preflight": (
-            _artifact_ref(preflight_file) if preflight_file.is_file() else None
+            artifact_ref(preflight_file) if preflight_file.is_file() else None
         ),
         "source_bounded_plan_report": (
-            _artifact_ref(bounded_file) if bounded_file.is_file() else None
+            artifact_ref(bounded_file) if bounded_file.is_file() else None
         ),
         "readiness": {
             "controlled_pilot_completed": False,
@@ -1081,20 +1090,6 @@ def _authorized_scope_valid(scope: dict[str, Any], *, profile: str) -> bool:
     return False
 
 
-def _object(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _objects(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
-def _artifact_ref(path: Path) -> dict[str, str]:
-    return {"path": str(path.resolve()), "sha256": _sha256(path)}
-
-
 def _canonical_sha256(value: Any) -> str:
     payload = json.dumps(
         value,
@@ -1103,10 +1098,6 @@ def _canonical_sha256(value: Any) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -1125,25 +1116,6 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("timestamp must include timezone")
     return value.astimezone(timezone.utc)
-
-
-def _read_json(
-    path: Path,
-    failures: list[str],
-    label: str,
-) -> dict[str, Any] | None:
-    if not path.is_file():
-        failures.append(f"{label} missing: {path}")
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        failures.append(f"{label} invalid: {exc}")
-        return None
-    if not isinstance(value, dict):
-        failures.append(f"{label} must be an object")
-        return None
-    return value
 
 
 def _require(
@@ -1170,22 +1142,10 @@ def _require_equal(
         failures.append(f"{name}: expected {expected!r}, got {actual!r}")
 
 
-def _resolve(path: Path, root: Path) -> Path:
-    return path.resolve() if path.is_absolute() else (root / path).resolve()
-
-
 def _resolve_ref(value: Any, root: Path) -> Path | None:
     if not isinstance(value, str) or not value.strip():
         return None
-    return _resolve(Path(value), root)
-
-
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    return resolve_under_root(Path(value), root)
 
 
 def _parser() -> argparse.ArgumentParser:

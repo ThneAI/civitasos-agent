@@ -13,7 +13,9 @@ def object_value(value: Any) -> dict[str, Any]:
 
 
 def objects_value(value: Any) -> list[dict[str, Any]]:
-    return [item for item in value] if isinstance(value, list) and all(isinstance(item, dict) for item in value) else []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def read_json_object(path: Path, failures: list[str], label: str) -> dict[str, Any] | None:
