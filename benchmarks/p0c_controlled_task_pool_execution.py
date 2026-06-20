@@ -14,9 +14,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
+import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Protocol
+from urllib import request as urllib_request
 
 from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, sha256_file, write_json_object
 from benchmarks.p0c_controlled_execution_authorization_gate import (
@@ -39,6 +43,7 @@ PREVIEW_SCHEMA = "p0c-pilot-status-evidence-index-preview:v1"
 NO_PRODUCTION_SCHEMA = "p0c-no-production-attestation:v1"
 ROLLBACK_OR_ABORT_SCHEMA = "p0c-rollback-or-abort-ref:v1"
 DELIVERY_OUTPUT_SCHEMA = "p0c-preview-delivery-output:v1"
+CALLBACK_SINK_SCHEMA = "p0c-callback-sink-receipt:v1"
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8099"
 DEFAULT_SERVICE_ID = "p0c_controlled_task_pool_execution"
 DEFAULT_RUNNER_ALIAS = "p0c_controlled_preview_runner"
@@ -52,6 +57,7 @@ REQUIRED_OUTPUT_FILES = (
     "p0c_rollback_or_abort_ref.json",
     "p0c_controlled_task_pool_execution_chain_summary.json",
 )
+OPTIONAL_OUTPUT_FILES = ("p0c_callback_sink_receipt.json",)
 
 
 class JsonClient(Protocol):
@@ -101,6 +107,8 @@ def run_execution(
     runner_alias: str = DEFAULT_RUNNER_ALIAS,
     requester_alias: str = DEFAULT_REQUESTER_ALIAS,
     authorization_consumption_path: Path | None = None,
+    enable_callback_sink: bool = False,
+    callback_wait_seconds: float = 5.0,
 ) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
     artifacts = {
@@ -109,6 +117,7 @@ def run_execution(
         "preview_artifact": output_root / "p0c_preview_artifact.json",
         "no_production_attestation": output_root / "p0c_no_production_attestation.json",
         "rollback_or_abort_ref": output_root / "p0c_rollback_or_abort_ref.json",
+        "callback_sink_receipt": output_root / "p0c_callback_sink_receipt.json",
         "summary": output_root / "p0c_controlled_task_pool_execution_chain_summary.json",
     }
     context = _validate_authorization_chain(p0c_summary_path)
@@ -164,78 +173,95 @@ def run_execution(
     started_at = _now()
     failures: list[str] = []
     try:
-        alias_suffix = _alias_suffix(output_root)
-        requester = _quickstart_agent(
-            client,
-            alias=f"{requester_alias}_{alias_suffix}",
-            name="P0-C Controlled Preview Operator",
-            description="Requester identity for one-time P0-C controlled task-pool preview execution",
-        )
-        runner = _quickstart_agent(
-            client,
-            alias=f"{runner_alias}_{alias_suffix}",
-            name="P0-C Controlled Preview Runner",
-            description="Single authorized runner identity for P0-C pilot status evidence index preview",
-        )
-        post = client.post("/api/v1/a2a/pool/post", _task_payload(requester=requester, runner=runner, p0c_summary_path=p0c_summary_path, context=context))
-        task_id = str(object_value(post).get("task_id") or "")
-        if not task_id:
-            raise RuntimeError(f"pool post missing task_id: {post}")
-        claim_response = client.post("/api/v1/a2a/pool/claim", {"agent_id": runner["did"], "task_id": task_id, "stake_amount": 0})
-        claimed_task = _get_task(client, task_id)
-        preview = _write_preview_artifact(
-            output=artifacts["preview_artifact"],
-            task_id=task_id,
-            backend_url=backend_url,
-            requester=requester,
-            runner=runner,
-            p0c_summary_path=p0c_summary_path,
-            context=context,
-        )
-        no_production = _write_no_production_attestation(
-            output=artifacts["no_production_attestation"],
-            task_id=task_id,
-            auth_report=auth_report,
-            preview_path=artifacts["preview_artifact"],
-        )
-        rollback = _write_rollback_or_abort_ref(
-            output=artifacts["rollback_or_abort_ref"],
-            task_id=task_id,
-            preview_path=artifacts["preview_artifact"],
-            execution_spec=execution_spec,
-        )
-        delivery_output = _delivery_contract_safe_text(task_id=task_id)
-        execute_response = client.post(
-            "/api/v1/a2a/task/execute",
-            {
-                "agent_id": runner["did"],
-                "task_id": task_id,
-                "output": delivery_output,
-                "success": True,
-                "metadata": {
-                    "runner": "p0c_controlled_task_pool_execution",
-                    "operator_id": operator_id,
-                    "execution_scope": "one_time_controlled_preview",
+        with CallbackAuditSink(enabled=enable_callback_sink) as callback_sink:
+            alias_suffix = _alias_suffix(output_root)
+            endpoint = callback_sink.endpoint if callback_sink.enabled else None
+            requester = _quickstart_agent(
+                client,
+                alias=f"{requester_alias}_{alias_suffix}",
+                name="P0-C Controlled Preview Operator",
+                description="Requester identity for one-time P0-C controlled task-pool preview execution",
+                endpoint=endpoint,
+            )
+            runner = _quickstart_agent(
+                client,
+                alias=f"{runner_alias}_{alias_suffix}",
+                name="P0-C Controlled Preview Runner",
+                description="Single authorized runner identity for P0-C pilot status evidence index preview",
+                endpoint=endpoint,
+            )
+            post = client.post("/api/v1/a2a/pool/post", _task_payload(requester=requester, runner=runner, p0c_summary_path=p0c_summary_path, context=context))
+            task_id = str(object_value(post).get("task_id") or "")
+            if not task_id:
+                raise RuntimeError(f"pool post missing task_id: {post}")
+            claim_response = client.post("/api/v1/a2a/pool/claim", {"agent_id": runner["did"], "task_id": task_id, "stake_amount": 0})
+            claimed_task = _get_task(client, task_id)
+            preview = _write_preview_artifact(
+                output=artifacts["preview_artifact"],
+                task_id=task_id,
+                backend_url=backend_url,
+                requester=requester,
+                runner=runner,
+                p0c_summary_path=p0c_summary_path,
+                context=context,
+            )
+            no_production = _write_no_production_attestation(
+                output=artifacts["no_production_attestation"],
+                task_id=task_id,
+                auth_report=auth_report,
+                preview_path=artifacts["preview_artifact"],
+            )
+            rollback = _write_rollback_or_abort_ref(
+                output=artifacts["rollback_or_abort_ref"],
+                task_id=task_id,
+                preview_path=artifacts["preview_artifact"],
+                execution_spec=execution_spec,
+            )
+            delivery_output = _delivery_contract_safe_text(task_id=task_id)
+            execute_response = client.post(
+                "/api/v1/a2a/task/execute",
+                {
+                    "agent_id": runner["did"],
+                    "task_id": task_id,
+                    "output": delivery_output,
+                    "success": True,
+                    "metadata": {
+                        "runner": "p0c_controlled_task_pool_execution",
+                        "operator_id": operator_id,
+                        "execution_scope": "one_time_controlled_preview",
+                    },
                 },
-            },
-        )
-        final_task = _get_task(client, task_id)
-        receipt = _write_task_pool_execution_receipt(
-            output=artifacts["task_pool_execution_receipt"],
-            task_id=task_id,
-            requester=requester,
-            runner=runner,
-            post_response=post,
-            claim_response=claim_response,
-            execute_response=execute_response,
-            claimed_task=claimed_task,
-            final_task=final_task,
-            consumption_path=artifacts["authorization_consumption"],
-            auth_report=auth_report,
-            preview_path=artifacts["preview_artifact"],
-            no_production_path=artifacts["no_production_attestation"],
-            rollback_path=artifacts["rollback_or_abort_ref"],
-        )
+            )
+            callback_sink.wait_for(task_id=task_id, event="task_completed", timeout_seconds=callback_wait_seconds)
+            final_task = _get_task(client, task_id)
+            callback_receipt = (
+                _write_callback_sink_receipt(
+                    output=artifacts["callback_sink_receipt"],
+                    task_id=task_id,
+                    callback_sink=callback_sink,
+                    requester=requester,
+                    runner=runner,
+                )
+                if enable_callback_sink
+                else {"enabled": False, "passed": False}
+            )
+            receipt = _write_task_pool_execution_receipt(
+                output=artifacts["task_pool_execution_receipt"],
+                task_id=task_id,
+                requester=requester,
+                runner=runner,
+                post_response=post,
+                claim_response=claim_response,
+                execute_response=execute_response,
+                claimed_task=claimed_task,
+                final_task=final_task,
+                consumption_path=artifacts["authorization_consumption"],
+                auth_report=auth_report,
+                preview_path=artifacts["preview_artifact"],
+                no_production_path=artifacts["no_production_attestation"],
+                rollback_path=artifacts["rollback_or_abort_ref"],
+                callback_sink_path=artifacts["callback_sink_receipt"] if callback_receipt.get("passed") is True else None,
+            )
     except Exception as exc:  # noqa: BLE001 - fail closed after consumption
         failures.append(f"controlled_task_pool_execution_failed:{exc}")
         completed_at = _now()
@@ -268,6 +294,8 @@ def run_execution(
     check(checks, failures, "preview_artifact_written", artifacts["preview_artifact"].is_file() and preview.get("passed") is True)
     check(checks, failures, "no_production_attestation_passed", no_production.get("passed") is True)
     check(checks, failures, "rollback_or_abort_ref_written", rollback.get("passed") is True)
+    if enable_callback_sink:
+        check(checks, failures, "callback_sink_receipt_passed", callback_receipt.get("passed") is True)
     passed = bool(checks) and all(checks.values()) and not failures
     summary = _summary(
         passed=passed,
@@ -280,6 +308,8 @@ def run_execution(
         boundary=_execution_boundary(
             authorization_consumed=True,
             service_token_used=True,
+            callback_sink_started=enable_callback_sink,
+            callback_delivery_observed=callback_receipt.get("passed") is True if enable_callback_sink else False,
             runner_identity_registered=True,
             requester_identity_registered=True,
             task_pool_post_performed=True,
@@ -402,14 +432,14 @@ def _default_consumption_lease_path(authorization_path: Path) -> Path:
     return authorization_path.with_name(f"{authorization_path.stem}.consumed.json")
 
 
-def _quickstart_agent(client: JsonClient, *, alias: str, name: str, description: str) -> dict[str, Any]:
+def _quickstart_agent(client: JsonClient, *, alias: str, name: str, description: str, endpoint: str | None = None) -> dict[str, Any]:
     result = client.post(
         "/api/v1/a2a/quickstart",
         {
             "public_key": _public_key_hex(alias),
             "alias": alias,
             "name": name,
-            "endpoint": f"http://127.0.0.1:65535/{alias}",
+            "endpoint": endpoint or f"http://127.0.0.1:65535/{alias}",
             "description": description,
         },
     )
@@ -555,6 +585,43 @@ def _write_rollback_or_abort_ref(*, output: Path, task_id: str, preview_path: Pa
     return value
 
 
+def _write_callback_sink_receipt(*, output: Path, task_id: str, callback_sink: "CallbackAuditSink", requester: dict[str, Any], runner: dict[str, Any]) -> dict[str, Any]:
+    events = callback_sink.records()
+    task_events = [event for event in events if _callback_task_id(event) == task_id]
+    completed_events = [event for event in task_events if _callback_event(event) == "task_completed"]
+    checks: dict[str, bool] = {}
+    failures: list[str] = []
+    check(checks, failures, "callback_sink_enabled", callback_sink.enabled)
+    check(checks, failures, "callback_sink_endpoint_private", callback_sink.endpoint.startswith("http://127.0.0.1:"))
+    check(checks, failures, "callback_event_for_task_observed", bool(task_events))
+    check(checks, failures, "task_completed_callback_observed", bool(completed_events))
+    passed = bool(checks) and all(checks.values()) and not failures
+    value = {
+        "schema_version": CALLBACK_SINK_SCHEMA,
+        "enabled": callback_sink.enabled,
+        "passed": passed,
+        "failure_reasons": failures,
+        "checks": checks,
+        "checked_at": _now(),
+        "task_id": task_id,
+        "endpoint": callback_sink.endpoint,
+        "requester": requester,
+        "runner": runner,
+        "received_event_count": len(events),
+        "task_event_count": len(task_events),
+        "task_completed_event_count": len(completed_events),
+        "events": task_events,
+        "boundary": _execution_boundary(callback_sink_started=callback_sink.enabled, callback_delivery_observed=passed),
+        "non_claims": [
+            "callback_sink_receipt_proves_local_private_callback_delivery_only",
+            "callback_sink_receipt_does_not_authorize_vm_preview",
+            "callback_sink_receipt_does_not_authorize_production_transition",
+        ],
+    }
+    write_json_object(output, value)
+    return value
+
+
 def _write_task_pool_execution_receipt(
     *,
     output: Path,
@@ -571,6 +638,7 @@ def _write_task_pool_execution_receipt(
     preview_path: Path,
     no_production_path: Path,
     rollback_path: Path,
+    callback_sink_path: Path | None = None,
 ) -> dict[str, Any]:
     value = {
         "schema_version": TASK_RECEIPT_SCHEMA,
@@ -591,6 +659,7 @@ def _write_task_pool_execution_receipt(
         "preview_artifact_ref": artifact_ref(preview_path),
         "no_production_attestation_ref": artifact_ref(no_production_path),
         "rollback_or_abort_ref": artifact_ref(rollback_path),
+        "callback_sink_receipt_ref": artifact_ref(callback_sink_path) if callback_sink_path and callback_sink_path.is_file() else None,
         "auth_context": {key: value for key, value in auth_report.items() if key != "token"},
         "boundary": _execution_boundary(
             service_token_used=True,
@@ -601,6 +670,8 @@ def _write_task_pool_execution_receipt(
             task_pool_execute_performed=True,
             task_pool_state_mutation_performed=True,
             preview_artifact_written=True,
+            callback_sink_started=callback_sink_path is not None,
+            callback_delivery_observed=callback_sink_path is not None,
         ),
         "non_claims": _non_claims(),
     }
@@ -675,6 +746,8 @@ def _execution_boundary(**overrides: bool) -> dict[str, bool]:
         "requester_identity_registered": False,
         "runner_identity_registered": False,
         "agent_process_started": False,
+        "callback_sink_started": False,
+        "callback_delivery_observed": False,
         "task_pool_post_performed": False,
         "task_pool_claim_performed": False,
         "task_pool_execute_performed": False,
@@ -702,6 +775,135 @@ def _non_claims() -> list[str]:
         "p0c_execution_does_not_write_production_receipt",
         "p0c_execution_does_not_authorize_production_transition",
     ]
+
+
+class CallbackAuditSink:
+    def __init__(self, *, enabled: bool) -> None:
+        self.enabled = enabled
+        self._server: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        self._records: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self.endpoint = ""
+
+    def __enter__(self) -> "CallbackAuditSink":
+        if not self.enabled:
+            return self
+        sink = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_HEAD(self) -> None:  # noqa: N802
+                self.send_response(200)
+                self.end_headers()
+
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                body = self.rfile.read(length)
+                record = _callback_record(path=self.path, headers=dict(self.headers), body=body)
+                with sink._lock:
+                    sink._records.append(record)
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+                return
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        host, port = self._server.server_address
+        self.endpoint = f"http://{host}:{port}/p0c-callback-sink"
+        self._thread = threading.Thread(target=self._server.serve_forever, name="p0c-callback-sink", daemon=True)
+        self._thread.start()
+        _wait_for_local_http(self.endpoint)
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+
+    def records(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._records)
+
+    def wait_for(self, *, task_id: str, event: str, timeout_seconds: float) -> bool:
+        if not self.enabled:
+            return False
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if any(_callback_task_id(record) == task_id and _callback_event(record) == event for record in self.records()):
+                return True
+            time.sleep(0.05)
+        return False
+
+
+def _callback_record(*, path: str, headers: dict[str, str], body: bytes) -> dict[str, Any]:
+    raw_body = body.decode("utf-8", errors="replace")
+    try:
+        json_body: Any = json.loads(raw_body) if raw_body else None
+    except json.JSONDecodeError:
+        json_body = None
+    signature = _header_value(headers, "X-Civitas-Webhook-Signature")
+    return {
+        "received_at": _now(),
+        "method": "POST",
+        "path": path,
+        "headers": {
+            "content_type": _header_value(headers, "Content-Type") or None,
+            "issuer": _header_value(headers, "X-Civitas-Webhook-Issuer") or None,
+            "timestamp": _header_value(headers, "X-Civitas-Webhook-Timestamp") or None,
+            "signature_present": bool(signature),
+            "signature_sha256": _sha256_text(signature) if signature else None,
+        },
+        "body_sha256": _sha256_text(raw_body),
+        "body": json_body if isinstance(json_body, dict) else {"raw": raw_body},
+    }
+
+
+def _header_value(headers: dict[str, str], name: str) -> str:
+    lowered = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lowered:
+            return value
+    return ""
+
+
+def _callback_event(record: dict[str, Any]) -> str:
+    body = object_value(record.get("body"))
+    return str(body.get("event") or "")
+
+
+def _callback_task_id(record: dict[str, Any]) -> str:
+    body = object_value(record.get("body"))
+    if body.get("task_id"):
+        return str(body.get("task_id"))
+    data = object_value(body.get("data"))
+    return str(data.get("task_id") or "")
+
+
+def _wait_for_local_http(endpoint: str) -> None:
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            with urllib_request.urlopen(endpoint, timeout=0.2) as response:
+                if response.status < 500:
+                    return
+        except Exception:
+            time.sleep(0.02)
+    raise RuntimeError(f"callback sink failed to start: {endpoint}")
+
+
+def _sha256_text(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _public_key_hex(seed: str) -> str:
@@ -772,6 +974,8 @@ def main() -> int:
     parser.add_argument("--runner-alias", default=DEFAULT_RUNNER_ALIAS)
     parser.add_argument("--requester-alias", default=DEFAULT_REQUESTER_ALIAS)
     parser.add_argument("--authorization-consumption-path")
+    parser.add_argument("--enable-callback-sink", action="store_true")
+    parser.add_argument("--callback-wait-seconds", type=float, default=5.0)
     args = parser.parse_args()
     p0c_summary = Path(args.p0c_summary)
     env_file = Path(args.service_token_env_file) if args.service_token_env_file else None
@@ -791,6 +995,8 @@ def main() -> int:
         runner_alias=args.runner_alias,
         requester_alias=args.requester_alias,
         authorization_consumption_path=Path(args.authorization_consumption_path) if args.authorization_consumption_path else None,
+        enable_callback_sink=args.enable_callback_sink,
+        callback_wait_seconds=args.callback_wait_seconds,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if summary.get("passed") is True else 1

@@ -18,6 +18,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, sha256_file, write_json_object
+from benchmarks.p0c_controlled_task_pool_execution import CALLBACK_SINK_SCHEMA
 from benchmarks.p0c_controlled_task_pool_execution import CHAIN_SCHEMA as P0C_EXECUTION_SCHEMA
 from benchmarks.p0c_controlled_task_pool_execution import NO_PRODUCTION_SCHEMA, PREVIEW_SCHEMA, ROLLBACK_OR_ABORT_SCHEMA, TASK_RECEIPT_SCHEMA
 
@@ -109,6 +110,7 @@ def run_gate(*, p0c_execution_summary_path: Path, output_root: Path, client: Jso
             backend_read_model_checked=backend.get("checks", {}).get("operator_read_model_present") is True,
             audit_endpoint_checked=backend.get("checks", {}).get("audit_events_endpoint_present") is True and backend.get("checks", {}).get("audit_log_endpoint_present") is True,
             owner_audit_review_packet_written=review.get("passed") is True,
+            callback_delivery_observed=integrity.get("callback_sink_evidence_present") is True,
         ),
         "non_claims": _non_claims(),
     }
@@ -131,6 +133,7 @@ def write_artifact_integrity_report(*, p0c_execution_summary_path: Path, output:
     no_prod = _read_verified_ref(refs.get("no_production_attestation"), checks, failures, "no_production_attestation")
     rollback = _read_verified_ref(refs.get("rollback_or_abort_ref"), checks, failures, "rollback_or_abort_ref")
     consumption = _read_verified_ref(refs.get("authorization_consumption"), checks, failures, "authorization_consumption")
+    callback_sink = _read_optional_verified_ref(refs.get("callback_sink_receipt"), checks, failures, "callback_sink_receipt")
     boundary = object_value(summary.get("boundary"))
     readiness = object_value(summary.get("readiness"))
     task_id = str(summary.get("task_id") or task_receipt.get("task_id") or "")
@@ -146,6 +149,12 @@ def write_artifact_integrity_report(*, p0c_execution_summary_path: Path, output:
     check(checks, failures, "no_vm_contact", boundary.get("vm_contact_performed") is False)
     check(checks, failures, "no_deploy", boundary.get("deploy_performed") is False)
     check(checks, failures, "no_production_receipt", boundary.get("production_receipt_write_allowed") is False)
+    callback_present = bool(callback_sink)
+    callback_passed = callback_sink.get("schema_version") == CALLBACK_SINK_SCHEMA and callback_sink.get("passed") is True
+    if callback_present:
+        check(checks, failures, "callback_sink_receipt_passed", callback_passed)
+        check(checks, failures, "callback_sink_task_matches", callback_sink.get("task_id") == task_id)
+        check(checks, failures, "callback_sink_completed_event_observed", callback_sink.get("task_completed_event_count", 0) >= 1)
     passed = _passed(checks, failures)
     report = {
         "schema_version": INTEGRITY_SCHEMA,
@@ -156,6 +165,8 @@ def write_artifact_integrity_report(*, p0c_execution_summary_path: Path, output:
         "source_artifacts": {"p0c_execution_summary": artifact_ref(p0c_execution_summary_path)},
         "verified_artifacts": {name: refs.get(name) for name in refs},
         "p0c_boundary": boundary,
+        "callback_sink_evidence_present": callback_present and callback_passed,
+        "callback_sink_summary": _callback_sink_summary(callback_sink),
     }
     write_json_object(output, report)
     return report
@@ -221,11 +232,12 @@ def write_backend_smoke_receipt(*, p0c_execution_summary_path: Path, integrity_r
         "endpoint_results": _compact_endpoint_results(endpoint_results),
         "task_readback": _task_summary(task),
         "operator_read_model_summary": _operator_read_model_summary(operator_read_model),
-        "callback_sink_evidence_present": False,
+        "callback_sink_evidence_present": integrity.get("callback_sink_evidence_present") is True,
         "boundary": _boundary(
             service_token_used=auth_report.get("auth_method") in {"service_token", "service-token"},
             backend_read_model_checked=checks.get("operator_read_model_present") is True,
             audit_endpoint_checked=checks.get("audit_events_endpoint_present") is True and checks.get("audit_log_endpoint_present") is True,
+            callback_delivery_observed=integrity.get("callback_sink_evidence_present") is True,
         ),
     }
     write_json_object(output, report)
@@ -282,6 +294,7 @@ def write_owner_audit_review_packet(*, p0c_execution_summary_path: Path, integri
             backend_read_model_checked=object_value(backend.get("checks")).get("operator_read_model_present") is True,
             audit_endpoint_checked=object_value(backend.get("checks")).get("audit_events_endpoint_present") is True and object_value(backend.get("checks")).get("audit_log_endpoint_present") is True,
             owner_audit_review_packet_written=passed,
+            callback_delivery_observed=backend.get("callback_sink_evidence_present") is True,
         ),
     }
     write_json_object(output, packet)
@@ -297,6 +310,27 @@ def _read_verified_ref(value: Any, checks: dict[str, bool], failures: list[str],
         return {}
     check(checks, failures, f"{label}_hash_valid", bool(expected_hash) and sha256_file(path) == expected_hash)
     return read_json_object(path)
+
+
+def _read_optional_verified_ref(value: Any, checks: dict[str, bool], failures: list[str], label: str) -> dict[str, Any]:
+    if value in (None, "", {}, []):
+        return {}
+    return _read_verified_ref(value, checks, failures, label)
+
+
+def _callback_sink_summary(value: dict[str, Any]) -> dict[str, Any]:
+    if not value:
+        return {"present": False}
+    return {
+        "present": True,
+        "schema_version": value.get("schema_version"),
+        "passed": value.get("passed"),
+        "enabled": value.get("enabled"),
+        "task_id": value.get("task_id"),
+        "received_event_count": value.get("received_event_count"),
+        "task_event_count": value.get("task_event_count"),
+        "task_completed_event_count": value.get("task_completed_event_count"),
+    }
 
 
 def _read_endpoints(task_id: str) -> list[tuple[str, str]]:
@@ -379,6 +413,7 @@ def _boundary(**overrides: bool) -> dict[str, bool]:
         "backend_read_model_checked": False,
         "audit_endpoint_checked": False,
         "owner_audit_review_packet_written": False,
+        "callback_delivery_observed": False,
         "vm_contact_performed": False,
         "source_tree_write_performed": False,
         "git_write_performed": False,

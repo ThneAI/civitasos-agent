@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from benchmarks.i_gate_evidence import artifact_ref
+from benchmarks.p0c_controlled_task_pool_execution import CALLBACK_SINK_SCHEMA
 from benchmarks.p0c_controlled_task_pool_execution import run_execution
 from benchmarks.p0d_preview_smoke_gate import run_gate
 from benchmarks.tests.test_p0c_controlled_task_pool_execution import FakeClient, _write_p0c_summary
@@ -70,6 +72,28 @@ def test_p0d_preview_smoke_passes_after_p0c_task_delivery(tmp_path: Path) -> Non
     assert packet["review_packet"]["vm_target_ids"] == ["vm1", "vm2", "vm3"]
 
 
+def test_p0d_callback_sink_receipt_removes_callback_review_block(tmp_path: Path) -> None:
+    client = FakeP0DClient()
+    p0c_execution_summary = _write_p0c_execution_summary(tmp_path, client)
+    _attach_callback_sink_receipt(p0c_execution_summary, task_id="p0c-task-1")
+
+    summary = run_gate(
+        p0c_execution_summary_path=p0c_execution_summary,
+        output_root=tmp_path / "p0d",
+        client=client,
+        backend_url="http://127.0.0.1:8099",
+        operator_id="operator-test",
+    )
+
+    assert summary["passed"] is True
+    assert summary["readiness"]["p0e_rollback_drill_ready"] is True
+    assert summary["boundary"]["callback_delivery_observed"] is True
+    backend = json.loads((tmp_path / "p0d" / "p0d_backend_smoke_receipt.json").read_text(encoding="utf-8"))
+    assert backend["callback_sink_evidence_present"] is True
+    packet = json.loads((tmp_path / "p0d" / "p0d_owner_audit_review_packet.json").read_text(encoding="utf-8"))
+    assert packet["review_packet"]["callback_sink_review_required"] is False
+
+
 def test_p0d_blocks_demo_login_auth(tmp_path: Path) -> None:
     execution_client = FakeP0DClient()
     p0c_execution_summary = _write_p0c_execution_summary(tmp_path, execution_client)
@@ -129,3 +153,42 @@ def _write_p0c_execution_summary(tmp_path: Path, client: FakeP0DClient) -> Path:
     p0c_summary = _write_p0c_summary(tmp_path)
     run_execution(p0c_summary_path=p0c_summary, output_root=tmp_path / "execution", client=client)
     return tmp_path / "execution" / "p0c_controlled_task_pool_execution_chain_summary.json"
+
+
+def _attach_callback_sink_receipt(p0c_execution_summary: Path, *, task_id: str) -> None:
+    receipt_path = p0c_execution_summary.parent / "p0c_callback_sink_receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema_version": CALLBACK_SINK_SCHEMA,
+                "enabled": True,
+                "passed": True,
+                "failure_reasons": [],
+                "checks": {
+                    "callback_sink_enabled": True,
+                    "callback_sink_endpoint_private": True,
+                    "callback_event_for_task_observed": True,
+                    "task_completed_callback_observed": True,
+                },
+                "task_id": task_id,
+                "endpoint": "http://127.0.0.1:12345/p0c-callback-sink",
+                "received_event_count": 1,
+                "task_event_count": 1,
+                "task_completed_event_count": 1,
+                "events": [
+                    {
+                        "body": {
+                            "event": "task_completed",
+                            "task_id": task_id,
+                        }
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    summary = json.loads(p0c_execution_summary.read_text(encoding="utf-8"))
+    summary["artifacts"]["callback_sink_receipt"] = artifact_ref(receipt_path)
+    p0c_execution_summary.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
