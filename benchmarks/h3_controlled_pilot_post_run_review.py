@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.h3_evidence import artifact_ref, object_value, read_json_object, resolve_under_root, sha256_file, write_json_object
-from benchmarks.h3_controlled_pilot_runner import (
+from benchmarks.h3_controlled_pilot_generation import valid_agent_payload
+from benchmarks.h3_controlled_pilot_reconciliation import reconcile_generations
+from benchmarks.h3_controlled_pilot_receipts import POST_RUN_RECEIPT_SCHEMA_VERSION
+from benchmarks.h3_controlled_pilot_task import (
     LEGACY_TASK_SCHEMA_VERSION,
-    POST_RUN_RECEIPT_SCHEMA_VERSION,
     TASK_SCHEMA_VERSION,
-    _reconcile_generations,
-    _valid_agent_payload,
 )
 
 
@@ -75,7 +75,7 @@ def review_post_run_receipt(
             failures.append(f"generation report hash mismatch: {path}")
         if report is not None:
             normalized = dict(report)
-            normalized["passed"] = _valid_agent_payload(
+            normalized["passed"] = valid_agent_payload(
                 object_value(report.get("response")),
                 object_value(task),
                 strict_evidence_refs=profile == "qualification",
@@ -84,7 +84,7 @@ def review_post_run_receipt(
     all_valid = bool(reports) and all(item["passed"] is True for item in reports)
     if not all_valid:
         failures.append("generation payload contract remains invalid")
-    reconciliation = _reconcile_generations(reports)
+    reconciliation = reconcile_generations(reports)
     passed = not failures
     report = {
         "schema_version": SCHEMA_VERSION,

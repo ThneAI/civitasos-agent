@@ -60,3 +60,42 @@ def test_i2b_provider_contrast_blocks_single_provider_and_keeps_boundaries_close
     assert report["boundary"]["runtime_state_mutation_allowed"] is False
     assert report["boundary"]["deploy_allowed"] is False
     assert report["boundary"]["production_transition_allowed"] is False
+
+
+def test_i2b_provider_contrast_blocks_same_provider_host_and_model(tmp_path: Path) -> None:
+    i2a = write_i2a_summary(tmp_path)
+    env_a = write_external_env(
+        tmp_path / "a.env",
+        provider="openai_compatible",
+        base_url="https://api.example.test",
+        model="same-model",
+    )
+    env_b = write_external_env(
+        tmp_path / "b.env",
+        provider="openai_compatible",
+        base_url="https://api.example.test",
+        model="same-model",
+    )
+
+    report = run_contrast(
+        i2a_summary_path=i2a,
+        provider_specs=[f"deepseek-api-agent={env_a}", f"second-api-agent={env_b}"],
+        output_root=tmp_path / "contrast",
+        api_response_overrides={
+            "deepseek-api-agent": i2b_response(),
+            "second-api-agent": i2b_response(),
+        },
+    )
+
+    assert report["passed"] is False
+    assert report["metrics"]["provider_count"] == 2
+    assert report["metrics"]["passed_provider_count"] == 2
+    assert report["metrics"]["provider_host_count"] == 1
+    assert report["metrics"]["model_count"] == 1
+    assert report["checks"]["minimum_providers_passed"] is True
+    assert report["checks"]["provider_diversity_observed"] is False
+    assert "provider_diversity_observed" in report["failure_reasons"]
+    assert report["readiness"]["i2b_provider_contrast_complete"] is False
+    assert report["readiness"]["source_or_git_write_allowed"] is False
+    assert report["boundary"]["source_tree_write_allowed"] is False
+    assert report["boundary"]["git_write_allowed"] is False

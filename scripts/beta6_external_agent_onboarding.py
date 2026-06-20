@@ -21,6 +21,15 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from beta6_external_agent_onboarding_policy import (
+        AGENT_KINDS,
+        ALLOWED_SCOPES,
+        FORBIDDEN_TOKENS,
+        NON_CLAIMS,
+        h3_boundary as _h3_boundary,
+        validate_h3_boundary as _validate_h3_boundary,
+        validate_no_merge_deploy_production as _validate_no_merge_deploy_production,
+    )
     from beta_evidence import (
         artifact_ref as _evidence_artifact_ref,
         require_schema,
@@ -30,6 +39,15 @@ try:
         write_json,
     )
 except ModuleNotFoundError:
+    from scripts.beta6_external_agent_onboarding_policy import (
+        AGENT_KINDS,
+        ALLOWED_SCOPES,
+        FORBIDDEN_TOKENS,
+        NON_CLAIMS,
+        h3_boundary as _h3_boundary,
+        validate_h3_boundary as _validate_h3_boundary,
+        validate_no_merge_deploy_production as _validate_no_merge_deploy_production,
+    )
     from scripts.beta_evidence import (
         artifact_ref as _evidence_artifact_ref,
         require_schema,
@@ -53,17 +71,6 @@ REGISTRATION_VALIDATION_SCHEMA = "beta6-external-agent-registration-validation:v
 REGISTRATION_WRITE_SCHEMA = "beta6-external-agent-registration-write-report:v1"
 READINESS_SCHEMA = "beta6-external-agent-onboarding-readiness:v1"
 BETA5_FEEDBACK_INDEX_SCHEMA = "beta5-owner-feedback-evidence-index:v1"
-AGENT_KINDS = ("ai_agent", "human_operator", "service_agent")
-ALLOWED_SCOPES = ("proposal_only", "review_only", "audit_observation", "l1_controlled_message")
-FORBIDDEN_TOKENS = ("TODO", "REPLACE", "PLACEHOLDER", "TEMPLATE_ONLY")
-NON_CLAIMS = (
-    "beta6_external_agent_onboarding_is_l1_controlled_pilot_only",
-    "beta6_external_agent_onboarding_does_not_assign_tasks",
-    "beta6_external_agent_onboarding_does_not_grant_merge_or_deploy_authority",
-    "beta6_external_agent_onboarding_does_not_start_runtime_or_llm",
-    "beta6_external_agent_onboarding_does_not_claim_h3_production_readiness",
-    "beta6_external_agent_onboarding_does_not_write_production_receipts",
-)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -943,29 +950,6 @@ def _is_loopback_or_private_host(host: str | None) -> bool:
     except ValueError:
         return False
     return ip.is_loopback or ip.is_private
-
-
-def _validate_no_merge_deploy_production(payload: dict[str, Any], failures: list[str]) -> None:
-    for field in (
-        "merge_allowed",
-        "deploy_allowed",
-        "production_runtime_execution_allowed",
-        "production_receipt_write_allowed",
-    ):
-        if payload.get(field) is not False:
-            failures.append(f"{field} must be false")
-
-
-def _h3_boundary() -> dict[str, bool]:
-    return {
-        "h3_remains_blocked": True,
-        "h3_production_readiness_claimed": False,
-    }
-
-
-def _validate_h3_boundary(payload: dict[str, Any], failures: list[str]) -> None:
-    if payload.get("h3_boundary") != _h3_boundary():
-        failures.append("h3_boundary must keep production readiness blocked")
 
 
 def _invitation_validation_report(path: Path, failures: list[str]) -> dict[str, Any]:

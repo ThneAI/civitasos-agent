@@ -11,21 +11,21 @@ from benchmarks.h3_controlled_pilot_post_run_review import (
     review_post_run_receipt,
 )
 from benchmarks.h3_controlled_pilot_runner import run_controlled_pilot
-from benchmarks.h3_controlled_pilot_runner import _parse_json_response
+from benchmarks.h3_controlled_pilot_generation import parse_json_response
 
 
 NOW = datetime(2026, 6, 9, 14, 0, tzinfo=timezone.utc)
 
 
 def test_parse_json_response_accepts_provider_thinking_wrapper() -> None:
-    payload = _parse_json_response(
+    payload = parse_json_response(
         '<think>auditing evidence</think>\\n{"verdict":"review required"}\\n'
     )
     assert payload == {"verdict": "review required"}
 
 
 def test_parse_json_response_accepts_escaped_structural_whitespace() -> None:
-    payload = _parse_json_response(
+    payload = parse_json_response(
         '{\\n  "verdict": "review required",\\n'
         '  "supported_conditions": ["line\\nvalue"]\\n}'
     )
