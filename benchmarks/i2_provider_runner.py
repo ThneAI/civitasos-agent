@@ -18,6 +18,7 @@ def call_openai_compatible(
     prompt: str,
     max_tokens: int,
     temperature: float,
+    timeout: int = 120,
 ) -> tuple[str, int]:
     endpoint = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
     payload: dict[str, Any] = {
@@ -38,7 +39,7 @@ def call_openai_compatible(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")
             data = json.loads(raw)
             choices = data.get("choices") if isinstance(data, dict) else []
