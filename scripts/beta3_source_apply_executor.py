@@ -36,7 +36,6 @@ try:
     from beta3_source_apply_boundaries import (
         NON_CLAIMS,
         h3_boundary as _h3_boundary,
-        source_apply_operator_followup as _source_apply_operator_followup,
         source_apply_outcome as _source_apply_outcome,
         test_evidence_status as _test_evidence_status,
     )
@@ -44,12 +43,14 @@ except ModuleNotFoundError:
     from scripts.beta3_source_apply_boundaries import (
         NON_CLAIMS,
         h3_boundary as _h3_boundary,
-        source_apply_operator_followup as _source_apply_operator_followup,
         source_apply_outcome as _source_apply_outcome,
         test_evidence_status as _test_evidence_status,
     )
 
 try:
+    from beta3_source_apply_rollback import (
+        source_apply_operator_followup as _source_apply_operator_followup,
+    )
     from beta3_source_apply_authorization import validate_source_apply_authorization
     from beta3_source_apply_receipts import (
         RECEIPT_SCHEMA,
@@ -64,6 +65,9 @@ try:
         run_test_commands as _run_test_commands,
     )
 except ModuleNotFoundError:
+    from scripts.beta3_source_apply_rollback import (
+        source_apply_operator_followup as _source_apply_operator_followup,
+    )
     from scripts.beta3_source_apply_authorization import (
         validate_source_apply_authorization,
     )

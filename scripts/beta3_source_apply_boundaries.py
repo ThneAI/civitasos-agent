@@ -1,13 +1,18 @@
 """Boundary and outcome rules for Beta-3 source apply.
 
-The executor performs git operations. This module owns the stable policy layer:
-what the apply outcome means, when rollback follow-up is required, and which
-receipt flags must remain false.
+The executor performs git operations. This module owns source-apply outcome
+classification and receipt boundary validation. Rollback follow-up policy lives
+in beta3_source_apply_rollback and is re-exported here for compatibility.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+try:
+    from beta3_source_apply_rollback import source_apply_operator_followup
+except ModuleNotFoundError:
+    from scripts.beta3_source_apply_rollback import source_apply_operator_followup
 
 
 NON_CLAIMS = (
@@ -44,16 +49,6 @@ def source_apply_outcome(
     if "source_apply_failed" in failure_codes:
         return "apply_failed"
     return "blocked_before_verified_apply"
-
-
-def source_apply_operator_followup(failure_codes: list[str]) -> dict[str, Any]:
-    test_failure = "post_apply_test_failed" in failure_codes
-    return {
-        "required": bool(failure_codes),
-        "reason_codes": failure_codes,
-        "rollback_decision_required": test_failure,
-        "automatic_rollback_performed": False,
-    }
 
 
 def test_evidence_status(test_runs: list[dict[str, Any]]) -> str:
