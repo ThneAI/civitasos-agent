@@ -132,6 +132,8 @@ def _smoke_code_with_latency(nodes: list[str], latency_ms: float) -> str:
         "latency_ms_min": latency_ms,
         "latency_ms_median": latency_ms,
         "latency_ms_max": latency_ms,
+        "backend_port": 18291,
+        "frontend_port": 18292,
         "production_deploy_allowed": False,
         "production_runtime_execution_allowed": False,
         "production_receipt_write_allowed": False,
