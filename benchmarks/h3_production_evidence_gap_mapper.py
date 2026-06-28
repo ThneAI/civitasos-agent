@@ -27,6 +27,7 @@ from benchmarks.i_gate_evidence import artifact_ref, object_value, read_json_obj
 from benchmarks.p0n_controlled_beta_entry_gate import CHAIN_SCHEMA as P0N_CHAIN_SCHEMA
 from benchmarks.p0o_first_controlled_beta_task_authorization_gate import CHAIN_SCHEMA as P0O_CHAIN_SCHEMA
 from benchmarks.p0p_first_controlled_beta_task_execution_gate import CHAIN_SCHEMA as P0P_CHAIN_SCHEMA
+from benchmarks.p0q_p1_source_ref_collection_gate import CHAIN_SCHEMA as P0Q_CHAIN_SCHEMA
 from benchmarks.p1_controlled_production_pilot_charter_gate import CHAIN_SCHEMA as P1_CHAIN_SCHEMA
 
 SCHEMA_VERSION = "h3-production-evidence-gap-map:v1"
@@ -45,6 +46,7 @@ def run_mapper(
     p0n_summary_path: Path | None = None,
     p0o_summary_path: Path | None = None,
     p0p_summary_path: Path | None = None,
+    p0q_summary_path: Path | None = None,
     p1_summary_path: Path | None = None,
     production_evidence_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -52,6 +54,7 @@ def run_mapper(
         p0n_summary_path=p0n_summary_path,
         p0o_summary_path=p0o_summary_path,
         p0p_summary_path=p0p_summary_path,
+        p0q_summary_path=p0q_summary_path,
         p1_summary_path=p1_summary_path,
     )
     production_records = _load_production_records(production_evidence_path)
@@ -82,6 +85,7 @@ def run_mapper(
             p0n_summary_path=p0n_summary_path,
             p0o_summary_path=p0o_summary_path,
             p0p_summary_path=p0p_summary_path,
+            p0q_summary_path=p0q_summary_path,
             p1_summary_path=p1_summary_path,
             production_evidence_path=production_evidence_path,
         ),
@@ -116,6 +120,7 @@ def _load_contexts(
     p0n_summary_path: Path | None,
     p0o_summary_path: Path | None,
     p0p_summary_path: Path | None,
+    p0q_summary_path: Path | None,
     p1_summary_path: Path | None,
 ) -> dict[str, dict[str, Any]]:
     contexts: dict[str, dict[str, Any]] = {}
@@ -123,6 +128,7 @@ def _load_contexts(
         ("p0n", p0n_summary_path, P0N_CHAIN_SCHEMA),
         ("p0o", p0o_summary_path, P0O_CHAIN_SCHEMA),
         ("p0p", p0p_summary_path, P0P_CHAIN_SCHEMA),
+        ("p0q", p0q_summary_path, P0Q_CHAIN_SCHEMA),
         ("p1", p1_summary_path, P1_CHAIN_SCHEMA),
     ):
         if path is None:
@@ -181,6 +187,7 @@ def _candidate_refs_for_kind(kind: str, contexts: dict[str, dict[str, Any]]) -> 
     p0n = contexts.get("p0n")
     p0o = contexts.get("p0o")
     p0p = contexts.get("p0p")
+    p0q = contexts.get("p0q")
     p1 = contexts.get("p1")
     if kind in {"activation_artifact_chain_attestation", "challenge_r2r_rollback_attestation"}:
         _append_context_ref(refs, p0n, "p0n_controlled_beta_entry_package")
@@ -212,6 +219,19 @@ def _candidate_refs_for_kind(kind: str, contexts: dict[str, dict[str, Any]]) -> 
         "runtime_start_audit_sink_ready",
     }:
         _append_context_ref(refs, p1, "p1_charter_candidate_ref")
+    if kind in {
+        "external_human_review_approval",
+        "governance_runtime_execution_approval",
+        "runtime_safety_envelope",
+        "live_monitoring_attestation",
+        "rollback_drill_attestation",
+        "operator_oncall_ack",
+        "kill_switch_attestation",
+        "runtime_start_final_monitoring_green",
+        "runtime_start_rollback_checkpoint",
+        "runtime_start_audit_sink_ready",
+    }:
+        _append_context_ref(refs, p0q, "p0q_p1_source_ref_collection")
     return refs
 
 
@@ -243,6 +263,7 @@ def _source_artifacts(
     p0n_summary_path: Path | None,
     p0o_summary_path: Path | None,
     p0p_summary_path: Path | None,
+    p0q_summary_path: Path | None,
     p1_summary_path: Path | None,
     production_evidence_path: Path | None,
 ) -> dict[str, dict[str, str]]:
@@ -251,6 +272,7 @@ def _source_artifacts(
         ("p0n_summary", p0n_summary_path),
         ("p0o_summary", p0o_summary_path),
         ("p0p_summary", p0p_summary_path),
+        ("p0q_summary", p0q_summary_path),
         ("p1_summary", p1_summary_path),
         ("production_evidence_submission", production_evidence_path),
     ):
@@ -269,6 +291,7 @@ def main() -> int:
     parser.add_argument("--p0n-summary", type=Path)
     parser.add_argument("--p0o-summary", type=Path)
     parser.add_argument("--p0p-summary", type=Path)
+    parser.add_argument("--p0q-summary", type=Path)
     parser.add_argument("--p1-summary", type=Path)
     parser.add_argument("--production-evidence-submission", type=Path)
     args = parser.parse_args()
@@ -277,6 +300,7 @@ def main() -> int:
         p0n_summary_path=args.p0n_summary,
         p0o_summary_path=args.p0o_summary,
         p0p_summary_path=args.p0p_summary,
+        p0q_summary_path=args.p0q_summary,
         p1_summary_path=args.p1_summary,
         production_evidence_path=args.production_evidence_submission,
     )

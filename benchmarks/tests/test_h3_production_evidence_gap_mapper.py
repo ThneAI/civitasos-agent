@@ -114,3 +114,38 @@ def _write_p1_summary(tmp_path: Path) -> Path:
         ack_p1_charter=True,
     )
     return tmp_path / "p1" / "p1_controlled_production_pilot_charter_summary.json"
+
+
+def test_h3_gap_mapper_maps_p0q_source_refs_as_candidate_only(tmp_path: Path) -> None:
+    p1_summary = _write_p1_summary(tmp_path)
+    p1_payload = json.loads(p1_summary.read_text(encoding="utf-8"))
+    p0o_summary = Path(p1_payload["source_artifacts"]["p0o_summary"]["path"])
+    p0o_payload = json.loads(p0o_summary.read_text(encoding="utf-8"))
+    p0n_summary = Path(p0o_payload["source_artifacts"]["p0n_summary"]["path"])
+    run_p0p(p0o_summary_path=p0o_summary, output_root=tmp_path / "p0p", client=FakeClient())
+    p0p_summary = tmp_path / "p0p" / "p0p_first_controlled_beta_task_execution_summary.json"
+
+    from benchmarks.p0q_p1_source_ref_collection_gate import run_gate as run_p0q
+
+    run_p0q(p0p_summary_path=p0p_summary, p1_summary_path=p1_summary, output_root=tmp_path / "p0q")
+    p0q_summary = tmp_path / "p0q" / "p0q_p1_source_ref_collection_summary.json"
+
+    summary = run_mapper(
+        output=tmp_path / "h3_gap_map.json",
+        p0n_summary_path=p0n_summary,
+        p0o_summary_path=p0o_summary,
+        p0p_summary_path=p0p_summary,
+        p0q_summary_path=p0q_summary,
+        p1_summary_path=p1_summary,
+    )
+
+    assert summary["counts"]["production_satisfied_count"] == 0
+    assert summary["source_artifacts"]["p0q_summary"]["path"] == str(p0q_summary.resolve())
+    flattened_refs = [
+        ref
+        for item in summary["gap_items"]
+        for ref in item["candidate_refs"]
+        if ref["label"] == "p0q_p1_source_ref_collection"
+    ]
+    assert flattened_refs
+    assert {ref["satisfies_production_origin"] for ref in flattened_refs} == {"false"}

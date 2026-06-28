@@ -175,3 +175,23 @@ def _write_p0o_summary(tmp_path: Path) -> Path:
         ack_first_task_authorization=True,
     )
     return tmp_path / "p0o" / "p0o_first_controlled_beta_task_authorization_summary.json"
+
+
+def test_p0p_callback_sink_blocks_when_no_callback_observed(tmp_path: Path) -> None:
+    p0o_summary = _write_p0o_summary(tmp_path)
+
+    summary = run_execution(
+        p0o_summary_path=p0o_summary,
+        output_root=tmp_path / "p0p",
+        client=FakeClient(),
+        enable_callback_sink=True,
+        callback_wait_seconds=0.01,
+    )
+
+    assert summary["passed"] is False
+    assert "callback_sink_delivery_observed" in summary["failure_reasons"]
+    assert summary["boundary"]["callback_sink_started"] is True
+    assert summary["boundary"]["callback_delivery_observed"] is False
+    callback = json.loads((tmp_path / "p0p" / "p0p_callback_sink_receipt.json").read_text(encoding="utf-8"))
+    assert callback["schema_version"] == "p0p-callback-sink-receipt:v1"
+    assert callback["passed"] is False
