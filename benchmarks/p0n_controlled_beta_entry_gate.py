@@ -54,10 +54,16 @@ REQUIRED_ALLOWED_ACTIONS = {
     "owner_audit_rollback_evidence_packaging",
 }
 SERVICE_TOKEN_SCOPES = (
+    "agents:read",
+    "agents:write",
     "a2a:pool:read",
     "a2a:pool:post",
     "a2a:pool:claim",
     "a2a:task:execute",
+    "pool:read",
+    "pool:post",
+    "pool:claim",
+    "pool:write",
     "audit:read",
     "operator:read-model",
 )
