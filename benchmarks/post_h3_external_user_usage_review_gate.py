@@ -41,6 +41,8 @@ DEFAULT_MISSING_REQUIREMENTS = (
     "external_user_monitoring_slo_not_bound",
     "external_user_rollback_abort_owner_not_bound",
 )
+POST_H3U_SCHEMA = "post-h3-external-user-identity-consent-chain:v1"
+POST_H3V_SCHEMA = "post-h3-limited-external-usage-scope-binding-chain:v1"
 NON_CLAIMS = (
     "post_h3t_reviews_external_user_usage_only",
     "post_h3t_does_not_execute_external_user_usage",
@@ -57,6 +59,8 @@ NON_CLAIMS = (
 def run_gate(
     *,
     post_h3s_summary_path: Path,
+    post_h3u_summary_path: Path | None = None,
+    post_h3v_summary_path: Path | None = None,
     output_root: Path,
     operator_id: str = "operator-primary",
     operator_decision: str = REQUEST_REVISION_DECISION,
@@ -89,6 +93,8 @@ def run_gate(
         operator_statement=operator_statement,
         max_external_users=max_external_users,
         allowed_usage_scope=allowed_usage_scope,
+        post_h3u_summary_path=post_h3u_summary_path,
+        post_h3v_summary_path=post_h3v_summary_path,
         ack_external_user_usage_review=ack_external_user_usage_review,
     )
     boundary = _write_boundary_report(context=context, reconciliation_path=artifacts["review_reconciliation"], output=artifacts["boundary_report"])
@@ -100,7 +106,11 @@ def run_gate(
         "passed": passed,
         "failure_reasons": _failures(reports),
         "checked_at": _now(),
-        "source_artifacts": {"post_h3s_summary": artifact_ref(post_h3s_summary_path)},
+        "source_artifacts": _source_artifacts(
+            post_h3s_summary_path=post_h3s_summary_path,
+            post_h3u_summary_path=post_h3u_summary_path,
+            post_h3v_summary_path=post_h3v_summary_path,
+        ),
         "artifacts": {name: artifact_ref(path) for name, path in artifacts.items() if name != "summary"},
         "external_user_usage_review_id": reconciliation.get("external_user_usage_review_id"),
         "external_user_usage_allowed": usage_allowed,
@@ -212,12 +222,20 @@ def _write_reconciliation(
     operator_statement: str,
     max_external_users: int,
     allowed_usage_scope: str,
+    post_h3u_summary_path: Path | None,
+    post_h3v_summary_path: Path | None,
     ack_external_user_usage_review: bool,
 ) -> dict[str, Any]:
     checks: dict[str, bool] = {}
     failures: list[str] = []
     packet = read_json_object(packet_path)
     wants_allow = operator_decision == AUTHORIZE_ONCE_DECISION
+    authorization_evidence = _authorization_evidence_report(
+        post_h3u_summary_path=post_h3u_summary_path,
+        post_h3v_summary_path=post_h3v_summary_path,
+        max_external_users=max_external_users,
+        allowed_usage_scope=allowed_usage_scope,
+    )
     check(checks, failures, "packet_passed", packet.get("schema_version") == REVIEW_PACKET_SCHEMA and packet.get("passed") is True)
     check(checks, failures, "operator_id_present", bool(operator_id.strip()))
     check(checks, failures, "operator_decision_known", operator_decision in (REQUEST_REVISION_DECISION, AUTHORIZE_ONCE_DECISION))
@@ -232,6 +250,9 @@ def _write_reconciliation(
         check(checks, failures, "rollback_allows_usage", rollback_decision == "accept_limited_external_user_abort_runbook_once")
         check(checks, failures, "max_external_users_positive", max_external_users > 0)
         check(checks, failures, "allowed_usage_scope_present", bool(allowed_usage_scope.strip()) and allowed_usage_scope != "none")
+        check(checks, failures, "identity_consent_evidence_valid", authorization_evidence["checks"].get("identity_consent_evidence_valid") is True)
+        check(checks, failures, "usage_scope_evidence_valid", authorization_evidence["checks"].get("usage_scope_evidence_valid") is True)
+        check(checks, failures, "authorization_evidence_scope_matches", authorization_evidence["checks"].get("authorization_evidence_scope_matches") is True)
     else:
         check(checks, failures, "revision_path_has_no_external_users", max_external_users == 0)
         check(checks, failures, "revision_path_scope_none", allowed_usage_scope == "none")
@@ -255,8 +276,13 @@ def _write_reconciliation(
         "external_user_usage_allowed": usage_allowed,
         "max_external_users": max_external_users,
         "allowed_usage_scope": allowed_usage_scope,
+        "authorization_evidence": authorization_evidence,
         "missing_requirements": [] if usage_allowed else list(DEFAULT_MISSING_REQUIREMENTS),
-        "source_artifacts": {"review_packet": artifact_ref(packet_path)},
+        "source_artifacts": _source_artifacts(
+            review_packet_path=packet_path,
+            post_h3u_summary_path=post_h3u_summary_path,
+            post_h3v_summary_path=post_h3v_summary_path,
+        ),
         "readiness": {
             "external_user_usage_review_complete": passed,
             "external_user_usage_allowed": usage_allowed,
@@ -326,6 +352,80 @@ def _check_boundary_report(report: dict[str, Any], checks: dict[str, bool], fail
     check(checks, failures, "s_boundary_runtime_workers_stopped", boundary.get("runtime_workers_currently_running") is False)
 
 
+def _authorization_evidence_report(
+    *,
+    post_h3u_summary_path: Path | None,
+    post_h3v_summary_path: Path | None,
+    max_external_users: int,
+    allowed_usage_scope: str,
+) -> dict[str, Any]:
+    checks: dict[str, bool] = {}
+    failures: list[str] = []
+    u_summary = _read_optional_summary(post_h3u_summary_path, checks, failures, "post_h3u_summary")
+    v_summary = _read_optional_summary(post_h3v_summary_path, checks, failures, "post_h3v_summary")
+    _check_u_authorization_evidence(u_summary, checks, failures)
+    _check_v_authorization_evidence(v_summary, checks, failures)
+    u_handle = u_summary.get("external_user_handle")
+    check(checks, failures, "authorization_evidence_user_matches", bool(u_handle) and u_handle == v_summary.get("external_user_handle"))
+    check(checks, failures, "authorization_evidence_scope_matches", v_summary.get("allowed_usage_scope") == allowed_usage_scope and v_summary.get("max_external_users") == max_external_users)
+    return {
+        "passed": _passed(checks, failures),
+        "failure_reasons": failures,
+        "checks": checks,
+        "external_user_handle": u_handle,
+        "post_h3u_summary": artifact_ref(post_h3u_summary_path) if post_h3u_summary_path and post_h3u_summary_path.is_file() else {},
+        "post_h3v_summary": artifact_ref(post_h3v_summary_path) if post_h3v_summary_path and post_h3v_summary_path.is_file() else {},
+    }
+
+
+def _read_optional_summary(path: Path | None, checks: dict[str, bool], failures: list[str], label: str) -> dict[str, Any]:
+    check(checks, failures, f"{label}_present", path is not None and path.is_file())
+    if path is None or not path.is_file():
+        return {}
+    return read_json_object(path)
+
+
+def _check_u_authorization_evidence(summary: dict[str, Any], checks: dict[str, bool], failures: list[str]) -> None:
+    readiness = object_value(summary.get("readiness"))
+    check(checks, failures, "post_h3u_schema_valid", summary.get("schema_version") == POST_H3U_SCHEMA)
+    check(checks, failures, "post_h3u_passed", summary.get("passed") is True)
+    check(checks, failures, "post_h3u_identity_consent_bound", readiness.get("external_user_identity_and_consent_bound") is True)
+    check(checks, failures, "post_h3u_review_rerun_ready", readiness.get("external_user_usage_review_rerun_ready") is True)
+    check(checks, failures, "identity_consent_evidence_valid", summary.get("passed") is True and readiness.get("external_user_identity_and_consent_bound") is True)
+
+
+def _check_v_authorization_evidence(summary: dict[str, Any], checks: dict[str, bool], failures: list[str]) -> None:
+    readiness = object_value(summary.get("readiness"))
+    bounded = object_value(summary.get("bounded_requirement_resolution"))
+    check(checks, failures, "post_h3v_schema_valid", summary.get("schema_version") == POST_H3V_SCHEMA)
+    check(checks, failures, "post_h3v_passed", summary.get("passed") is True)
+    check(checks, failures, "post_h3v_task_scope_bound", readiness.get("external_user_task_scope_bound") is True)
+    check(checks, failures, "post_h3v_monitoring_bound", readiness.get("external_user_monitoring_slo_bound") is True)
+    check(checks, failures, "post_h3v_rollback_bound", readiness.get("external_user_rollback_abort_owner_bound") is True)
+    check(checks, failures, "post_h3v_public_ingress_not_required", bounded.get("production_grade_public_ingress_required") is False)
+    check(checks, failures, "post_h3v_sustained_runtime_not_required", bounded.get("sustained_runtime_expansion_required") is False)
+    check(checks, failures, "usage_scope_evidence_valid", summary.get("passed") is True and readiness.get("external_user_usage_authorization_review_ready") is True)
+
+
+def _source_artifacts(
+    *,
+    post_h3s_summary_path: Path | None = None,
+    review_packet_path: Path | None = None,
+    post_h3u_summary_path: Path | None = None,
+    post_h3v_summary_path: Path | None = None,
+) -> dict[str, dict[str, str]]:
+    artifacts: dict[str, dict[str, str]] = {}
+    if post_h3s_summary_path is not None:
+        artifacts["post_h3s_summary"] = artifact_ref(post_h3s_summary_path)
+    if review_packet_path is not None:
+        artifacts["review_packet"] = artifact_ref(review_packet_path)
+    if post_h3u_summary_path is not None and post_h3u_summary_path.is_file():
+        artifacts["post_h3u_summary"] = artifact_ref(post_h3u_summary_path)
+    if post_h3v_summary_path is not None and post_h3v_summary_path.is_file():
+        artifacts["post_h3v_summary"] = artifact_ref(post_h3v_summary_path)
+    return artifacts
+
+
 def _read_verified_ref(value: Any, checks: dict[str, bool], failures: list[str], label: str) -> dict[str, Any]:
     ref = object_value(value)
     path = Path(str(ref.get("path") or ""))
@@ -388,6 +488,8 @@ def _now() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run PostH3-T external user usage review gate")
     parser.add_argument("--post-h3s-summary", required=True, type=Path)
+    parser.add_argument("--post-h3u-summary", type=Path)
+    parser.add_argument("--post-h3v-summary", type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--operator-id", default="operator-primary")
     parser.add_argument("--operator-decision", default=REQUEST_REVISION_DECISION)
@@ -401,6 +503,8 @@ def main() -> int:
     args = parser.parse_args()
     summary = run_gate(
         post_h3s_summary_path=args.post_h3s_summary,
+        post_h3u_summary_path=args.post_h3u_summary,
+        post_h3v_summary_path=args.post_h3v_summary,
         output_root=args.output_root,
         operator_id=args.operator_id,
         operator_decision=args.operator_decision,
