@@ -8,6 +8,7 @@ from benchmarks.post_h3_minimal_production_task_authorization_gate import run_ga
 from benchmarks.post_h3_minimal_production_task_chain import run_gate as run_minimal_chain
 from benchmarks.post_h3_minimal_production_task_execution_gate import run_gate as run_execution
 from benchmarks.post_h3_minimal_production_task_intake_gate import DEFAULT_TASK_REQUEST, run_gate as run_intake
+from benchmarks.post_h3_minimal_production_task_strategy_review_gate import run_gate as run_strategy_review
 from benchmarks.post_h3_observer_mode_readiness_gate import run_gate as run_post_h3ac
 from benchmarks.post_h3_readiness_index import build_index
 from benchmarks.tests.test_post_h3_observer_mode_readiness_gate import _write_post_h3ab_fixture
@@ -176,6 +177,59 @@ def test_post_h3_minimal_task_execution_blocks_authorization_hash_drift(tmp_path
     assert summary["readiness"]["authorization_consumed"] is False
 
 
+def test_post_h3_minimal_task_strategy_review_accepts_reusable_path(tmp_path: Path, monkeypatch: Any) -> None:
+    execution = _write_execution_fixture(tmp_path, monkeypatch)
+
+    summary = run_strategy_review(
+        execution_summary_path=execution,
+        output_root=tmp_path / "strategy",
+        ack_strategy_review=True,
+    )
+
+    assert summary["passed"] is True
+    assert summary["readiness"]["minimal_production_task_strategy_review_complete"] is True
+    assert summary["readiness"]["reusable_minimal_production_path_ready"] is True
+    assert summary["readiness"]["future_execution_requires_fresh_authorization"] is True
+    assert summary["readiness"]["next_intake_authorization_chain_ready"] is True
+    assert summary["readiness"]["next_single_use_gate_input_ready"] is False
+    assert summary["readiness"]["production_task_execution_allowed"] is False
+    assert summary["readiness"]["runtime_execution_performed"] is False
+    assert summary["boundary"]["reusable_minimal_production_path_ready"] is True
+    assert summary["boundary"]["backend_task_pool_mutation_performed"] is False
+
+
+def test_post_h3_minimal_task_strategy_review_requires_ack(tmp_path: Path, monkeypatch: Any) -> None:
+    execution = _write_execution_fixture(tmp_path, monkeypatch)
+
+    summary = run_strategy_review(
+        execution_summary_path=execution,
+        output_root=tmp_path / "strategy",
+        ack_strategy_review=False,
+    )
+
+    assert summary["passed"] is False
+    assert "explicit_strategy_review_ack" in summary["failure_reasons"]
+    assert summary["readiness"]["reusable_minimal_production_path_ready"] is False
+
+
+def test_post_h3_minimal_task_strategy_review_blocks_execution_hash_drift(tmp_path: Path, monkeypatch: Any) -> None:
+    execution = _write_execution_fixture(tmp_path, monkeypatch)
+    monitoring = tmp_path / "execution" / "post_h3_minimal_task_monitoring_receipt.json"
+    payload = json.loads(monitoring.read_text(encoding="utf-8"))
+    payload["observations"]["anomaly_count"] = 1
+    monitoring.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    summary = run_strategy_review(
+        execution_summary_path=execution,
+        output_root=tmp_path / "strategy",
+        ack_strategy_review=True,
+    )
+
+    assert summary["passed"] is False
+    assert "monitoring_receipt_hash_valid" in summary["failure_reasons"]
+    assert summary["readiness"]["reusable_minimal_production_path_ready"] is False
+
+
 def _write_readiness_index_fixture(tmp_path: Path, monkeypatch: Any) -> Path:
     post_h3ab = _write_post_h3ab_fixture(tmp_path, monkeypatch)
     post_h3ac_root = tmp_path / "post_h3ac"
@@ -212,3 +266,14 @@ def _write_authorization_fixture(tmp_path: Path, monkeypatch: Any) -> Path:
         ack_single_use_authorization=True,
     )
     return root / "post_h3_minimal_task_authorization_summary.json"
+
+
+def _write_execution_fixture(tmp_path: Path, monkeypatch: Any) -> Path:
+    authorization = _write_authorization_fixture(tmp_path, monkeypatch)
+    root = tmp_path / "execution"
+    run_execution(
+        authorization_summary_path=authorization,
+        output_root=root,
+        ack_minimal_task_execution=True,
+    )
+    return root / "post_h3_minimal_task_execution_summary.json"
