@@ -127,6 +127,26 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert '-m benchmarks.post_h3_readiness_index' in text
     assert '--post-h3ac-summary "$POST_H3_READINESS_INDEX_AC_SUMMARY"' in text
     assert '--minimal-chain-summary "$POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY"' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_GATE="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_GATE:-0}"' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_GATE_ONLY="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_GATE_ONLY:-0}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_READINESS_INDEX="${POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_READINESS_INDEX:-$POST_H3_READINESS_INDEX_OUTPUT}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_OUTPUT_ROOT="${POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_OUTPUT_ROOT:-$RUNS_ROOT/post_h3_minimal_production_task_intake}"' in text
+    assert "run_post_h3_minimal_production_task_intake_gate()" in text
+    assert 'if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_GATE_ONLY" = "1" ]; then' in text
+    assert 'PostH3 minimal production task intake completed: $POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_SUMMARY' in text
+    assert '-m benchmarks.post_h3_minimal_production_task_intake_gate' in text
+    assert '--readiness-index "$POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_READINESS_INDEX"' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_GATE="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_GATE:-0}"' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_GATE_ONLY="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_GATE_ONLY:-0}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_INTAKE_SUMMARY="${POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_INTAKE_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_INTAKE_SUMMARY}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_OUTPUT_ROOT="${POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_OUTPUT_ROOT:-$RUNS_ROOT/post_h3_minimal_production_task_authorization}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_ACK="${POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_ACK:-0}"' in text
+    assert "run_post_h3_minimal_production_task_authorization_gate()" in text
+    assert 'if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_GATE_ONLY" = "1" ]; then' in text
+    assert 'PostH3 minimal production task authorization completed: $POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_SUMMARY' in text
+    assert '-m benchmarks.post_h3_minimal_production_task_authorization_gate' in text
+    assert '--intake-summary "$POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_INTAKE_SUMMARY"' in text
+    assert '--ack-single-use-authorization' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
