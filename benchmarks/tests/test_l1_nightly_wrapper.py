@@ -94,6 +94,39 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'BETA_DEPLOYMENT_PREVIEW_READINESS_BETA6_9_SUMMARY="${BETA_DEPLOYMENT_PREVIEW_READINESS_BETA6_9_SUMMARY:-$BETA6_9_REAL_API_REVIEW_RUN_ROOT/beta6_9_real_api_review_summary.json}"' in text
     assert 'BETA_DEPLOYMENT_PREVIEW_READINESS_OWNER_FEEDBACK_INDEX="${BETA_DEPLOYMENT_PREVIEW_READINESS_OWNER_FEEDBACK_INDEX:-$BETA6_9_REAL_API_REVIEW_FEEDBACK_INDEX}"' in text
     assert 'BETA_DEPLOYMENT_PREVIEW_READINESS_MULTI_EXTERNAL_REVIEW="${BETA_DEPLOYMENT_PREVIEW_READINESS_MULTI_EXTERNAL_REVIEW:-}"' in text
+    assert 'RUN_POST_H3_OBSERVER_READINESS_CHECK="${RUN_POST_H3_OBSERVER_READINESS_CHECK:-0}"' in text
+    assert 'RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY="${RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY:-0}"' in text
+    assert 'POST_H3_OBSERVER_READINESS_AB_SUMMARY="${POST_H3_OBSERVER_READINESS_AB_SUMMARY:-}"' in text
+    assert 'POST_H3_OBSERVER_READINESS_OUTPUT_ROOT="${POST_H3_OBSERVER_READINESS_OUTPUT_ROOT:-$RUNS_ROOT/post_h3ac_observer_mode_readiness}"' in text
+    assert "run_post_h3_observer_readiness_check()" in text
+    assert 'if [ "$RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY" = "1" ]; then' in text
+    assert 'PostH3 observer readiness check completed: $POST_H3_OBSERVER_READINESS_SUMMARY' in text
+    assert 'if [ "$RUN_POST_H3_OBSERVER_READINESS_CHECK" = "1" ]; then' in text
+    assert '-m benchmarks.post_h3_observer_mode_readiness_gate \\' in text
+    assert '--post-h3ab-summary "$POST_H3_OBSERVER_READINESS_AB_SUMMARY"' in text
+    assert "--ack-observer-readiness" in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT:-0}"' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT_ONLY="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT_ONLY:-0}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY="${POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY:-$POST_H3_OBSERVER_READINESS_SUMMARY}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_OUTPUT_ROOT="${POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_OUTPUT_ROOT:-$RUNS_ROOT/post_h3_minimal_production_task_chain}"' in text
+    assert "run_post_h3_minimal_production_task_chain_blueprint()" in text
+    assert 'if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT_ONLY" = "1" ]; then' in text
+    assert 'PostH3 minimal production task chain blueprint completed: $POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_SUMMARY' in text
+    assert 'if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT" = "1" ]; then' in text
+    assert '-m benchmarks.post_h3_minimal_production_task_chain \\' in text
+    assert '--post-h3ac-summary "$POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY"' in text
+    assert 'RUN_POST_H3_READINESS_INDEX="${RUN_POST_H3_READINESS_INDEX:-0}"' in text
+    assert 'RUN_POST_H3_READINESS_INDEX_ONLY="${RUN_POST_H3_READINESS_INDEX_ONLY:-0}"' in text
+    assert 'POST_H3_READINESS_INDEX_AC_SUMMARY="${POST_H3_READINESS_INDEX_AC_SUMMARY:-$POST_H3_OBSERVER_READINESS_SUMMARY}"' in text
+    assert 'POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY="${POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_SUMMARY}"' in text
+    assert 'POST_H3_READINESS_INDEX_OUTPUT="${POST_H3_READINESS_INDEX_OUTPUT:-$RUNS_ROOT/post_h3_readiness_index.json}"' in text
+    assert "run_post_h3_readiness_index()" in text
+    assert 'if [ "$RUN_POST_H3_READINESS_INDEX_ONLY" = "1" ]; then' in text
+    assert 'PostH3 readiness index completed: $POST_H3_READINESS_INDEX_OUTPUT' in text
+    assert 'if [ "$RUN_POST_H3_READINESS_INDEX" = "1" ]; then' in text
+    assert '-m benchmarks.post_h3_readiness_index' in text
+    assert '--post-h3ac-summary "$POST_H3_READINESS_INDEX_AC_SUMMARY"' in text
+    assert '--minimal-chain-summary "$POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY"' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text

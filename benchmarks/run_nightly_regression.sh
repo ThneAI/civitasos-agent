@@ -206,6 +206,26 @@ BETA_DEPLOYMENT_PREVIEW_READINESS_OUTPUT="${BETA_DEPLOYMENT_PREVIEW_READINESS_OU
 BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_OWNER_FEEDBACK_PACKETS="${BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_OWNER_FEEDBACK_PACKETS:-3}"
 BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_OWNER_FEEDBACK_ACCEPTED_RATIO="${BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_OWNER_FEEDBACK_ACCEPTED_RATIO:-0.66}"
 BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_SMOKE_CHECKS="${BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_SMOKE_CHECKS:-15}"
+RUN_POST_H3_OBSERVER_READINESS_CHECK="${RUN_POST_H3_OBSERVER_READINESS_CHECK:-0}"
+RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY="${RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY:-0}"
+POST_H3_OBSERVER_READINESS_AB_SUMMARY="${POST_H3_OBSERVER_READINESS_AB_SUMMARY:-}"
+POST_H3_OBSERVER_READINESS_OUTPUT_ROOT="${POST_H3_OBSERVER_READINESS_OUTPUT_ROOT:-$RUNS_ROOT/post_h3ac_observer_mode_readiness}"
+POST_H3_OBSERVER_READINESS_SUMMARY="${POST_H3_OBSERVER_READINESS_SUMMARY:-$POST_H3_OBSERVER_READINESS_OUTPUT_ROOT/post_h3ac_observer_mode_readiness_summary.json}"
+POST_H3_OBSERVER_READINESS_OPERATOR_ID="${POST_H3_OBSERVER_READINESS_OPERATOR_ID:-operator-primary}"
+POST_H3_OBSERVER_READINESS_OPERATOR_OBSERVATION="${POST_H3_OBSERVER_READINESS_OPERATOR_OBSERVATION:-Continue observer-mode evidence collection; no next single-use gate is prepared by nightly.}"
+POST_H3_OBSERVER_READINESS_AUDIT_OBSERVATION="${POST_H3_OBSERVER_READINESS_AUDIT_OBSERVATION:-Nightly observer readiness consumes hash-bound PostH3-AB artifacts only; no production boundary is opened.}"
+POST_H3_OBSERVER_READINESS_MONITORING_OBSERVATION="${POST_H3_OBSERVER_READINESS_MONITORING_OBSERVATION:-Nightly observer readiness is artifact-only and performs no live runtime action.}"
+POST_H3_OBSERVER_READINESS_ROLLBACK_OBSERVATION="${POST_H3_OBSERVER_READINESS_ROLLBACK_OBSERVATION:-No rollback is required because nightly observer readiness performs no external action.}"
+RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT:-0}"
+RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT_ONLY="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT_ONLY:-0}"
+POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY="${POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY:-$POST_H3_OBSERVER_READINESS_SUMMARY}"
+POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_OUTPUT_ROOT="${POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_OUTPUT_ROOT:-$RUNS_ROOT/post_h3_minimal_production_task_chain}"
+POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_SUMMARY="${POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_OUTPUT_ROOT/post_h3_minimal_production_task_chain_summary.json}"
+RUN_POST_H3_READINESS_INDEX="${RUN_POST_H3_READINESS_INDEX:-0}"
+RUN_POST_H3_READINESS_INDEX_ONLY="${RUN_POST_H3_READINESS_INDEX_ONLY:-0}"
+POST_H3_READINESS_INDEX_AC_SUMMARY="${POST_H3_READINESS_INDEX_AC_SUMMARY:-$POST_H3_OBSERVER_READINESS_SUMMARY}"
+POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY="${POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_SUMMARY}"
+POST_H3_READINESS_INDEX_OUTPUT="${POST_H3_READINESS_INDEX_OUTPUT:-$RUNS_ROOT/post_h3_readiness_index.json}"
 if [ -z "${L1_PILOT_001_WAKE_MODE+x}" ] && [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
   L1_PILOT_001_WAKE_MODE="event"
 else
@@ -323,6 +343,64 @@ run_beta_preview_evidence_index() {
     index_args+=(--require-audit-signoff)
   fi
   "$PYTHON" scripts/beta_preview_handoff_signoff.py "${index_args[@]}"
+}
+
+run_post_h3_observer_readiness_check() {
+  if [ -z "$POST_H3_OBSERVER_READINESS_AB_SUMMARY" ]; then
+    echo "PostH3 observer readiness check requires POST_H3_OBSERVER_READINESS_AB_SUMMARY" >&2
+    exit 1
+  fi
+  if [ ! -s "$POST_H3_OBSERVER_READINESS_AB_SUMMARY" ]; then
+    echo "PostH3-AB summary not found: $POST_H3_OBSERVER_READINESS_AB_SUMMARY" >&2
+    exit 1
+  fi
+  "$PYTHON" -m benchmarks.post_h3_observer_mode_readiness_gate \
+    --post-h3ab-summary "$POST_H3_OBSERVER_READINESS_AB_SUMMARY" \
+    --output-root "$POST_H3_OBSERVER_READINESS_OUTPUT_ROOT" \
+    --operator-id "$POST_H3_OBSERVER_READINESS_OPERATOR_ID" \
+    --operator-decision continue_observer_mode_evidence_collection \
+    --audit-decision accept_observer_mode_no_production_boundary \
+    --monitoring-decision accept_observer_mode_monitoring_snapshot \
+    --rollback-decision accept_observer_mode_no_rollback_required \
+    --operator-observation "$POST_H3_OBSERVER_READINESS_OPERATOR_OBSERVATION" \
+    --audit-observation "$POST_H3_OBSERVER_READINESS_AUDIT_OBSERVATION" \
+    --monitoring-observation "$POST_H3_OBSERVER_READINESS_MONITORING_OBSERVATION" \
+    --rollback-observation "$POST_H3_OBSERVER_READINESS_ROLLBACK_OBSERVATION" \
+    --ack-observer-readiness
+}
+
+run_post_h3_minimal_production_task_chain_blueprint() {
+  if [ -z "$POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY" ]; then
+    echo "PostH3 minimal production task chain requires POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY" >&2
+    exit 1
+  fi
+  if [ ! -s "$POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY" ]; then
+    echo "PostH3-AC summary not found: $POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY" >&2
+    exit 1
+  fi
+  "$PYTHON" -m benchmarks.post_h3_minimal_production_task_chain \
+    --post-h3ac-summary "$POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY" \
+    --output-root "$POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_OUTPUT_ROOT"
+}
+
+run_post_h3_readiness_index() {
+  if [ -z "$POST_H3_READINESS_INDEX_AC_SUMMARY" ]; then
+    echo "PostH3 readiness index requires POST_H3_READINESS_INDEX_AC_SUMMARY" >&2
+    exit 1
+  fi
+  if [ ! -s "$POST_H3_READINESS_INDEX_AC_SUMMARY" ]; then
+    echo "PostH3 readiness index AC summary not found: $POST_H3_READINESS_INDEX_AC_SUMMARY" >&2
+    exit 1
+  fi
+  local -a index_args=(
+    -m benchmarks.post_h3_readiness_index
+    --post-h3ac-summary "$POST_H3_READINESS_INDEX_AC_SUMMARY"
+    --output "$POST_H3_READINESS_INDEX_OUTPUT"
+  )
+  if [ -n "$POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY" ] && [ -s "$POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY" ]; then
+    index_args+=(--minimal-chain-summary "$POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY")
+  fi
+  "$PYTHON" "${index_args[@]}"
 }
 
 if [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
@@ -969,6 +1047,22 @@ if [ "$REQUIRE_H2_ACTIVE" = "1" ]; then
     echo "  p0q_p1_summary: ${P0Q_P1_SOURCE_REF_P1_SUMMARY:-<missing>}"
     echo "  p0q_output_root: $P0Q_P1_SOURCE_REF_OUTPUT_ROOT"
   fi
+  echo "  post_h3_observer_readiness_check: $RUN_POST_H3_OBSERVER_READINESS_CHECK"
+  if [ "$RUN_POST_H3_OBSERVER_READINESS_CHECK" = "1" ]; then
+    echo "  post_h3_observer_ab_summary: ${POST_H3_OBSERVER_READINESS_AB_SUMMARY:-<missing>}"
+    echo "  post_h3_observer_output_root: $POST_H3_OBSERVER_READINESS_OUTPUT_ROOT"
+  fi
+  echo "  post_h3_minimal_production_task_chain_blueprint: $RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT"
+  if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT" = "1" ]; then
+    echo "  post_h3_minimal_chain_ac_summary: ${POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY:-<missing>}"
+    echo "  post_h3_minimal_chain_output_root: $POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_OUTPUT_ROOT"
+  fi
+  echo "  post_h3_readiness_index: $RUN_POST_H3_READINESS_INDEX"
+  if [ "$RUN_POST_H3_READINESS_INDEX" = "1" ]; then
+    echo "  post_h3_readiness_index_ac_summary: ${POST_H3_READINESS_INDEX_AC_SUMMARY:-<missing>}"
+    echo "  post_h3_readiness_index_minimal_chain_summary: ${POST_H3_READINESS_INDEX_MINIMAL_CHAIN_SUMMARY:-<missing>}"
+    echo "  post_h3_readiness_index_output: $POST_H3_READINESS_INDEX_OUTPUT"
+  fi
 fi
 echo "  institutional_on : $CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED"
 echo "  identity_on      : $CIVITASOS_IDENTITY_EMERGENCE_ENABLED"
@@ -991,6 +1085,24 @@ fi
 if [ "$RUN_BETA_PREVIEW_EVIDENCE_INDEX_ONLY" = "1" ]; then
   run_beta_preview_evidence_index
   echo "Beta preview cumulative evidence index completed: $BETA_PREVIEW_EVIDENCE_INDEX_OUTPUT"
+  exit 0
+fi
+
+if [ "$RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY" = "1" ]; then
+  run_post_h3_observer_readiness_check
+  echo "PostH3 observer readiness check completed: $POST_H3_OBSERVER_READINESS_SUMMARY"
+  exit 0
+fi
+
+if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT_ONLY" = "1" ]; then
+  run_post_h3_minimal_production_task_chain_blueprint
+  echo "PostH3 minimal production task chain blueprint completed: $POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_SUMMARY"
+  exit 0
+fi
+
+if [ "$RUN_POST_H3_READINESS_INDEX_ONLY" = "1" ]; then
+  run_post_h3_readiness_index
+  echo "PostH3 readiness index completed: $POST_H3_READINESS_INDEX_OUTPUT"
   exit 0
 fi
 
@@ -1040,6 +1152,18 @@ if [ "$RUN_P0Q_P1_SOURCE_REF_COLLECTION" = "1" ]; then
     --p1-summary "$P0Q_P1_SOURCE_REF_P1_SUMMARY" \
     --output-root "$P0Q_P1_SOURCE_REF_OUTPUT_ROOT" \
     --operator-id "$P0Q_P1_SOURCE_REF_OPERATOR_ID"
+fi
+
+if [ "$RUN_POST_H3_OBSERVER_READINESS_CHECK" = "1" ]; then
+  run_post_h3_observer_readiness_check
+fi
+
+if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT" = "1" ]; then
+  run_post_h3_minimal_production_task_chain_blueprint
+fi
+
+if [ "$RUN_POST_H3_READINESS_INDEX" = "1" ]; then
+  run_post_h3_readiness_index
 fi
 
 # Bootstrap identities first so f1c_check doesn't fail on missing agent_ids.json.
