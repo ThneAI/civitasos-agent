@@ -8,6 +8,7 @@ from benchmarks.post_h3_minimal_production_task_authorization_gate import run_ga
 from benchmarks.post_h3_minimal_production_task_chain import run_gate as run_minimal_chain
 from benchmarks.post_h3_minimal_production_task_execution_gate import run_gate as run_execution
 from benchmarks.post_h3_minimal_production_task_intake_gate import DEFAULT_TASK_REQUEST, run_gate as run_intake
+from benchmarks.post_h3_minimal_production_task_reusable_chain import PREVIOUS_AUTHORIZATION_ID, run_chain as run_reusable_chain
 from benchmarks.post_h3_minimal_production_task_strategy_review_gate import run_gate as run_strategy_review
 from benchmarks.post_h3_observer_mode_readiness_gate import run_gate as run_post_h3ac
 from benchmarks.post_h3_readiness_index import build_index
@@ -228,6 +229,45 @@ def test_post_h3_minimal_task_strategy_review_blocks_execution_hash_drift(tmp_pa
     assert summary["passed"] is False
     assert "monitoring_receipt_hash_valid" in summary["failure_reasons"]
     assert summary["readiness"]["reusable_minimal_production_path_ready"] is False
+
+
+def test_post_h3_minimal_task_reusable_chain_runs_second_independent_request(tmp_path: Path, monkeypatch: Any) -> None:
+    readiness_index = _write_readiness_index_fixture(tmp_path, monkeypatch)
+
+    summary = run_reusable_chain(
+        readiness_index_path=readiness_index,
+        output_root=tmp_path / "reusable_chain",
+        task_id="post-h3-task:minimal-production-status-evidence-index-002",
+        title="Generate second minimal production status/evidence index packet",
+        ack_reusable_chain=True,
+    )
+
+    assert summary["passed"] is True
+    assert summary["task_id"] == "post-h3-task:minimal-production-status-evidence-index-002"
+    assert summary["authorization_id"]
+    assert summary["authorization_id"] != PREVIOUS_AUTHORIZATION_ID
+    assert summary["fresh_authorization_observed"] is True
+    assert summary["readiness"]["reusable_chain_complete"] is True
+    assert summary["readiness"]["fresh_authorization_consumed"] is True
+    assert summary["readiness"]["reusable_minimal_production_path_ready"] is True
+    assert summary["readiness"]["next_single_use_gate_input_ready"] is False
+    assert summary["readiness"]["production_task_execution_allowed"] is False
+    assert summary["boundary"]["backend_task_pool_mutation_performed"] is False
+
+
+def test_post_h3_minimal_task_reusable_chain_requires_ack(tmp_path: Path, monkeypatch: Any) -> None:
+    readiness_index = _write_readiness_index_fixture(tmp_path, monkeypatch)
+
+    summary = run_reusable_chain(
+        readiness_index_path=readiness_index,
+        output_root=tmp_path / "reusable_chain",
+        ack_reusable_chain=False,
+    )
+
+    assert summary["passed"] is False
+    assert "explicit_reusable_chain_ack" in summary["failure_reasons"]
+    assert summary["readiness"]["reusable_chain_complete"] is False
+    assert summary["boundary"]["fresh_authorization_consumed"] is False
 
 
 def _write_readiness_index_fixture(tmp_path: Path, monkeypatch: Any) -> Path:

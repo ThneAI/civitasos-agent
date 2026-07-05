@@ -169,6 +169,18 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert '-m benchmarks.post_h3_minimal_production_task_strategy_review_gate' in text
     assert '--execution-summary "$POST_H3_MINIMAL_PRODUCTION_TASK_STRATEGY_REVIEW_EXECUTION_SUMMARY"' in text
     assert '--ack-strategy-review' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN:-0}"' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_ONLY="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_ONLY:-0}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_READINESS_INDEX="${POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_READINESS_INDEX:-$POST_H3_READINESS_INDEX_OUTPUT}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_OUTPUT_ROOT="${POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_OUTPUT_ROOT:-$RUNS_ROOT/post_h3_minimal_production_task_reusable_chain}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_TASK_ID="${POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_TASK_ID:-post-h3-task:minimal-production-status-evidence-index-002}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_ACK="${POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_ACK:-0}"' in text
+    assert "run_post_h3_minimal_production_task_reusable_chain()" in text
+    assert 'if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_ONLY" = "1" ]; then' in text
+    assert 'PostH3 minimal production task reusable chain completed: $POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_SUMMARY' in text
+    assert '-m benchmarks.post_h3_minimal_production_task_reusable_chain' in text
+    assert '--readiness-index "$POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_READINESS_INDEX"' in text
+    assert '--ack-reusable-chain' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
