@@ -59,6 +59,7 @@ def run_gate(
     rollback_decision: str = ROLLBACK_DECISION_ACCEPT,
     monitoring_decision: str = MONITORING_DECISION_ACCEPT,
     operator_statement: str = "Authorize one bounded minimal production task execution attempt.",
+    required_next_gate: str = "post_h3_minimal_production_task_execution_gate",
     ack_single_use_authorization: bool = False,
 ) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
@@ -70,7 +71,12 @@ def run_gate(
         "summary": output_root / "post_h3_minimal_task_authorization_summary.json",
     }
     context = validate_intake_context(intake_summary_path, output=artifacts["context_validation"])
-    request = _write_authorization_request(context=context, intake_summary_path=intake_summary_path, output=artifacts["authorization_request"])
+    request = _write_authorization_request(
+        context=context,
+        intake_summary_path=intake_summary_path,
+        output=artifacts["authorization_request"],
+        required_next_gate=required_next_gate,
+    )
     decision = _write_authorization_decision(
         request_path=artifacts["authorization_request"],
         output=artifacts["authorization_decision"],
@@ -173,7 +179,13 @@ def validate_intake_context(intake_summary_path: Path, *, output: Path | None = 
     return _write_optional(report, output)
 
 
-def _write_authorization_request(*, context: dict[str, Any], intake_summary_path: Path, output: Path) -> dict[str, Any]:
+def _write_authorization_request(
+    *,
+    context: dict[str, Any],
+    intake_summary_path: Path,
+    output: Path,
+    required_next_gate: str,
+) -> dict[str, Any]:
     checks: dict[str, bool] = {}
     failures: list[str] = []
     task = object_value(context.get("task_request"))
@@ -183,6 +195,7 @@ def _write_authorization_request(*, context: dict[str, Any], intake_summary_path
     check(checks, failures, "risk_class_low", task.get("risk_class") == "low")
     check(checks, failures, "single_runtime_task", scope.get("max_runtime_tasks") == 1)
     check(checks, failures, "forbidden_actions_complete", REQUIRED_FORBIDDEN_ACTIONS <= set(_texts(scope.get("forbidden_actions"))))
+    check(checks, failures, "required_next_gate_present", bool(required_next_gate.strip()))
     passed = _passed(checks, failures)
     request = {
         "schema_version": AUTHORIZATION_REQUEST_SCHEMA,
@@ -192,7 +205,7 @@ def _write_authorization_request(*, context: dict[str, Any], intake_summary_path
         "requested_at": _now(),
         "authorization_kind": "single_use_minimal_production_task_execution",
         "task_request": task,
-        "required_next_gate": "post_h3_minimal_production_task_execution_gate",
+        "required_next_gate": required_next_gate,
         "source_artifacts": {"intake_summary": artifact_ref(intake_summary_path)},
         "readiness": {
             "operator_decision_ready": passed,
@@ -281,7 +294,7 @@ def _write_authorization_receipt(*, request_path: Path, decision_path: Path, out
         "task_id": task_id,
         "single_use": True,
         "consumed": False,
-        "consumption_required_by": "post_h3_minimal_production_task_execution_gate",
+        "consumption_required_by": request.get("required_next_gate"),
         "source_artifacts": {
             "authorization_request": artifact_ref(request_path),
             "authorization_decision": artifact_ref(decision_path),
@@ -410,6 +423,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rollback-decision", default=ROLLBACK_DECISION_ACCEPT)
     parser.add_argument("--monitoring-decision", default=MONITORING_DECISION_ACCEPT)
     parser.add_argument("--operator-statement", default="Authorize one bounded minimal production task execution attempt.")
+    parser.add_argument("--required-next-gate", default="post_h3_minimal_production_task_execution_gate")
     parser.add_argument("--ack-single-use-authorization", action="store_true")
     args = parser.parse_args(argv)
     summary = run_gate(
@@ -422,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         rollback_decision=args.rollback_decision,
         monitoring_decision=args.monitoring_decision,
         operator_statement=args.operator_statement,
+        required_next_gate=args.required_next_gate,
         ack_single_use_authorization=args.ack_single_use_authorization,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))

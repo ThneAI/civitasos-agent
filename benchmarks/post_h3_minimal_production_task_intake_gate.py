@@ -28,6 +28,7 @@ ALLOWED_TASK_CLASSES = {
     "observer_evidence_review",
     "bounded_internal_report_generation",
     "low_risk_monitoring_snapshot",
+    "operator_feedback_index_update",
 }
 ALLOWED_RISK_CLASSES = {"low"}
 REQUIRED_SERVICE_TOKEN_SCOPES = {"pool:post", "pool:read", "pool:claim", "pool:write", "audit:read"}

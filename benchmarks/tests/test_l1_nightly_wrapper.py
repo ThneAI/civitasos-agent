@@ -193,6 +193,21 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert '-m benchmarks.post_h3_minimal_production_task_repeated_validation' in text
     assert '--readiness-index "$POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_READINESS_INDEX"' in text
     assert '--ack-repeated-validation' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX:-0}"' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX_ONLY="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX_ONLY:-0}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY="${POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_SUMMARY}"' in text
+    assert "run_post_h3_minimal_production_task_path_stability_index()" in text
+    assert 'if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX_ONLY" = "1" ]; then' in text
+    assert 'PostH3 minimal production task path stability index completed: $POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_OUTPUT' in text
+    assert '-m benchmarks.post_h3_minimal_production_task_path_stability_index' in text
+    assert 'RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK="${RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK:-0}"' in text
+    assert 'RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ONLY="${RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ONLY:-0}"' in text
+    assert 'POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_SUMMARY}"' in text
+    assert "run_post_h3_operator_feedback_index_update_task()" in text
+    assert 'if [ "$RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ONLY" = "1" ]; then' in text
+    assert 'PostH3 operator feedback index update completed: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_SUMMARY' in text
+    assert '-m benchmarks.post_h3_operator_feedback_index_update_task' in text
+    assert '--ack-bounded-task' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text

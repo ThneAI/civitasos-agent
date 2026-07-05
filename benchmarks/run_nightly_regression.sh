@@ -295,6 +295,21 @@ POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_OPERATOR_ID="${POST_H3_MINIM
 POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_INITIAL_PREVIOUS_AUTHORIZATION_ID="${POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_INITIAL_PREVIOUS_AUTHORIZATION_ID:-$POST_H3_MINIMAL_PRODUCTION_TASK_REUSABLE_CHAIN_PREVIOUS_AUTHORIZATION_ID}"
 POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_OPERATOR_STATEMENT_TEMPLATE="${POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_OPERATOR_STATEMENT_TEMPLATE:-Round __ROUND__: execute read-only minimal production status/evidence index request for __TASK_ID__; require fresh authorization, single-use lease consumption, monitoring, rollback/abort, closeout, and strategy review.}"
 POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_ACK="${POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_ACK:-0}"
+RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX:-0}"
+RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX_ONLY="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX_ONLY:-0}"
+POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY="${POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_SUMMARY}"
+POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_OUTPUT="${POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_OUTPUT:-$RUNS_ROOT/post_h3_minimal_task_path_stability_index.json}"
+POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_MIN_SUMMARY_COUNT="${POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_MIN_SUMMARY_COUNT:-1}"
+POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_MIN_TOTAL_ROUNDS="${POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_MIN_TOTAL_ROUNDS:-3}"
+RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK="${RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK:-0}"
+RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ONLY="${RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ONLY:-0}"
+POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_READINESS_INDEX="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_READINESS_INDEX:-$POST_H3_READINESS_INDEX_OUTPUT}"
+POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_SUMMARY}"
+POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OUTPUT_ROOT="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OUTPUT_ROOT:-$RUNS_ROOT/post_h3_operator_feedback_index_update}"
+POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_SUMMARY="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_SUMMARY:-$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OUTPUT_ROOT/post_h3_operator_feedback_index_update_summary.json}"
+POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ID="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ID:-post-h3-task:operator-feedback-index-update-001}"
+POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OPERATOR_ID="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OPERATOR_ID:-operator-primary}"
+POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_ACK="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_ACK:-0}"
 if [ -z "${L1_PILOT_001_WAKE_MODE+x}" ] && [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
   L1_PILOT_001_WAKE_MODE="event"
 else
@@ -627,6 +642,53 @@ run_post_h3_minimal_production_task_repeated_validation() {
     repeated_args+=(--ack-repeated-validation)
   fi
   "$PYTHON" "${repeated_args[@]}"
+}
+
+run_post_h3_minimal_production_task_path_stability_index() {
+  if [ -z "$POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY" ]; then
+    echo "PostH3 minimal production task path stability requires POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY" >&2
+    exit 1
+  fi
+  if [ ! -s "$POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY" ]; then
+    echo "PostH3 repeated validation summary not found: $POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY" >&2
+    exit 1
+  fi
+  "$PYTHON" -m benchmarks.post_h3_minimal_production_task_path_stability_index \
+    --repeated-validation-summary "$POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY" \
+    --output "$POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_OUTPUT" \
+    --min-summary-count "$POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_MIN_SUMMARY_COUNT" \
+    --min-total-rounds "$POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_MIN_TOTAL_ROUNDS"
+}
+
+run_post_h3_operator_feedback_index_update_task() {
+  if [ -z "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_READINESS_INDEX" ]; then
+    echo "PostH3 operator feedback index update requires POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_READINESS_INDEX" >&2
+    exit 1
+  fi
+  if [ -z "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY" ]; then
+    echo "PostH3 operator feedback index update requires POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY" >&2
+    exit 1
+  fi
+  if [ ! -s "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_READINESS_INDEX" ]; then
+    echo "PostH3 readiness index not found: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_READINESS_INDEX" >&2
+    exit 1
+  fi
+  if [ ! -s "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY" ]; then
+    echo "PostH3 repeated validation summary not found: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY" >&2
+    exit 1
+  fi
+  local -a feedback_args=(
+    -m benchmarks.post_h3_operator_feedback_index_update_task
+    --readiness-index "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_READINESS_INDEX"
+    --repeated-validation-summary "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY"
+    --output-root "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OUTPUT_ROOT"
+    --task-id "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ID"
+    --operator-id "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OPERATOR_ID"
+  )
+  if [ "$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_ACK" = "1" ]; then
+    feedback_args+=(--ack-bounded-task)
+  fi
+  "$PYTHON" "${feedback_args[@]}"
 }
 
 if [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
@@ -1326,6 +1388,19 @@ if [ "$REQUIRE_H2_ACTIVE" = "1" ]; then
     echo "  post_h3_minimal_task_repeated_validation_rounds: $POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_ROUNDS"
     echo "  post_h3_minimal_task_repeated_validation_ack: $POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_ACK"
   fi
+  echo "  post_h3_minimal_task_path_stability_index: $RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX"
+  if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX" = "1" ]; then
+    echo "  post_h3_minimal_task_path_stability_repeated_summary: ${POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_REPEATED_SUMMARY:-<missing>}"
+    echo "  post_h3_minimal_task_path_stability_output: $POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_OUTPUT"
+    echo "  post_h3_minimal_task_path_stability_min_total_rounds: $POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_MIN_TOTAL_ROUNDS"
+  fi
+  echo "  post_h3_operator_feedback_index_update_task: $RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK"
+  if [ "$RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK" = "1" ]; then
+    echo "  post_h3_operator_feedback_index_update_readiness_index: ${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_READINESS_INDEX:-<missing>}"
+    echo "  post_h3_operator_feedback_index_update_repeated_summary: ${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_SUMMARY:-<missing>}"
+    echo "  post_h3_operator_feedback_index_update_output_root: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OUTPUT_ROOT"
+    echo "  post_h3_operator_feedback_index_update_ack: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_ACK"
+  fi
 fi
 echo "  institutional_on : $CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED"
 echo "  identity_on      : $CIVITASOS_IDENTITY_EMERGENCE_ENABLED"
@@ -1402,6 +1477,18 @@ fi
 if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_ONLY" = "1" ]; then
   run_post_h3_minimal_production_task_repeated_validation
   echo "PostH3 minimal production task repeated validation completed: $POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_SUMMARY"
+  exit 0
+fi
+
+if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX_ONLY" = "1" ]; then
+  run_post_h3_minimal_production_task_path_stability_index
+  echo "PostH3 minimal production task path stability index completed: $POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_OUTPUT"
+  exit 0
+fi
+
+if [ "$RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ONLY" = "1" ]; then
+  run_post_h3_operator_feedback_index_update_task
+  echo "PostH3 operator feedback index update completed: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_SUMMARY"
   exit 0
 fi
 
@@ -1487,6 +1574,14 @@ fi
 
 if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION" = "1" ]; then
   run_post_h3_minimal_production_task_repeated_validation
+fi
+
+if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_PATH_STABILITY_INDEX" = "1" ]; then
+  run_post_h3_minimal_production_task_path_stability_index
+fi
+
+if [ "$RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK" = "1" ]; then
+  run_post_h3_operator_feedback_index_update_task
 fi
 
 # Bootstrap identities first so f1c_check doesn't fail on missing agent_ids.json.
