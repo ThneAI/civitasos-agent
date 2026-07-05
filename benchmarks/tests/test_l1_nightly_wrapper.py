@@ -221,6 +221,20 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_POST_H3_BOUNDED_OWNER_BRIEFING_TASK_ONLY" = "1" ]; then' in text
     assert 'PostH3 bounded owner briefing completed: $POST_H3_BOUNDED_OWNER_BRIEFING_SUMMARY' in text
     assert "benchmarks.post_h3_bounded_owner_briefing_task" in text
+    assert 'RUN_POST_H3_BOUNDED_OWNER_BRIEFING_REPEATED_VALIDATION="${RUN_POST_H3_BOUNDED_OWNER_BRIEFING_REPEATED_VALIDATION:-0}"' in text
+    assert 'RUN_POST_H3_BOUNDED_OWNER_BRIEFING_REPEATED_VALIDATION_ONLY="${RUN_POST_H3_BOUNDED_OWNER_BRIEFING_REPEATED_VALIDATION_ONLY:-0}"' in text
+    assert 'POST_H3_BOUNDED_OWNER_BRIEFING_REPEATED_VALIDATION_FEEDBACK_REPEATED_SUMMARY="${POST_H3_BOUNDED_OWNER_BRIEFING_REPEATED_VALIDATION_FEEDBACK_REPEATED_SUMMARY:-$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_SUMMARY}"' in text
+    assert "run_post_h3_bounded_owner_briefing_repeated_validation()" in text
+    assert 'if [ "$RUN_POST_H3_BOUNDED_OWNER_BRIEFING_REPEATED_VALIDATION_ONLY" = "1" ]; then' in text
+    assert 'PostH3 bounded owner briefing repeated validation completed: $POST_H3_BOUNDED_OWNER_BRIEFING_REPEATED_VALIDATION_SUMMARY' in text
+    assert "benchmarks.post_h3_bounded_owner_briefing_repeated_validation" in text
+    assert 'RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW="${RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW:-0}"' in text
+    assert 'RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW_ONLY="${RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW_ONLY:-0}"' in text
+    assert 'POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW_BOUNDED_OWNER_BRIEFING_REPEATED_SUMMARY="${POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW_BOUNDED_OWNER_BRIEFING_REPEATED_SUMMARY:-$POST_H3_BOUNDED_OWNER_BRIEFING_REPEATED_VALIDATION_SUMMARY}"' in text
+    assert "run_post_h3_higher_permission_authorization_review()" in text
+    assert 'if [ "$RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW_ONLY" = "1" ]; then' in text
+    assert 'PostH3 higher permission authorization review completed: $POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW_SUMMARY' in text
+    assert "benchmarks.post_h3_higher_permission_authorization_review_gate" in text
     assert '-m benchmarks.post_h3_operator_feedback_index_update_task' in text
     assert '--ack-bounded-task' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
