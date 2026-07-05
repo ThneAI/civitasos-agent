@@ -6,6 +6,7 @@ from typing import Any
 
 from benchmarks.post_h3_minimal_production_task_authorization_gate import run_gate as run_authorization
 from benchmarks.post_h3_minimal_production_task_chain import run_gate as run_minimal_chain
+from benchmarks.post_h3_minimal_production_task_execution_gate import run_gate as run_execution
 from benchmarks.post_h3_minimal_production_task_intake_gate import DEFAULT_TASK_REQUEST, run_gate as run_intake
 from benchmarks.post_h3_observer_mode_readiness_gate import run_gate as run_post_h3ac
 from benchmarks.post_h3_readiness_index import build_index
@@ -98,6 +99,83 @@ def test_post_h3_minimal_task_authorization_blocks_intake_hash_drift(tmp_path: P
     assert summary["readiness"]["production_task_execution_allowed"] is False
 
 
+def test_post_h3_minimal_task_execution_consumes_authorization_and_closes(tmp_path: Path, monkeypatch: Any) -> None:
+    authorization = _write_authorization_fixture(tmp_path, monkeypatch)
+
+    summary = run_execution(
+        authorization_summary_path=authorization,
+        output_root=tmp_path / "execution",
+        ack_minimal_task_execution=True,
+    )
+
+    assert summary["passed"] is True
+    assert summary["readiness"]["authorization_consumed"] is True
+    assert summary["readiness"]["minimal_production_task_execution_complete"] is True
+    assert summary["readiness"]["status_evidence_index_written"] is True
+    assert summary["readiness"]["execution_receipt_written"] is True
+    assert summary["readiness"]["monitoring_receipt_written"] is True
+    assert summary["readiness"]["rollback_abort_receipt_written"] is True
+    assert summary["readiness"]["closeout_receipt_written"] is True
+    assert summary["readiness"]["production_task_execution_allowed"] is False
+    assert summary["readiness"]["runtime_execution_performed"] is False
+    assert summary["readiness"]["production_runtime_receipt_write_allowed"] is False
+    assert summary["boundary"]["production_task_execution_performed"] is True
+    assert summary["boundary"]["backend_task_pool_mutation_performed"] is False
+
+
+def test_post_h3_minimal_task_execution_requires_ack(tmp_path: Path, monkeypatch: Any) -> None:
+    authorization = _write_authorization_fixture(tmp_path, monkeypatch)
+
+    summary = run_execution(
+        authorization_summary_path=authorization,
+        output_root=tmp_path / "execution",
+        ack_minimal_task_execution=False,
+    )
+
+    assert summary["passed"] is False
+    assert "explicit_execution_ack" in summary["failure_reasons"]
+    assert summary["readiness"]["authorization_consumed"] is False
+    assert summary["boundary"]["production_task_execution_performed"] is False
+
+
+def test_post_h3_minimal_task_execution_blocks_reuse(tmp_path: Path, monkeypatch: Any) -> None:
+    authorization = _write_authorization_fixture(tmp_path, monkeypatch)
+
+    first = run_execution(
+        authorization_summary_path=authorization,
+        output_root=tmp_path / "execution_first",
+        ack_minimal_task_execution=True,
+    )
+    second = run_execution(
+        authorization_summary_path=authorization,
+        output_root=tmp_path / "execution_second",
+        ack_minimal_task_execution=True,
+    )
+
+    assert first["passed"] is True
+    assert second["passed"] is False
+    assert "lease_not_already_present" in second["failure_reasons"]
+    assert second["readiness"]["authorization_consumed"] is False
+
+
+def test_post_h3_minimal_task_execution_blocks_authorization_hash_drift(tmp_path: Path, monkeypatch: Any) -> None:
+    authorization = _write_authorization_fixture(tmp_path, monkeypatch)
+    receipt = tmp_path / "authorization" / "post_h3_minimal_task_authorization_receipt.json"
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["consumed"] = True
+    receipt.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    summary = run_execution(
+        authorization_summary_path=authorization,
+        output_root=tmp_path / "execution",
+        ack_minimal_task_execution=True,
+    )
+
+    assert summary["passed"] is False
+    assert "authorization_receipt_hash_valid" in summary["failure_reasons"]
+    assert summary["readiness"]["authorization_consumed"] is False
+
+
 def _write_readiness_index_fixture(tmp_path: Path, monkeypatch: Any) -> Path:
     post_h3ab = _write_post_h3ab_fixture(tmp_path, monkeypatch)
     post_h3ac_root = tmp_path / "post_h3ac"
@@ -123,3 +201,14 @@ def _write_intake_fixture(tmp_path: Path, monkeypatch: Any) -> Path:
     root = tmp_path / "intake"
     run_intake(readiness_index_path=readiness_index, output_root=root)
     return root / "post_h3_minimal_task_intake_summary.json"
+
+
+def _write_authorization_fixture(tmp_path: Path, monkeypatch: Any) -> Path:
+    intake = _write_intake_fixture(tmp_path, monkeypatch)
+    root = tmp_path / "authorization"
+    run_authorization(
+        intake_summary_path=intake,
+        output_root=root,
+        ack_single_use_authorization=True,
+    )
+    return root / "post_h3_minimal_task_authorization_summary.json"

@@ -147,6 +147,17 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert '-m benchmarks.post_h3_minimal_production_task_authorization_gate' in text
     assert '--intake-summary "$POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_INTAKE_SUMMARY"' in text
     assert '--ack-single-use-authorization' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_GATE="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_GATE:-0}"' in text
+    assert 'RUN_POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_GATE_ONLY="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_GATE_ONLY:-0}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_AUTHORIZATION_SUMMARY="${POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_AUTHORIZATION_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_AUTHORIZATION_SUMMARY}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_OUTPUT_ROOT="${POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_OUTPUT_ROOT:-$RUNS_ROOT/post_h3_minimal_production_task_execution}"' in text
+    assert 'POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_ACK="${POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_ACK:-0}"' in text
+    assert "run_post_h3_minimal_production_task_execution_gate()" in text
+    assert 'if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_GATE_ONLY" = "1" ]; then' in text
+    assert 'PostH3 minimal production task execution completed: $POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_SUMMARY' in text
+    assert '-m benchmarks.post_h3_minimal_production_task_execution_gate' in text
+    assert '--authorization-summary "$POST_H3_MINIMAL_PRODUCTION_TASK_EXECUTION_AUTHORIZATION_SUMMARY"' in text
+    assert '--ack-minimal-task-execution' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
     assert 'L1_PILOT_001_WAKE_MODE="${L1_PILOT_001_WAKE_MODE:-auto}"' in text
     assert 'L1_PILOT_001_REQUIRE_SIGNED_WAKE="${L1_PILOT_001_REQUIRE_SIGNED_WAKE:-$RUN_L1_PILOT_001_CONTRACT_CHAIN}"' in text
