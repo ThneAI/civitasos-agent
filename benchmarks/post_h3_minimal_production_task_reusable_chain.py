@@ -52,6 +52,9 @@ def run_chain(
     title: str = DEFAULT_TITLE,
     operator_id: str = "operator-primary",
     previous_authorization_id: str = PREVIOUS_AUTHORIZATION_ID,
+    authorization_operator_statement: str = "Authorize one bounded minimal production task execution attempt.",
+    execution_operator_statement: str = "Execute one read-only minimal production status/evidence index task.",
+    strategy_operator_statement: str = "Accept the read-only minimal production task path as reusable; every future execution still requires a fresh single-use authorization.",
     ack_reusable_chain: bool = False,
 ) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
@@ -79,6 +82,7 @@ def run_chain(
         intake_summary_path=output_root / "intake" / "post_h3_minimal_task_intake_summary.json",
         output_root=output_root / "authorization",
         operator_id=operator_id,
+        operator_statement=authorization_operator_statement,
         ack_single_use_authorization=True,
     )
     if authorization_summary.get("passed") is not True:
@@ -100,6 +104,7 @@ def run_chain(
         authorization_summary_path=output_root / "authorization" / "post_h3_minimal_task_authorization_summary.json",
         output_root=output_root / "execution",
         operator_id=operator_id,
+        operator_statement=execution_operator_statement,
         ack_minimal_task_execution=True,
     )
     if execution_summary.get("passed") is not True:
@@ -117,6 +122,7 @@ def run_chain(
         execution_summary_path=output_root / "execution" / "post_h3_minimal_task_execution_summary.json",
         output_root=output_root / "strategy_review",
         operator_id=operator_id,
+        operator_statement=strategy_operator_statement,
         ack_strategy_review=True,
     )
     if strategy_summary.get("passed") is not True:
@@ -151,6 +157,11 @@ def run_chain(
         "previous_authorization_id": previous_authorization_id,
         "authorization_id": authorization_id,
         "fresh_authorization_observed": authorization_id != previous_authorization_id,
+        "operator_statements": {
+            "authorization": authorization_operator_statement,
+            "execution": execution_operator_statement,
+            "strategy_review": strategy_operator_statement,
+        },
         "stage_summaries": {
             "intake": artifact_ref(output_root / "intake" / "post_h3_minimal_task_intake_summary.json"),
             "authorization": artifact_ref(output_root / "authorization" / "post_h3_minimal_task_authorization_summary.json"),
@@ -315,6 +326,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--title", default=DEFAULT_TITLE)
     parser.add_argument("--operator-id", default="operator-primary")
     parser.add_argument("--previous-authorization-id", default=PREVIOUS_AUTHORIZATION_ID)
+    parser.add_argument("--authorization-operator-statement", default="Authorize one bounded minimal production task execution attempt.")
+    parser.add_argument("--execution-operator-statement", default="Execute one read-only minimal production status/evidence index task.")
+    parser.add_argument("--strategy-operator-statement", default="Accept the read-only minimal production task path as reusable; every future execution still requires a fresh single-use authorization.")
     parser.add_argument("--ack-reusable-chain", action="store_true")
     args = parser.parse_args(argv)
     summary = run_chain(
@@ -325,6 +339,9 @@ def main(argv: list[str] | None = None) -> int:
         title=args.title,
         operator_id=args.operator_id,
         previous_authorization_id=args.previous_authorization_id,
+        authorization_operator_statement=args.authorization_operator_statement,
+        execution_operator_statement=args.execution_operator_statement,
+        strategy_operator_statement=args.strategy_operator_statement,
         ack_reusable_chain=args.ack_reusable_chain,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))

@@ -8,6 +8,7 @@ from benchmarks.post_h3_minimal_production_task_authorization_gate import run_ga
 from benchmarks.post_h3_minimal_production_task_chain import run_gate as run_minimal_chain
 from benchmarks.post_h3_minimal_production_task_execution_gate import run_gate as run_execution
 from benchmarks.post_h3_minimal_production_task_intake_gate import DEFAULT_TASK_REQUEST, run_gate as run_intake
+from benchmarks.post_h3_minimal_production_task_repeated_validation import run_repeated_validation
 from benchmarks.post_h3_minimal_production_task_reusable_chain import PREVIOUS_AUTHORIZATION_ID, run_chain as run_reusable_chain
 from benchmarks.post_h3_minimal_production_task_strategy_review_gate import run_gate as run_strategy_review
 from benchmarks.post_h3_observer_mode_readiness_gate import run_gate as run_post_h3ac
@@ -255,6 +256,45 @@ def test_post_h3_minimal_task_reusable_chain_runs_second_independent_request(tmp
     assert summary["boundary"]["backend_task_pool_mutation_performed"] is False
 
 
+def test_post_h3_minimal_task_reusable_chain_records_operator_statements(tmp_path: Path, monkeypatch: Any) -> None:
+    readiness_index = _write_readiness_index_fixture(tmp_path, monkeypatch)
+
+    summary = run_reusable_chain(
+        readiness_index_path=readiness_index,
+        output_root=tmp_path / "reusable_chain",
+        task_id="post-h3-task:minimal-production-status-evidence-index-002",
+        title="Generate second minimal production status/evidence index packet",
+        authorization_operator_statement="authorize unique statement",
+        execution_operator_statement="execute unique statement",
+        strategy_operator_statement="strategy unique statement",
+        ack_reusable_chain=True,
+    )
+
+    assert summary["passed"] is True
+    assert summary["operator_statements"]["authorization"] == "authorize unique statement"
+    authorization_decision = json.loads(
+        (tmp_path / "reusable_chain" / "authorization" / "post_h3_minimal_task_authorization_decision.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    execution_consumption = json.loads(
+        (tmp_path / "reusable_chain" / "execution" / "post_h3_minimal_task_authorization_consumption.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    strategy_reconciliation = json.loads(
+        (
+            tmp_path
+            / "reusable_chain"
+            / "strategy_review"
+            / "post_h3_minimal_task_strategy_reconciliation.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert authorization_decision["operator_statement"] == "authorize unique statement"
+    assert execution_consumption["operator_statement"] == "execute unique statement"
+    assert strategy_reconciliation["operator_statement"] == "strategy unique statement"
+
+
 def test_post_h3_minimal_task_reusable_chain_requires_ack(tmp_path: Path, monkeypatch: Any) -> None:
     readiness_index = _write_readiness_index_fixture(tmp_path, monkeypatch)
 
@@ -268,6 +308,61 @@ def test_post_h3_minimal_task_reusable_chain_requires_ack(tmp_path: Path, monkey
     assert "explicit_reusable_chain_ack" in summary["failure_reasons"]
     assert summary["readiness"]["reusable_chain_complete"] is False
     assert summary["boundary"]["fresh_authorization_consumed"] is False
+
+
+def test_post_h3_minimal_task_repeated_validation_runs_multiple_fresh_rounds(tmp_path: Path, monkeypatch: Any) -> None:
+    readiness_index = _write_readiness_index_fixture(tmp_path, monkeypatch)
+
+    summary = run_repeated_validation(
+        readiness_index_path=readiness_index,
+        output_root=tmp_path / "repeated",
+        rounds=3,
+        start_index=3,
+        initial_previous_authorization_id=PREVIOUS_AUTHORIZATION_ID,
+        ack_repeated_validation=True,
+    )
+
+    assert summary["passed"] is True
+    assert summary["round_count"] == 3
+    assert summary["unique_task_id_count"] == 3
+    assert summary["unique_authorization_id_count"] == 3
+    assert summary["unique_operator_statement_count"] == 3
+    assert summary["checks"]["fresh_authorization_observed_all_rounds"] is True
+    assert summary["checks"]["fresh_authorization_consumed_all_rounds"] is True
+    assert summary["checks"]["strategy_review_ready_all_rounds"] is True
+    assert summary["readiness"]["repeated_validation_complete"] is True
+    assert summary["readiness"]["production_task_execution_allowed"] is False
+    assert summary["boundary"]["backend_task_pool_mutation_performed"] is False
+    assert summary["initial_previous_authorization_id"] not in set(summary["authorization_ids"])
+
+
+def test_post_h3_minimal_task_repeated_validation_requires_ack(tmp_path: Path, monkeypatch: Any) -> None:
+    readiness_index = _write_readiness_index_fixture(tmp_path, monkeypatch)
+
+    summary = run_repeated_validation(
+        readiness_index_path=readiness_index,
+        output_root=tmp_path / "repeated",
+        rounds=2,
+        ack_repeated_validation=False,
+    )
+
+    assert summary["passed"] is False
+    assert "explicit_repeated_validation_ack" in summary["failure_reasons"]
+    assert summary["readiness"]["repeated_validation_complete"] is False
+
+
+def test_post_h3_minimal_task_repeated_validation_requires_positive_rounds(tmp_path: Path, monkeypatch: Any) -> None:
+    readiness_index = _write_readiness_index_fixture(tmp_path, monkeypatch)
+
+    summary = run_repeated_validation(
+        readiness_index_path=readiness_index,
+        output_root=tmp_path / "repeated",
+        rounds=0,
+        ack_repeated_validation=True,
+    )
+
+    assert summary["passed"] is False
+    assert "positive_round_count_required" in summary["failure_reasons"]
 
 
 def _write_readiness_index_fixture(tmp_path: Path, monkeypatch: Any) -> Path:
