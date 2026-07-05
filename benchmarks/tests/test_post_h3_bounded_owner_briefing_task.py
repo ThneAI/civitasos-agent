@@ -9,6 +9,9 @@ from benchmarks.post_h3_bounded_owner_briefing_repeated_validation import (
     run_repeated_validation as run_owner_briefing_repeated_validation,
 )
 from benchmarks.post_h3_higher_permission_authorization_review_gate import run_gate as run_higher_permission_review
+from benchmarks.post_h3_higher_permission_authorization_reconciliation_gate import (
+    run_gate as run_higher_permission_reconciliation,
+)
 from benchmarks.post_h3_operator_feedback_index_update_repeated_validation import run_repeated_validation as run_feedback_repeated
 from benchmarks.tests.test_post_h3_minimal_path_stability_and_feedback_update import _write_repeated_validation_fixture
 from benchmarks.tests.test_post_h3_minimal_production_task_intake_authorization import _write_readiness_index_fixture
@@ -169,6 +172,64 @@ def test_higher_permission_review_request_requires_ack(tmp_path: Path, monkeypat
     assert summary["readiness"]["higher_permission_authorization_review_ready"] is False
 
 
+def test_higher_permission_reconciliation_records_five_roles_without_authorization(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    readiness_index = _write_readiness_index_fixture(tmp_path, monkeypatch)
+    feedback_repeated = _write_feedback_repeated_fixture(tmp_path, monkeypatch, readiness_index=readiness_index)
+    briefing_repeated = _write_owner_briefing_repeated_fixture(
+        tmp_path,
+        readiness_index=readiness_index,
+        feedback_repeated=feedback_repeated,
+    )
+    review = _write_higher_permission_review_fixture(tmp_path, briefing_repeated)
+
+    summary = run_higher_permission_reconciliation(
+        higher_permission_review_summary_path=review,
+        output_root=tmp_path / "higher_permission_reconciliation",
+        operator_statement="Reconcile higher permission review for test evidence only.",
+        ack_reconciliation=True,
+    )
+
+    assert summary["passed"] is True
+    assert summary["readiness"]["higher_permission_authorization_reconciliation_complete"] is True
+    assert summary["readiness"]["single_use_authorization_request_ready"] is True
+    assert summary["readiness"]["limited_external_usage_authorization_request_ready"] is True
+    assert summary["readiness"]["status_only_public_ingress_authorization_request_ready"] is True
+    assert summary["readiness"]["bounded_runtime_heartbeat_authorization_request_ready"] is True
+    assert summary["readiness"]["authorization_granted"] is False
+    assert summary["readiness"]["production_task_execution_allowed"] is False
+    assert summary["boundary"]["higher_permission_authorization_reconciliation_complete"] is True
+    assert summary["boundary"]["single_use_authorization_request_ready"] is True
+    assert summary["boundary"]["authorization_granted"] is False
+    assert summary["boundary"]["public_ingress_authorized"] is False
+    assert summary["boundary"]["runtime_expansion_authorized"] is False
+    assert summary["boundary"]["deploy_authorized"] is False
+    assert summary["boundary"]["source_write_authorized"] is False
+    assert summary["boundary"]["production_data_access_authorized"] is False
+
+
+def test_higher_permission_reconciliation_requires_ack(tmp_path: Path, monkeypatch: Any) -> None:
+    readiness_index = _write_readiness_index_fixture(tmp_path, monkeypatch)
+    feedback_repeated = _write_feedback_repeated_fixture(tmp_path, monkeypatch, readiness_index=readiness_index)
+    briefing_repeated = _write_owner_briefing_repeated_fixture(
+        tmp_path,
+        readiness_index=readiness_index,
+        feedback_repeated=feedback_repeated,
+    )
+    review = _write_higher_permission_review_fixture(tmp_path, briefing_repeated)
+
+    summary = run_higher_permission_reconciliation(
+        higher_permission_review_summary_path=review,
+        output_root=tmp_path / "higher_permission_reconciliation",
+        ack_reconciliation=False,
+    )
+
+    assert summary["passed"] is False
+    assert "explicit_higher_permission_reconciliation_ack" in summary["failure_reasons"]
+    assert summary["readiness"]["higher_permission_authorization_reconciliation_complete"] is False
+
+
 def _write_feedback_repeated_fixture(tmp_path: Path, monkeypatch: Any, readiness_index: Path) -> Path:
     minimal_repeated = _write_repeated_validation_fixture(tmp_path, monkeypatch, readiness_index=readiness_index)
     root = tmp_path / "feedback_repeated"
@@ -194,3 +255,14 @@ def _write_owner_briefing_repeated_fixture(tmp_path: Path, readiness_index: Path
         ack_repeated_validation=True,
     )
     return root / "post_h3_bounded_owner_briefing_repeated_validation_summary.json"
+
+
+def _write_higher_permission_review_fixture(tmp_path: Path, briefing_repeated: Path) -> Path:
+    root = tmp_path / "higher_permission_review_fixture"
+    run_higher_permission_review(
+        bounded_owner_briefing_repeated_validation_summary_path=briefing_repeated,
+        output_root=root,
+        operator_statement="Enter higher permission review for fixture evidence only.",
+        ack_review_request=True,
+    )
+    return root / "post_h3_higher_permission_authorization_review_summary.json"

@@ -235,6 +235,13 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW_ONLY" = "1" ]; then' in text
     assert 'PostH3 higher permission authorization review completed: $POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW_SUMMARY' in text
     assert "benchmarks.post_h3_higher_permission_authorization_review_gate" in text
+    assert 'RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION="${RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION:-0}"' in text
+    assert 'RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION_ONLY="${RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION_ONLY:-0}"' in text
+    assert 'POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION_REVIEW_SUMMARY="${POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION_REVIEW_SUMMARY:-$POST_H3_HIGHER_PERMISSION_AUTHORIZATION_REVIEW_SUMMARY}"' in text
+    assert "run_post_h3_higher_permission_authorization_reconciliation()" in text
+    assert 'if [ "$RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION_ONLY" = "1" ]; then' in text
+    assert 'PostH3 higher permission authorization reconciliation completed: $POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION_SUMMARY' in text
+    assert "benchmarks.post_h3_higher_permission_authorization_reconciliation_gate" in text
     assert '-m benchmarks.post_h3_operator_feedback_index_update_task' in text
     assert '--ack-bounded-task' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
