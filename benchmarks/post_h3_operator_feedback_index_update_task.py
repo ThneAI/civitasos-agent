@@ -59,6 +59,7 @@ def run_chain(
     output_root: Path,
     task_id: str = DEFAULT_TASK_ID,
     operator_id: str = "operator-primary",
+    operator_statement: str = "Authorize one bounded operator feedback index update from repeated-validation evidence.",
     ack_bounded_task: bool = False,
 ) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
@@ -92,7 +93,7 @@ def run_chain(
         intake_summary_path=output_root / "intake" / "post_h3_minimal_task_intake_summary.json",
         output_root=output_root / "authorization",
         operator_id=operator_id,
-        operator_statement="Authorize one bounded operator feedback index update from repeated-validation evidence.",
+        operator_statement=operator_statement,
         required_next_gate=EXECUTION_GATE_NAME,
         ack_single_use_authorization=True,
     )
@@ -147,6 +148,8 @@ def run_chain(
         "checked_at": _now(),
         "task_id": task_id,
         "task_class": TASK_CLASS,
+        "operator_statement": operator_statement,
+        "operator_statement_sha256": sha256_json(operator_statement),
         "authorization_id": object_value(context.get("authorization_receipt")).get("authorization_id"),
         "source_artifacts": {
             "readiness_index": artifact_ref(readiness_index_path),
@@ -568,6 +571,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--task-id", default=DEFAULT_TASK_ID)
     parser.add_argument("--operator-id", default="operator-primary")
+    parser.add_argument(
+        "--operator-statement",
+        default="Authorize one bounded operator feedback index update from repeated-validation evidence.",
+    )
     parser.add_argument("--ack-bounded-task", action="store_true")
     args = parser.parse_args(argv)
     summary = run_chain(
@@ -576,6 +583,7 @@ def main(argv: list[str] | None = None) -> int:
         output_root=args.output_root,
         task_id=args.task_id,
         operator_id=args.operator_id,
+        operator_statement=args.operator_statement,
         ack_bounded_task=args.ack_bounded_task,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))

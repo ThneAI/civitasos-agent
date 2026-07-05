@@ -206,6 +206,14 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert "run_post_h3_operator_feedback_index_update_task()" in text
     assert 'if [ "$RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_TASK_ONLY" = "1" ]; then' in text
     assert 'PostH3 operator feedback index update completed: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_SUMMARY' in text
+    assert 'POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OPERATOR_STATEMENT="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_OPERATOR_STATEMENT:-Authorize one bounded operator feedback index update from repeated-validation evidence.}"' in text
+    assert 'RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION="${RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION:-0}"' in text
+    assert 'RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_ONLY="${RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_ONLY:-0}"' in text
+    assert 'POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_REPEATED_SUMMARY="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_REPEATED_SUMMARY:-$POST_H3_MINIMAL_PRODUCTION_TASK_REPEATED_VALIDATION_SUMMARY}"' in text
+    assert "run_post_h3_operator_feedback_index_update_repeated_validation()" in text
+    assert 'if [ "$RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_ONLY" = "1" ]; then' in text
+    assert 'PostH3 operator feedback index update repeated validation completed: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_SUMMARY' in text
+    assert "benchmarks.post_h3_operator_feedback_index_update_repeated_validation" in text
     assert '-m benchmarks.post_h3_operator_feedback_index_update_task' in text
     assert '--ack-bounded-task' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
