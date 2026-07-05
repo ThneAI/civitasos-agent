@@ -323,6 +323,16 @@ POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_TASK_ID_PREFIX="${POS
 POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_OPERATOR_ID="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_OPERATOR_ID:-operator-primary}"
 POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_OPERATOR_STATEMENT_TEMPLATE="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_OPERATOR_STATEMENT_TEMPLATE:-Round __ROUND__: authorize one bounded operator feedback index update for __TASK_ID__; require fresh authorization, single-use consumption, feedback index artifact, monitoring, rollback/abort, closeout, strategy review, and no external side effects.}"
 POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_ACK="${POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_ACK:-0}"
+RUN_POST_H3_BOUNDED_OWNER_BRIEFING_TASK="${RUN_POST_H3_BOUNDED_OWNER_BRIEFING_TASK:-0}"
+RUN_POST_H3_BOUNDED_OWNER_BRIEFING_TASK_ONLY="${RUN_POST_H3_BOUNDED_OWNER_BRIEFING_TASK_ONLY:-0}"
+POST_H3_BOUNDED_OWNER_BRIEFING_READINESS_INDEX="${POST_H3_BOUNDED_OWNER_BRIEFING_READINESS_INDEX:-$POST_H3_READINESS_INDEX_OUTPUT}"
+POST_H3_BOUNDED_OWNER_BRIEFING_FEEDBACK_REPEATED_SUMMARY="${POST_H3_BOUNDED_OWNER_BRIEFING_FEEDBACK_REPEATED_SUMMARY:-$POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_SUMMARY}"
+POST_H3_BOUNDED_OWNER_BRIEFING_OUTPUT_ROOT="${POST_H3_BOUNDED_OWNER_BRIEFING_OUTPUT_ROOT:-$RUNS_ROOT/post_h3_bounded_owner_briefing}"
+POST_H3_BOUNDED_OWNER_BRIEFING_SUMMARY="${POST_H3_BOUNDED_OWNER_BRIEFING_SUMMARY:-$POST_H3_BOUNDED_OWNER_BRIEFING_OUTPUT_ROOT/post_h3_bounded_owner_briefing_summary.json}"
+POST_H3_BOUNDED_OWNER_BRIEFING_TASK_ID="${POST_H3_BOUNDED_OWNER_BRIEFING_TASK_ID:-post-h3-task:bounded-owner-briefing-001}"
+POST_H3_BOUNDED_OWNER_BRIEFING_OPERATOR_ID="${POST_H3_BOUNDED_OWNER_BRIEFING_OPERATOR_ID:-operator-primary}"
+POST_H3_BOUNDED_OWNER_BRIEFING_OPERATOR_STATEMENT="${POST_H3_BOUNDED_OWNER_BRIEFING_OPERATOR_STATEMENT:-Authorize one bounded owner briefing from stable PostH3 evidence only.}"
+POST_H3_BOUNDED_OWNER_BRIEFING_ACK="${POST_H3_BOUNDED_OWNER_BRIEFING_ACK:-0}"
 if [ -z "${L1_PILOT_001_WAKE_MODE+x}" ] && [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
   L1_PILOT_001_WAKE_MODE="event"
 else
@@ -737,6 +747,38 @@ run_post_h3_operator_feedback_index_update_repeated_validation() {
     feedback_repeated_args+=(--ack-repeated-validation)
   fi
   "$PYTHON" "${feedback_repeated_args[@]}"
+}
+
+run_post_h3_bounded_owner_briefing_task() {
+  if [ -z "$POST_H3_BOUNDED_OWNER_BRIEFING_READINESS_INDEX" ]; then
+    echo "PostH3 bounded owner briefing requires POST_H3_BOUNDED_OWNER_BRIEFING_READINESS_INDEX" >&2
+    exit 1
+  fi
+  if [ -z "$POST_H3_BOUNDED_OWNER_BRIEFING_FEEDBACK_REPEATED_SUMMARY" ]; then
+    echo "PostH3 bounded owner briefing requires POST_H3_BOUNDED_OWNER_BRIEFING_FEEDBACK_REPEATED_SUMMARY" >&2
+    exit 1
+  fi
+  if [ ! -s "$POST_H3_BOUNDED_OWNER_BRIEFING_READINESS_INDEX" ]; then
+    echo "PostH3 readiness index not found: $POST_H3_BOUNDED_OWNER_BRIEFING_READINESS_INDEX" >&2
+    exit 1
+  fi
+  if [ ! -s "$POST_H3_BOUNDED_OWNER_BRIEFING_FEEDBACK_REPEATED_SUMMARY" ]; then
+    echo "PostH3 operator feedback repeated validation summary not found: $POST_H3_BOUNDED_OWNER_BRIEFING_FEEDBACK_REPEATED_SUMMARY" >&2
+    exit 1
+  fi
+  local -a briefing_args=(
+    -m benchmarks.post_h3_bounded_owner_briefing_task
+    --readiness-index "$POST_H3_BOUNDED_OWNER_BRIEFING_READINESS_INDEX"
+    --feedback-repeated-validation-summary "$POST_H3_BOUNDED_OWNER_BRIEFING_FEEDBACK_REPEATED_SUMMARY"
+    --output-root "$POST_H3_BOUNDED_OWNER_BRIEFING_OUTPUT_ROOT"
+    --task-id "$POST_H3_BOUNDED_OWNER_BRIEFING_TASK_ID"
+    --operator-id "$POST_H3_BOUNDED_OWNER_BRIEFING_OPERATOR_ID"
+    --operator-statement "$POST_H3_BOUNDED_OWNER_BRIEFING_OPERATOR_STATEMENT"
+  )
+  if [ "$POST_H3_BOUNDED_OWNER_BRIEFING_ACK" = "1" ]; then
+    briefing_args+=(--ack-bounded-task)
+  fi
+  "$PYTHON" "${briefing_args[@]}"
 }
 
 if [ "$RUN_L1_PILOT_001_CONTRACT_CHAIN" = "1" ]; then
@@ -1457,6 +1499,13 @@ if [ "$REQUIRE_H2_ACTIVE" = "1" ]; then
     echo "  post_h3_operator_feedback_index_update_repeated_validation_rounds: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_ROUNDS"
     echo "  post_h3_operator_feedback_index_update_repeated_validation_ack: $POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_ACK"
   fi
+  echo "  post_h3_bounded_owner_briefing_task: $RUN_POST_H3_BOUNDED_OWNER_BRIEFING_TASK"
+  if [ "$RUN_POST_H3_BOUNDED_OWNER_BRIEFING_TASK" = "1" ]; then
+    echo "  post_h3_bounded_owner_briefing_readiness_index: ${POST_H3_BOUNDED_OWNER_BRIEFING_READINESS_INDEX:-<missing>}"
+    echo "  post_h3_bounded_owner_briefing_feedback_repeated_summary: ${POST_H3_BOUNDED_OWNER_BRIEFING_FEEDBACK_REPEATED_SUMMARY:-<missing>}"
+    echo "  post_h3_bounded_owner_briefing_output_root: $POST_H3_BOUNDED_OWNER_BRIEFING_OUTPUT_ROOT"
+    echo "  post_h3_bounded_owner_briefing_ack: $POST_H3_BOUNDED_OWNER_BRIEFING_ACK"
+  fi
 fi
 echo "  institutional_on : $CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED"
 echo "  identity_on      : $CIVITASOS_IDENTITY_EMERGENCE_ENABLED"
@@ -1554,6 +1603,12 @@ if [ "$RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION_ONLY" = "1
   exit 0
 fi
 
+if [ "$RUN_POST_H3_BOUNDED_OWNER_BRIEFING_TASK_ONLY" = "1" ]; then
+  run_post_h3_bounded_owner_briefing_task
+  echo "PostH3 bounded owner briefing completed: $POST_H3_BOUNDED_OWNER_BRIEFING_SUMMARY"
+  exit 0
+fi
+
 if [ "$RUN_P0P_FIRST_CONTROLLED_BETA_TASK_EXECUTION" = "1" ]; then
   if [ -z "$P0P_FIRST_CONTROLLED_BETA_TASK_P0O_SUMMARY" ]; then
     echo "RUN_P0P_FIRST_CONTROLLED_BETA_TASK_EXECUTION=1 requires P0P_FIRST_CONTROLLED_BETA_TASK_P0O_SUMMARY" >&2
@@ -1648,6 +1703,10 @@ fi
 
 if [ "$RUN_POST_H3_OPERATOR_FEEDBACK_INDEX_UPDATE_REPEATED_VALIDATION" = "1" ]; then
   run_post_h3_operator_feedback_index_update_repeated_validation
+fi
+
+if [ "$RUN_POST_H3_BOUNDED_OWNER_BRIEFING_TASK" = "1" ]; then
+  run_post_h3_bounded_owner_briefing_task
 fi
 
 # Bootstrap identities first so f1c_check doesn't fail on missing agent_ids.json.
