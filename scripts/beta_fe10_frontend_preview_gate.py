@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--frontend-url", required=True)
     parser.add_argument("--backend-url", required=True)
-    parser.add_argument("--auth-mode", choices=("auto", "bearer-token", "service-token", "demo-login"), default="auto")
+    parser.add_argument("--auth-mode", choices=("auto", "bearer-token", "service-token", "demo-login"), default="service-token")
     parser.add_argument("--bearer-token")
     parser.add_argument("--bearer-token-file")
     parser.add_argument("--service-token-secret")
@@ -105,7 +105,7 @@ def run_preview_gate(
     output_root: Path,
     frontend_url: str,
     backend_url: str,
-    auth_mode: str = "auto",
+    auth_mode: str = "service-token",
     bearer_token: str | None = None,
     bearer_token_file: Path | None = None,
     service_token_secret: str | None = None,
@@ -363,6 +363,7 @@ def _validate_auth_boundary(auth_report: Any, failures: list[str]) -> None:
         failures.append("backend auth report must be an object")
         return
     if auth_report.get("auth_method") != "service_token":
+        failures.append("service_token auth is required for Beta FE10 preview; demo-login/bearer-token is forbidden")
         return
     if auth_report.get("production_allowed") is not False:
         failures.append("service token must set production_allowed=false")

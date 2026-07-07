@@ -420,6 +420,7 @@ def run_mediation(
         raise ValueError(f"Beta-FE-2.6 runner mediation blocked: {failures}")
 
     client.healthz()
+    backend_auth = _auth_report(client)
     alias_suffix = _run_alias_suffix(output_root)
     requester = _quickstart_agent(
         client,
@@ -470,6 +471,7 @@ def run_mediation(
         "decision": "beta_fe26_agent_runner_mediation_passed" if passed else "blocked",
         "failure_reasons": [] if passed else ["all task receipts must be generated-after-claim and end in Delivered or Completed"],
         "backend_url": backend_url,
+        "backend_auth": backend_auth,
         "mediation_level": "civitasos_agent_runner_claim_generate_deliver",
         "agent_runner_mediation_observed": True,
         "source_fe2_packet_summary": _artifact_ref(fe2_packet_summary_path),
@@ -493,6 +495,17 @@ def run_mediation(
     }
     _write_json(output_root / "beta_fe26_agent_runner_mediation_summary.json", summary)
     return summary
+
+
+def _auth_report(client: HttpJsonClient) -> dict[str, Any]:
+    auth_session = getattr(client, "auth_session", None)
+    if callable(auth_session):
+        try:
+            report = auth_session().report()
+            return report if isinstance(report, dict) else {"auth_method": "unknown", "token_recorded": False}
+        except Exception as exc:  # noqa: BLE001
+            return {"auth_method": "unavailable", "token_recorded": False, "error": str(exc)}
+    return {"auth_method": "unavailable_test_client", "token_recorded": False}
 
 
 def _post_claim_generate_deliver(

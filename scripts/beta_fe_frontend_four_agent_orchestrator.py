@@ -174,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--confirm-deliveries", action="store_true")
     parser.add_argument("--demo-login-agent-id", default="beta_fe_four_agent_orchestrator")
+    parser.add_argument("--service-token-secret")
+    parser.add_argument("--service-id", default="beta_fe_four_agent_orchestrator")
+    parser.add_argument("--service-token-scope", action="append", default=[])
+    parser.add_argument("--allow-demo-login", action="store_true")
     args = parser.parse_args(argv)
 
     summary = run_orchestrator(
@@ -184,6 +188,10 @@ def main(argv: list[str] | None = None) -> int:
         runner_specs=args.runner_spec,
         confirm_deliveries=bool(args.confirm_deliveries),
         demo_login_agent_id=args.demo_login_agent_id,
+        service_token_secret=args.service_token_secret,
+        service_id=args.service_id,
+        service_token_scopes=args.service_token_scope,
+        require_service_token=not bool(args.allow_demo_login),
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if summary.get("passed") is True else 1
@@ -198,6 +206,10 @@ def run_orchestrator(
     runner_specs: list[str],
     confirm_deliveries: bool,
     demo_login_agent_id: str,
+    service_token_secret: str | None = None,
+    service_id: str = "beta_fe_four_agent_orchestrator",
+    service_token_scopes: list[str] | None = None,
+    require_service_token: bool = True,
 ) -> dict[str, Any]:
     output_root = output_root.resolve()
     frontend_root = frontend_root.resolve()
@@ -207,7 +219,14 @@ def run_orchestrator(
     missing = sorted(set(_participant_ids(packet)) - set(generators))
     if missing:
         raise RuntimeError(f"missing runner specs for participant(s): {', '.join(missing)}")
-    client = fe26.HttpJsonClient(backend_url, demo_login_agent_id=demo_login_agent_id)
+    client = fe26.HttpJsonClient(
+        backend_url,
+        demo_login_agent_id=demo_login_agent_id,
+        service_token_secret=service_token_secret,
+        service_id=service_id,
+        service_scopes=service_token_scopes or None,
+        require_service_token=require_service_token,
+    )
     mediation_root = output_root / "mediation"
     try:
         mediation = fe26.run_mediation(

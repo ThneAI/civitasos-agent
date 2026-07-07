@@ -55,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runner-spec", action="append", default=[], help="participant=openai-env:/path or participant=command:argv")
     parser.add_argument("--confirm-deliveries", action="store_true")
     parser.add_argument("--demo-login-agent-id", default="beta_fe12_four_agent_frontend_mediation")
+    parser.add_argument("--service-token-secret")
+    parser.add_argument("--service-id", default="beta_fe12_four_agent_frontend_mediation")
+    parser.add_argument("--service-token-scope", action="append", default=[])
+    parser.add_argument("--allow-demo-login", action="store_true")
     args = parser.parse_args(argv)
 
     output_root = Path(args.output_root).resolve()
@@ -65,7 +69,14 @@ def main(argv: list[str] | None = None) -> int:
     missing = sorted(set(_participant_ids(packet)) - set(generators))
     if missing:
         raise SystemExit(f"missing runner specs for FE-12 participant(s): {', '.join(missing)}")
-    client = fe26.HttpJsonClient(args.backend_url, demo_login_agent_id=args.demo_login_agent_id)
+    client = fe26.HttpJsonClient(
+        args.backend_url,
+        demo_login_agent_id=args.demo_login_agent_id,
+        service_token_secret=args.service_token_secret,
+        service_id=args.service_id,
+        service_scopes=args.service_token_scope or None,
+        require_service_token=not bool(args.allow_demo_login),
+    )
     mediation_root = output_root / "mediation"
     mediation = fe26.run_mediation(
         client=client,

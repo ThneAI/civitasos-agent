@@ -38,6 +38,9 @@ def test_fe10_preview_gate_checks_frontend_and_backend_read_models(tmp_path: Pat
         output_root=tmp_path / "out",
         frontend_url=frontend.url,
         backend_url=backend.url,
+        service_token_secret="test-secret",
+        service_id="preview-service",
+        service_token_scopes=["pool:read", "audit:read"],
         demo_login_agent_id="tester",
         operator_id="operator",
         operator_authorization="test",
@@ -65,6 +68,52 @@ def test_fe10_preview_gate_checks_frontend_and_backend_read_models(tmp_path: Pat
     assert report["release_provenance"]["actions_observed"]["merge"] is True
     assert report["release_provenance"]["actions_performed_by_current_step"]["merge"] is False
     assert report["git_actions_performed"]["merge"] is False
+
+
+def test_fe10_preview_gate_blocks_demo_login_auth(tmp_path: Path) -> None:
+    frontend = _server(_FrontendHandler)
+    backend = _server(_BackendHandler)
+    frontend_root = _frontend_repo(tmp_path / "frontend")
+    fe9 = _write_fe9_receipt(tmp_path / "fe9.json", frontend_root)
+
+    report = module.run_preview_gate(
+        source_fe9_receipt=fe9,
+        frontend_root=frontend_root,
+        output_root=tmp_path / "out",
+        frontend_url=frontend.url,
+        backend_url=backend.url,
+        auth_mode="demo-login",
+        demo_login_agent_id="tester",
+        operator_id="operator",
+        operator_authorization="test",
+    )
+
+    frontend.close()
+    backend.close()
+    assert report["passed"] is False
+    assert "service_token auth is required for Beta FE10 preview; demo-login/bearer-token is forbidden" in report["failure_reasons"]
+
+
+def test_fe10_preview_gate_requires_service_token_secret_by_default(tmp_path: Path) -> None:
+    frontend = _server(_FrontendHandler)
+    backend = _server(_BackendHandler)
+    frontend_root = _frontend_repo(tmp_path / "frontend")
+    fe9 = _write_fe9_receipt(tmp_path / "fe9.json", frontend_root)
+
+    report = module.run_preview_gate(
+        source_fe9_receipt=fe9,
+        frontend_root=frontend_root,
+        output_root=tmp_path / "out",
+        frontend_url=frontend.url,
+        backend_url=backend.url,
+        operator_id="operator",
+        operator_authorization="test",
+    )
+
+    frontend.close()
+    backend.close()
+    assert report["passed"] is False
+    assert "backend auth bootstrap failed for preview smoke: service-token" in report["failure_reasons"]
 
 
 def test_fe10_preview_gate_prefers_service_token_when_secret_supplied(tmp_path: Path) -> None:
