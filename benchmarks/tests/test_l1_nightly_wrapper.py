@@ -242,6 +242,58 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION_ONLY" = "1" ]; then' in text
     assert 'PostH3 higher permission authorization reconciliation completed: $POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION_SUMMARY' in text
     assert "benchmarks.post_h3_higher_permission_authorization_reconciliation_gate" in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_REQUEST="${RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_REQUEST:-0}"' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_REQUEST_ONLY="${RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_REQUEST_ONLY:-0}"' in text
+    assert 'POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_REQUEST_RECONCILIATION_SUMMARY="${POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_REQUEST_RECONCILIATION_SUMMARY:-$POST_H3_HIGHER_PERMISSION_AUTHORIZATION_RECONCILIATION_SUMMARY}"' in text
+    assert "run_post_h3_limited_feedback_authorization_request()" in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_REQUEST_ONLY" = "1" ]; then' in text
+    assert 'PostH3 limited feedback authorization request completed: $POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_REQUEST_SUMMARY' in text
+    assert "benchmarks.post_h3_limited_external_usage_feedback_authorization_request_gate" in text
+    assert '--ack-authorization-request' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_DECISION="${RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_DECISION:-0}"' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_DECISION_ONLY="${RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_DECISION_ONLY:-0}"' in text
+    assert 'POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_DECISION_REQUEST_SUMMARY="${POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_DECISION_REQUEST_SUMMARY:-$POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_REQUEST_SUMMARY}"' in text
+    assert "run_post_h3_limited_feedback_authorization_decision()" in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_DECISION_ONLY" = "1" ]; then' in text
+    assert 'PostH3 limited feedback authorization decision completed: $POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_DECISION_SUMMARY' in text
+    assert "benchmarks.post_h3_limited_external_usage_feedback_authorization_decision_gate" in text
+    assert '--ack-authorization-decision' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION="${RUN_POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION:-0}"' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION_ONLY="${RUN_POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION_ONLY:-0}"' in text
+    assert 'POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION_DECISION_SUMMARY="${POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION_DECISION_SUMMARY:-$POST_H3_LIMITED_FEEDBACK_AUTHORIZATION_DECISION_SUMMARY}"' in text
+    assert "run_post_h3_limited_feedback_collection_execution()" in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION_ONLY" = "1" ]; then' in text
+    assert 'PostH3 limited feedback collection execution completed: $POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION_SUMMARY' in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION" = "1" ]; then' in text
+    assert "benchmarks.post_h3_limited_external_usage_feedback_collection_execution_gate" in text
+    assert '--ack-feedback-collection' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY="${RUN_POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY:-0}"' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_ONLY="${RUN_POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_ONLY:-0}"' in text
+    assert 'POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_EXECUTION_SUMMARY="${POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_EXECUTION_SUMMARY:-$POST_H3_LIMITED_FEEDBACK_COLLECTION_EXECUTION_SUMMARY}"' in text
+    assert "run_post_h3_limited_feedback_closeout_strategy()" in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_ONLY" = "1" ]; then' in text
+    assert 'PostH3 limited feedback closeout strategy completed: $POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_SUMMARY' in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY" = "1" ]; then' in text
+    assert "benchmarks.post_h3_limited_external_usage_feedback_closeout_strategy_gate" in text
+    assert '--ack-strategy-review' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST="${RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST:-0}"' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST_ONLY="${RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST_ONLY:-0}"' in text
+    assert 'POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST_STRATEGY_SUMMARY="${POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST_STRATEGY_SUMMARY:-$POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_SUMMARY}"' in text
+    assert "run_post_h3_limited_feedback_higher_permission_review_request()" in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST_ONLY" = "1" ]; then' in text
+    assert 'PostH3 limited feedback higher permission review request completed: $POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST_SUMMARY' in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST" = "1" ]; then' in text
+    assert "benchmarks.post_h3_limited_feedback_higher_permission_review_request_gate" in text
+    assert '--ack-review-request' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_RECONCILIATION="${RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_RECONCILIATION:-0}"' in text
+    assert 'RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_RECONCILIATION_ONLY="${RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_RECONCILIATION_ONLY:-0}"' in text
+    assert 'POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_RECONCILIATION_REQUEST_SUMMARY="${POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_RECONCILIATION_REQUEST_SUMMARY:-$POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_REQUEST_SUMMARY}"' in text
+    assert "run_post_h3_limited_feedback_higher_permission_review_reconciliation()" in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_RECONCILIATION_ONLY" = "1" ]; then' in text
+    assert 'PostH3 limited feedback higher permission review reconciliation completed: $POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_RECONCILIATION_SUMMARY' in text
+    assert 'if [ "$RUN_POST_H3_LIMITED_FEEDBACK_HIGHER_PERMISSION_REVIEW_RECONCILIATION" = "1" ]; then' in text
+    assert "benchmarks.post_h3_limited_feedback_higher_permission_review_reconciliation_gate" in text
+    assert '--ack-reconciliation' in text
     assert '-m benchmarks.post_h3_operator_feedback_index_update_task' in text
     assert '--ack-bounded-task' in text
     assert 'L1_PILOT_001_WAKE_MODE="event"' in text
