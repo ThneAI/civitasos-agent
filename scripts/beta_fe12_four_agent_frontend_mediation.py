@@ -56,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm-deliveries", action="store_true")
     parser.add_argument("--demo-login-agent-id", default="beta_fe12_four_agent_frontend_mediation")
     parser.add_argument("--service-token-secret")
+    parser.add_argument("--service-token-secret-file")
     parser.add_argument("--service-id", default="beta_fe12_four_agent_frontend_mediation")
     parser.add_argument("--service-token-scope", action="append", default=[])
     parser.add_argument("--allow-demo-login", action="store_true")
@@ -72,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     client = fe26.HttpJsonClient(
         args.backend_url,
         demo_login_agent_id=args.demo_login_agent_id,
-        service_token_secret=args.service_token_secret,
+        service_token_secret=fe26._resolve_service_token_secret(args.service_token_secret, args.service_token_secret_file),
         service_id=args.service_id,
         service_scopes=args.service_token_scope or None,
         require_service_token=not bool(args.allow_demo_login),

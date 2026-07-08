@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bearer-token")
     parser.add_argument("--bearer-token-file")
     parser.add_argument("--service-token-secret")
+    parser.add_argument("--service-token-secret-file")
     parser.add_argument("--service-id", default="beta_fe10_preview_gate")
     parser.add_argument("--service-token-scope", action="append", default=[])
     parser.add_argument("--demo-login-agent-id", default="beta_fe10_preview_gate")
@@ -88,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         bearer_token=args.bearer_token,
         bearer_token_file=Path(args.bearer_token_file) if args.bearer_token_file else None,
         service_token_secret=args.service_token_secret,
+        service_token_secret_file=Path(args.service_token_secret_file) if args.service_token_secret_file else None,
         service_id=args.service_id,
         service_token_scopes=args.service_token_scope,
         demo_login_agent_id=args.demo_login_agent_id,
@@ -109,6 +111,7 @@ def run_preview_gate(
     bearer_token: str | None = None,
     bearer_token_file: Path | None = None,
     service_token_secret: str | None = None,
+    service_token_secret_file: Path | None = None,
     service_id: str = "beta_fe10_preview_gate",
     service_token_scopes: list[str] | None = None,
     demo_login_agent_id: str = "beta_fe10_preview_gate",
@@ -151,6 +154,7 @@ def run_preview_gate(
                 ),
                 service_token_secret=(
                     service_token_secret
+                    or _read_secret_file(service_token_secret_file)
                     or os.getenv("CIVITASOS_FE10_SERVICE_TOKEN_SECRET")
                     or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
                 ),
@@ -263,6 +267,12 @@ def _bearer_token_files(argument_file: Path | None) -> list[Path]:
     if env_file:
         paths.append(Path(env_file))
     return paths
+
+
+def _read_secret_file(path: Path | None) -> str | None:
+    if not path:
+        return None
+    return path.read_text(encoding="utf-8").strip()
 
 
 def _http_json(url: str, headers: dict[str, str] | None, method: str = "GET") -> dict[str, Any]:

@@ -33,6 +33,7 @@ except ModuleNotFoundError:
     )
 
 import beta_fe3_frontend_apply_receipt as fe3
+import beta_fe3_bounded_apply_authorization as fe3_auth
 import beta_fe4_frontend_commit_gate as fe4
 import beta_fe5_8_frontend_release_gates as fe5_8
 import beta_fe9_frontend_post_merge_smoke as fe9
@@ -79,11 +80,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preview-bearer-token")
     parser.add_argument("--preview-bearer-token-file")
     parser.add_argument("--preview-service-token-secret")
+    parser.add_argument("--preview-service-token-secret-file")
     parser.add_argument("--preview-service-id", default="beta_fe_release_chain_preview")
     parser.add_argument("--preview-service-token-scope", action="append", default=[])
     parser.add_argument("--demo-login-agent-id", default="beta_fe_release_chain_preview")
     parser.add_argument("--operator-id", default="local-operator-cc")
     parser.add_argument("--operator-authorization", default="current_chat_beta_fe_release_chain_request")
+    parser.add_argument("--ack-fe3-bounded-apply-authorization", action="store_true")
     args = parser.parse_args(argv)
 
     report = run_release_chain(
@@ -112,11 +115,13 @@ def main(argv: list[str] | None = None) -> int:
         preview_bearer_token=args.preview_bearer_token,
         preview_bearer_token_file=Path(args.preview_bearer_token_file) if args.preview_bearer_token_file else None,
         preview_service_token_secret=args.preview_service_token_secret,
+        preview_service_token_secret_file=Path(args.preview_service_token_secret_file) if args.preview_service_token_secret_file else None,
         preview_service_id=args.preview_service_id,
         preview_service_token_scopes=args.preview_service_token_scope,
         demo_login_agent_id=args.demo_login_agent_id,
         operator_id=args.operator_id,
         operator_authorization=args.operator_authorization,
+        ack_fe3_bounded_apply_authorization=bool(args.ack_fe3_bounded_apply_authorization),
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if report.get("passed") is True else 1
@@ -149,19 +154,52 @@ def run_release_chain(
     preview_bearer_token: str | None,
     preview_bearer_token_file: Path | None,
     preview_service_token_secret: str | None,
+    preview_service_token_secret_file: Path | None,
     preview_service_id: str,
     preview_service_token_scopes: list[str],
     demo_login_agent_id: str,
     operator_id: str,
     operator_authorization: str,
+    ack_fe3_bounded_apply_authorization: bool = False,
 ) -> dict[str, Any]:
     output_root = output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
     gate_refs: dict[str, Any] = {}
 
+    fe3_request = fe3_auth.write_authorization_request(
+        source_mediation_summary=source_mediation_summary,
+        output_root=output_root / "fe3_authorization_request",
+        operator_id=operator_id,
+        operator_statement=f"Request bounded FE-3 apply for release chain: {operator_authorization}",
+        allowed_changed_files=allowed_changed_files,
+        ack_authorization_request=ack_fe3_bounded_apply_authorization,
+    )
+    gate_refs["fe3_authorization_request"] = _artifact_ref(
+        output_root / "fe3_authorization_request" / "beta_fe3_bounded_apply_authorization_request.json"
+    )
+    if fe3_request.get("passed") is not True:
+        failures.extend(fe3_request.get("failure_reasons", []))
+        return _summary(output_root, failures, gate_refs)
+
+    fe3_authorization = fe3_auth.write_authorization_decision(
+        authorization_request=output_root / "fe3_authorization_request" / "beta_fe3_bounded_apply_authorization_request.json",
+        output_root=output_root / "fe3_authorization",
+        operator_id=operator_id,
+        operator_decision="authorize_once",
+        operator_statement=f"Authorize one bounded FE-3 apply for release chain: {operator_authorization}",
+        ack_authorization_decision=ack_fe3_bounded_apply_authorization,
+    )
+    gate_refs["fe3_authorization"] = _artifact_ref(
+        output_root / "fe3_authorization" / "beta_fe3_bounded_apply_authorization.json"
+    )
+    if fe3_authorization.get("passed") is not True:
+        failures.extend(fe3_authorization.get("failure_reasons", []))
+        return _summary(output_root, failures, gate_refs)
+
     fe3_report = fe3.write_receipt(
         source_fe26_summary=source_mediation_summary,
+        single_use_authorization=output_root / "fe3_authorization" / "beta_fe3_bounded_apply_authorization.json",
         frontend_root=frontend_root,
         output_root=output_root / "fe3",
         operator_id=operator_id,
@@ -276,6 +314,7 @@ def run_release_chain(
             bearer_token=preview_bearer_token,
             bearer_token_file=preview_bearer_token_file,
             service_token_secret=preview_service_token_secret,
+            service_token_secret_file=preview_service_token_secret_file,
             service_id=preview_service_id,
             service_token_scopes=preview_service_token_scopes,
             demo_login_agent_id=demo_login_agent_id,

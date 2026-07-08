@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     from scripts.civitasos_contracts.provenance import build_runtime_evidence
 
 RECEIPT_SCHEMA = "beta-fe3-frontend-apply-receipt:v1"
+AUTHORIZATION_SCHEMA = "beta-fe3-bounded-apply-single-use-authorization:v1"
 FE26_SCHEMA = "beta-fe26-agent-runner-mediation-summary:v1"
 FE12_SCHEMA = "beta-fe12-four-agent-frontend-mediation-summary:v1"
 FE_ORCHESTRATION_SCHEMA = "beta-fe-four-agent-frontend-orchestration-summary:v1"
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--frontend-root", required=True)
     parser.add_argument("--source-fe26-summary", required=True)
+    parser.add_argument("--single-use-authorization", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--operator-id", default="local-operator-cc")
     parser.add_argument("--operator-authorization", default="current_chat_continue_request")
@@ -61,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     receipt = write_receipt(
         frontend_root=Path(args.frontend_root),
         source_fe26_summary=Path(args.source_fe26_summary),
+        single_use_authorization=Path(args.single_use_authorization),
         output_root=Path(args.output_root),
         operator_id=args.operator_id,
         operator_authorization=args.operator_authorization,
@@ -75,6 +78,7 @@ def write_receipt(
     *,
     frontend_root: Path,
     source_fe26_summary: Path,
+    single_use_authorization: Path,
     output_root: Path,
     operator_id: str,
     operator_authorization: str,
@@ -86,9 +90,17 @@ def write_receipt(
     output_root.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
     source_summary = _read_json(source_fe26_summary, failures, "Agent-runner mediation summary")
-    _validate_source_mediation(source_summary, failures)
+    validate_source_mediation_summary(source_summary, failures)
+    authorization = _read_json(single_use_authorization, failures, "single-use bounded apply authorization")
+    _validate_single_use_authorization(
+        authorization=authorization,
+        authorization_path=single_use_authorization,
+        source_fe26_summary=source_fe26_summary,
+        failures=failures,
+    )
 
     allowed_set = _allowed_files(allowed_changed_files, failures)
+    _validate_authorized_allowed_files(authorization, allowed_set, failures)
     changed_files = _changed_files(frontend_root)
     allowed = sorted(allowed_set)
     unexpected = sorted(set(changed_files) - allowed_set)
@@ -118,6 +130,7 @@ def write_receipt(
 
     passed = not failures
     source_ref = artifact_ref(source_fe26_summary)
+    authorization_ref = artifact_ref(single_use_authorization) if single_use_authorization.is_file() else None
     receipt = {
         "schema_version": RECEIPT_SCHEMA,
         "artifact_envelope": build_artifact_envelope(
@@ -127,7 +140,7 @@ def write_receipt(
             artifact_id=f"fe3-apply:{_ref_digest(source_ref)[:16]}",
             subject_id=f"frontend-slice:{frontend_root.name}",
             producer="beta_fe3_frontend_apply_receipt",
-            source_refs=[source_ref],
+            source_refs=[source_ref, authorization_ref] if authorization_ref else [source_ref],
             scope="bounded_frontend_apply",
         ),
         "checked_at": _now(),
@@ -139,6 +152,8 @@ def write_receipt(
         "source_mediation_schema": source_summary.get("schema_version") if isinstance(source_summary, dict) else None,
         "source_mediation_summary": source_ref,
         "source_fe26_summary": source_ref,
+        "source_single_use_authorization": authorization_ref,
+        "authorization_id": authorization.get("authorization_id") if isinstance(authorization, dict) else None,
         "frontend_root": str(frontend_root),
         "frontend_head": _git_text(frontend_root, ["rev-parse", "--short", "HEAD"]).strip(),
         "changed_files": changed_files,
@@ -150,6 +165,7 @@ def write_receipt(
         "runtime_evidence": build_runtime_evidence(
             {
                 "mediation_summary": source_ref,
+                "single_use_authorization": authorization_ref,
                 "diff": artifact_ref(diff_path),
                 "diff_stat": artifact_ref(stat_path),
             },
@@ -162,6 +178,7 @@ def write_receipt(
         "boundary": {
             "frontend_code_modified": True,
             "apply_allowed": True,
+            "single_use_authorization_consumed": passed,
             "commit_allowed": False,
             "push_allowed": False,
             "merge_allowed": False,
@@ -176,7 +193,7 @@ def write_receipt(
     return receipt
 
 
-def _validate_source_mediation(summary: Any, failures: list[str]) -> None:
+def validate_source_mediation_summary(summary: Any, failures: list[str]) -> None:
     if not isinstance(summary, dict):
         failures.append("Agent-runner mediation summary must be an object")
         return
@@ -259,6 +276,52 @@ def _validate_common_boundaries(summary: dict[str, Any], failures: list[str], la
         failures.append(f"{label} h3_boundary must keep H.3 blocked")
 
 
+def _validate_single_use_authorization(
+    *,
+    authorization: Any,
+    authorization_path: Path,
+    source_fe26_summary: Path,
+    failures: list[str],
+) -> None:
+    if not isinstance(authorization, dict):
+        failures.append("single-use bounded apply authorization must be an object")
+        return
+    if authorization.get("schema_version") != AUTHORIZATION_SCHEMA:
+        failures.append(f"single-use authorization schema_version must be {AUTHORIZATION_SCHEMA}")
+    if authorization.get("passed") is not True:
+        failures.append("single-use authorization must be passed")
+    if authorization.get("decision") != "beta_fe3_bounded_apply_authorized_once":
+        failures.append("single-use authorization decision must authorize bounded apply once")
+    if authorization.get("single_use") is not True:
+        failures.append("single-use authorization must set single_use=true")
+    if authorization.get("consumed") is not False:
+        failures.append("single-use authorization must be unconsumed before FE-3 apply")
+    if not authorization_path.is_file():
+        failures.append(f"single-use authorization not found: {authorization_path}")
+    if source_fe26_summary.is_file():
+        expected_ref = artifact_ref(source_fe26_summary)
+        actual_ref = authorization.get("source_mediation_summary")
+        if actual_ref != expected_ref:
+            failures.append("single-use authorization must hash-bind the source mediation summary")
+    boundary = authorization.get("boundary") if isinstance(authorization.get("boundary"), dict) else {}
+    if boundary.get("apply_allowed") is not True:
+        failures.append("single-use authorization boundary must allow bounded apply")
+    for key in ("commit_allowed", "push_allowed", "merge_allowed", "deploy_allowed", "production_runtime_execution_allowed", "production_receipt_write_allowed"):
+        if boundary.get(key) is not False:
+            failures.append(f"single-use authorization boundary must keep {key}=false")
+
+
+def _validate_authorized_allowed_files(authorization: Any, allowed_set: set[str], failures: list[str]) -> None:
+    if not isinstance(authorization, dict):
+        return
+    authorized_files = set(str(item) for item in authorization.get("allowed_changed_files", []) if str(item).strip())
+    if not authorized_files:
+        failures.append("single-use authorization must include allowed_changed_files")
+        return
+    if authorized_files != allowed_set:
+        failures.append("single-use authorization allowed_changed_files must match FE-3 apply allowlist")
+
+
 def _text(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
@@ -282,6 +345,10 @@ def _allowed_files(paths: list[str] | None, failures: list[str]) -> set[str]:
     if not allowed:
         failures.append("allowed changed files must not be empty")
     return allowed
+
+
+def validate_allowed_changed_files(paths: list[str] | None, failures: list[str]) -> set[str]:
+    return _allowed_files(paths, failures)
 
 
 def _run_command(cwd: Path, command: str) -> dict[str, Any]:

@@ -206,6 +206,16 @@ BETA_DEPLOYMENT_PREVIEW_READINESS_OUTPUT="${BETA_DEPLOYMENT_PREVIEW_READINESS_OU
 BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_OWNER_FEEDBACK_PACKETS="${BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_OWNER_FEEDBACK_PACKETS:-3}"
 BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_OWNER_FEEDBACK_ACCEPTED_RATIO="${BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_OWNER_FEEDBACK_ACCEPTED_RATIO:-0.66}"
 BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_SMOKE_CHECKS="${BETA_DEPLOYMENT_PREVIEW_READINESS_MIN_SMOKE_CHECKS:-15}"
+RUN_BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT="${RUN_BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT:-0}"
+RUN_BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_ONLY="${RUN_BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_ONLY:-0}"
+BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_BACKEND_URL="${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_BACKEND_URL:-$BACKEND_URL}"
+BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_FRONTEND_ROOT="${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_FRONTEND_ROOT:-../civitasos-frontend}"
+BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_OUTPUT_ROOT="${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_OUTPUT_ROOT:-$RUNS_ROOT/beta_fe26_external_agent_schema_repeat}"
+BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SCENARIO="${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SCENARIO:-fe12-task-pool-presentation}"
+BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_RUNNER_SPEC_FILE="${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_RUNNER_SPEC_FILE:-}"
+BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_ID="${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_ID:-beta_fe26_external_agent_schema_repeat}"
+BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_SCOPES="${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_SCOPES:-agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write}"
+BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_CONFIRM_DELIVERIES="${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_CONFIRM_DELIVERIES:-0}"
 RUN_POST_H3_OBSERVER_READINESS_CHECK="${RUN_POST_H3_OBSERVER_READINESS_CHECK:-0}"
 RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY="${RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY:-0}"
 POST_H3_OBSERVER_READINESS_AB_SUMMARY="${POST_H3_OBSERVER_READINESS_AB_SUMMARY:-}"
@@ -216,6 +226,11 @@ POST_H3_OBSERVER_READINESS_OPERATOR_OBSERVATION="${POST_H3_OBSERVER_READINESS_OP
 POST_H3_OBSERVER_READINESS_AUDIT_OBSERVATION="${POST_H3_OBSERVER_READINESS_AUDIT_OBSERVATION:-Nightly observer readiness consumes hash-bound PostH3-AB artifacts only; no production boundary is opened.}"
 POST_H3_OBSERVER_READINESS_MONITORING_OBSERVATION="${POST_H3_OBSERVER_READINESS_MONITORING_OBSERVATION:-Nightly observer readiness is artifact-only and performs no live runtime action.}"
 POST_H3_OBSERVER_READINESS_ROLLBACK_OBSERVATION="${POST_H3_OBSERVER_READINESS_ROLLBACK_OBSERVATION:-No rollback is required because nightly observer readiness performs no external action.}"
+RUN_POST_H3_OBSERVER_MODE_BASELINE="${RUN_POST_H3_OBSERVER_MODE_BASELINE:-0}"
+RUN_POST_H3_OBSERVER_MODE_BASELINE_ONLY="${RUN_POST_H3_OBSERVER_MODE_BASELINE_ONLY:-0}"
+POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY="${POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY:-$POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_SUMMARY}"
+POST_H3_OBSERVER_MODE_BASELINE_OUTPUT_ROOT="${POST_H3_OBSERVER_MODE_BASELINE_OUTPUT_ROOT:-$RUNS_ROOT/post_h3_observer_mode_baseline}"
+POST_H3_OBSERVER_MODE_BASELINE_SUMMARY="${POST_H3_OBSERVER_MODE_BASELINE_SUMMARY:-$POST_H3_OBSERVER_MODE_BASELINE_OUTPUT_ROOT/post_h3_observer_mode_baseline_summary.json}"
 RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT:-0}"
 RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT_ONLY="${RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT_ONLY:-0}"
 POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY="${POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY:-$POST_H3_OBSERVER_READINESS_SUMMARY}"
@@ -518,6 +533,44 @@ run_beta_external_provider_env_preflight() {
   "$PYTHON" "${preflight_args[@]}"
 }
 
+run_beta_fe26_external_agent_schema_repeat() {
+  if [ -z "$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_RUNNER_SPEC_FILE" ]; then
+    echo "Beta FE26 external Agent schema repeat requires BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_RUNNER_SPEC_FILE" >&2
+    exit 1
+  fi
+  if [ ! -s "$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_RUNNER_SPEC_FILE" ]; then
+    echo "Beta FE26 runner spec file not found: $BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_RUNNER_SPEC_FILE" >&2
+    exit 1
+  fi
+  if [ -z "${CIVITASOS_FE_MEDIATION_SERVICE_TOKEN_SECRET:-${CIVITASOS_SERVICE_TOKEN_SECRET:-}}" ]; then
+    echo "Beta FE26 external Agent schema repeat requires CIVITASOS_FE_MEDIATION_SERVICE_TOKEN_SECRET or CIVITASOS_SERVICE_TOKEN_SECRET" >&2
+    exit 1
+  fi
+  local -a repeat_args=(
+    scripts/beta_fe_frontend_four_agent_orchestrator.py
+    --scenario "$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SCENARIO"
+    --backend-url "$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_BACKEND_URL"
+    --frontend-root "$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_FRONTEND_ROOT"
+    --output-root "$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_OUTPUT_ROOT"
+    --service-id "$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_ID"
+  )
+  local scope
+  for scope in ${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_SCOPES//,/ }; do
+    repeat_args+=(--service-token-scope "$scope")
+  done
+  local runner_spec
+  while IFS= read -r runner_spec || [ -n "$runner_spec" ]; do
+    case "$runner_spec" in
+      ""|\#*) continue ;;
+      *) repeat_args+=(--runner-spec "$runner_spec") ;;
+    esac
+  done < "$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_RUNNER_SPEC_FILE"
+  if [ "$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_CONFIRM_DELIVERIES" = "1" ]; then
+    repeat_args+=(--confirm-deliveries)
+  fi
+  CIVITASOS_FE_MEDIATION_SERVICE_TOKEN_SCOPES="$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_SCOPES" "$PYTHON" "${repeat_args[@]}"
+}
+
 run_beta_preview_operator_handoff_check() {
   if [ -z "$BETA_PREVIEW_OPERATOR_HANDOFF_CHAIN_SUMMARY" ]; then
     echo "Beta preview operator handoff check requires BETA_PREVIEW_OPERATOR_HANDOFF_CHAIN_SUMMARY" >&2
@@ -587,6 +640,21 @@ run_post_h3_observer_readiness_check() {
     --monitoring-observation "$POST_H3_OBSERVER_READINESS_MONITORING_OBSERVATION" \
     --rollback-observation "$POST_H3_OBSERVER_READINESS_ROLLBACK_OBSERVATION" \
     --ack-observer-readiness
+}
+
+run_post_h3_observer_mode_baseline() {
+  if [ -z "$POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY" ]; then
+    echo "PostH3 observer mode baseline requires POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY" >&2
+    exit 1
+  fi
+  if [ ! -s "$POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY" ]; then
+    echo "PostH3 observer baseline closeout strategy summary not found: $POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY" >&2
+    exit 1
+  fi
+  "$PYTHON" -m benchmarks.post_h3_observer_mode_baseline_gate \
+    --closeout-strategy-summary "$POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY" \
+    --output-root "$POST_H3_OBSERVER_MODE_BASELINE_OUTPUT_ROOT" \
+    --ack-baseline
 }
 
 run_post_h3_minimal_production_task_chain_blueprint() {
@@ -1611,6 +1679,13 @@ if [ "$REQUIRE_H2_ACTIVE" = "1" ]; then
   if [ "$RUN_H2_H3_READINESS_SUMMARY" = "1" ]; then
     echo "  h2_h3_readiness_report: $H2_H3_READINESS_SUMMARY_REPORT"
   fi
+  echo "  beta_fe26_external_agent_schema_repeat: $RUN_BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT"
+  if [ "$RUN_BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT" = "1" ]; then
+    echo "  beta_fe26_external_agent_schema_repeat_runner_spec_file: ${BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_RUNNER_SPEC_FILE:-<missing>}"
+    echo "  beta_fe26_external_agent_schema_repeat_output_root: $BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_OUTPUT_ROOT"
+    echo "  beta_fe26_external_agent_schema_repeat_service_id: $BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_ID"
+    echo "  beta_fe26_external_agent_schema_repeat_service_scopes: $BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_SCOPES"
+  fi
   echo "  h2_value_report: $RUN_H2_VALUE_CALIBRATION_REPORT"
   if [ "$RUN_H2_VALUE_CALIBRATION_REPORT" = "1" ]; then
     echo "  h2_value_report_path: $H2_VALUE_CALIBRATION_REPORT"
@@ -1803,6 +1878,11 @@ if [ "$REQUIRE_H2_ACTIVE" = "1" ]; then
     echo "  post_h3_observer_ab_summary: ${POST_H3_OBSERVER_READINESS_AB_SUMMARY:-<missing>}"
     echo "  post_h3_observer_output_root: $POST_H3_OBSERVER_READINESS_OUTPUT_ROOT"
   fi
+  echo "  post_h3_observer_mode_baseline: $RUN_POST_H3_OBSERVER_MODE_BASELINE"
+  if [ "$RUN_POST_H3_OBSERVER_MODE_BASELINE" = "1" ]; then
+    echo "  post_h3_observer_mode_baseline_closeout_strategy: ${POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY:-<missing>}"
+    echo "  post_h3_observer_mode_baseline_output_root: $POST_H3_OBSERVER_MODE_BASELINE_OUTPUT_ROOT"
+  fi
   echo "  post_h3_minimal_production_task_chain_blueprint: $RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT"
   if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT" = "1" ]; then
     echo "  post_h3_minimal_chain_ac_summary: ${POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_AC_SUMMARY:-<missing>}"
@@ -1956,6 +2036,12 @@ if [ "$RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT_ONLY" = "1" ]; then
   exit 0
 fi
 
+if [ "$RUN_BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_ONLY" = "1" ]; then
+  run_beta_fe26_external_agent_schema_repeat
+  echo "Beta FE26 external Agent schema repeat completed: $BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_OUTPUT_ROOT/frontend_four_agent_orchestration_summary.json"
+  exit 0
+fi
+
 if [ "$RUN_BETA_PREVIEW_OPERATOR_HANDOFF_CHECK_ONLY" = "1" ]; then
   run_beta_preview_operator_handoff_check
   echo "Beta preview operator handoff check completed: $BETA_PREVIEW_OPERATOR_HANDOFF_OUTPUT"
@@ -1971,6 +2057,12 @@ fi
 if [ "$RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY" = "1" ]; then
   run_post_h3_observer_readiness_check
   echo "PostH3 observer readiness check completed: $POST_H3_OBSERVER_READINESS_SUMMARY"
+  exit 0
+fi
+
+if [ "$RUN_POST_H3_OBSERVER_MODE_BASELINE_ONLY" = "1" ]; then
+  run_post_h3_observer_mode_baseline
+  echo "PostH3 observer mode baseline completed: $POST_H3_OBSERVER_MODE_BASELINE_SUMMARY"
   exit 0
 fi
 
@@ -2150,6 +2242,10 @@ fi
 
 if [ "$RUN_POST_H3_OBSERVER_READINESS_CHECK" = "1" ]; then
   run_post_h3_observer_readiness_check
+fi
+
+if [ "$RUN_POST_H3_OBSERVER_MODE_BASELINE" = "1" ]; then
+  run_post_h3_observer_mode_baseline
 fi
 
 if [ "$RUN_POST_H3_MINIMAL_PRODUCTION_TASK_CHAIN_BLUEPRINT" = "1" ]; then
@@ -3582,6 +3678,10 @@ fi
 
 if [ "$RUN_BETA_EXTERNAL_PROVIDER_ENV_PREFLIGHT" = "1" ]; then
   run_beta_external_provider_env_preflight
+fi
+
+if [ "$RUN_BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT" = "1" ]; then
+  run_beta_fe26_external_agent_schema_repeat
 fi
 
 if [ "$RUN_BETA_PREVIEW_CHAIN_RUNNER" = "1" ]; then

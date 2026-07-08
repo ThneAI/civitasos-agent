@@ -23,6 +23,7 @@ def _load(name: str, path: Path):
 
 
 module = _load("beta_fe3_frontend_apply_receipt", SCRIPTS / "beta_fe3_frontend_apply_receipt.py")
+auth_module = _load("beta_fe3_bounded_apply_authorization", SCRIPTS / "beta_fe3_bounded_apply_authorization.py")
 
 
 def test_beta_fe3_apply_receipt_accepts_allowed_frontend_slice(tmp_path: Path) -> None:
@@ -33,6 +34,7 @@ def test_beta_fe3_apply_receipt_accepts_allowed_frontend_slice(tmp_path: Path) -
     receipt = module.write_receipt(
         frontend_root=frontend,
         source_fe26_summary=fe26,
+        single_use_authorization=_write_authorization(tmp_path, fe26, sorted(module.ALLOWED_CHANGED_FILES)),
         output_root=tmp_path / "receipt",
         operator_id="operator",
         operator_authorization="test authorization",
@@ -60,6 +62,7 @@ def test_beta_fe3_apply_receipt_counts_untracked_allowed_files(tmp_path: Path) -
     receipt = module.write_receipt(
         frontend_root=frontend,
         source_fe26_summary=fe26,
+        single_use_authorization=_write_authorization(tmp_path, fe26, sorted(module.ALLOWED_CHANGED_FILES)),
         output_root=tmp_path / "receipt",
         operator_id="operator",
         operator_authorization="test authorization",
@@ -80,6 +83,7 @@ def test_beta_fe3_apply_receipt_blocks_unexpected_file(tmp_path: Path) -> None:
     receipt = module.write_receipt(
         frontend_root=frontend,
         source_fe26_summary=fe26,
+        single_use_authorization=_write_authorization(tmp_path, fe26, sorted(module.ALLOWED_CHANGED_FILES)),
         output_root=tmp_path / "receipt",
         operator_id="operator",
         operator_authorization="test authorization",
@@ -100,6 +104,7 @@ def test_beta_fe3_apply_receipt_accepts_custom_slice_allowlist(tmp_path: Path) -
     receipt = module.write_receipt(
         frontend_root=frontend,
         source_fe26_summary=fe26,
+        single_use_authorization=_write_authorization(tmp_path, fe26, ["src/services/taskPoolApi.ts"]),
         output_root=tmp_path / "receipt",
         operator_id="operator",
         operator_authorization="test authorization",
@@ -122,6 +127,7 @@ def test_beta_fe3_apply_receipt_accepts_fe12_mediation_summary(tmp_path: Path) -
     receipt = module.write_receipt(
         frontend_root=frontend,
         source_fe26_summary=fe12,
+        single_use_authorization=_write_authorization(tmp_path, fe12, ["src/components/taskPoolPresentation.ts"]),
         output_root=tmp_path / "receipt",
         operator_id="operator",
         operator_authorization="test authorization",
@@ -143,6 +149,7 @@ def test_beta_fe3_apply_receipt_accepts_four_agent_orchestration_summary(tmp_pat
     receipt = module.write_receipt(
         frontend_root=frontend,
         source_fe26_summary=summary,
+        single_use_authorization=_write_authorization(tmp_path, summary, ["src/app/AppShell.tsx"]),
         output_root=tmp_path / "receipt",
         operator_id="operator",
         operator_authorization="test authorization",
@@ -161,6 +168,7 @@ def test_beta_fe3_apply_receipt_blocks_unsafe_custom_allowlist(tmp_path: Path) -
     receipt = module.write_receipt(
         frontend_root=frontend,
         source_fe26_summary=fe26,
+        single_use_authorization=_write_authorization(tmp_path, fe26, sorted(module.ALLOWED_CHANGED_FILES)),
         output_root=tmp_path / "receipt",
         operator_id="operator",
         operator_authorization="test authorization",
@@ -170,6 +178,26 @@ def test_beta_fe3_apply_receipt_blocks_unsafe_custom_allowlist(tmp_path: Path) -
 
     assert receipt["passed"] is False
     assert any("repo-relative and safe" in reason for reason in receipt["failure_reasons"])
+
+
+def test_beta_fe3_apply_receipt_requires_matching_single_use_authorization(tmp_path: Path) -> None:
+    frontend = _frontend_repo(tmp_path / "frontend")
+    _modify_allowed_slice(frontend)
+    fe26 = _write_fe26_summary(tmp_path / "fe26.json")
+    other_fe26 = _write_fe26_summary(tmp_path / "other_fe26.json")
+
+    receipt = module.write_receipt(
+        frontend_root=frontend,
+        source_fe26_summary=fe26,
+        single_use_authorization=_write_authorization(tmp_path, other_fe26, sorted(module.ALLOWED_CHANGED_FILES)),
+        output_root=tmp_path / "receipt",
+        operator_id="operator",
+        operator_authorization="test authorization",
+        test_commands=["true"],
+    )
+
+    assert receipt["passed"] is False
+    assert any("hash-bind the source mediation summary" in reason for reason in receipt["failure_reasons"])
 
 
 def _frontend_repo(path: Path) -> Path:
@@ -239,6 +267,30 @@ def _write_four_agent_orchestration_summary(path: Path) -> Path:
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _write_authorization(tmp_path: Path, source_summary: Path, allowed_files: list[str]) -> Path:
+    request_root = tmp_path / f"auth_request_{source_summary.stem}_{len(allowed_files)}"
+    decision_root = tmp_path / f"auth_decision_{source_summary.stem}_{len(allowed_files)}"
+    request = auth_module.write_authorization_request(
+        source_mediation_summary=source_summary,
+        output_root=request_root,
+        operator_id="operator",
+        operator_statement="request bounded apply",
+        allowed_changed_files=allowed_files,
+        ack_authorization_request=True,
+    )
+    assert request["passed"] is True
+    decision = auth_module.write_authorization_decision(
+        authorization_request=request_root / "beta_fe3_bounded_apply_authorization_request.json",
+        output_root=decision_root,
+        operator_id="operator",
+        operator_decision="authorize_once",
+        operator_statement="authorize bounded apply once",
+        ack_authorization_decision=True,
+    )
+    assert decision["passed"] is True
+    return decision_root / "beta_fe3_bounded_apply_authorization.json"
 
 
 def _run(argv: list[str], cwd: Path) -> None:

@@ -351,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm-deliveries", action="store_true")
     parser.add_argument("--demo-login-agent-id", default="beta_fe26_runner_mediation")
     parser.add_argument("--service-token-secret")
+    parser.add_argument("--service-token-secret-file")
     parser.add_argument("--service-id", default="beta_fe26_runner_mediation")
     parser.add_argument("--service-token-scope", action="append", default=[])
     parser.add_argument("--require-service-token", action="store_true")
@@ -361,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     client = HttpJsonClient(
         args.backend_url,
         demo_login_agent_id=args.demo_login_agent_id,
-        service_token_secret=args.service_token_secret,
+        service_token_secret=_resolve_service_token_secret(args.service_token_secret, args.service_token_secret_file),
         service_id=args.service_id,
         service_scopes=args.service_token_scope or None,
         require_service_token=bool(args.require_service_token),
@@ -386,6 +387,13 @@ def _default_service_scopes() -> list[str]:
         "agents:read,agents:write,pool:post,pool:read,pool:claim,pool:write",
     )
     return [scope.strip() for scope in raw.split(",") if scope.strip()]
+
+
+def _resolve_service_token_secret(secret: str | None, secret_file: str | None) -> str | None:
+    if secret_file:
+        path = Path(secret_file)
+        return path.read_text(encoding="utf-8").strip()
+    return secret
 
 
 def run_mediation(
