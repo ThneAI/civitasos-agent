@@ -62,6 +62,23 @@ def test_orchestrator_fe14_packet_targets_runtime_data_adapter(tmp_path: Path) -
     assert "backend API contract" in prompt
 
 
+def test_orchestrator_fe15_packet_targets_observability_presentation(tmp_path: Path) -> None:
+    frontend = _frontend(tmp_path / "frontend")
+    scenario = module.SCENARIOS["fe15-observability-presentation-extraction"]
+
+    packet = module.write_packet(scenario=scenario, frontend_root=frontend, output_root=tmp_path / "run")
+
+    assert packet["scenario_id"] == "fe15-observability-presentation-extraction"
+    assert packet["patch_slice_id"] == "observability_presentation_extraction"
+    assert packet["collaboration_boundary"]["apply_allowed"] is False
+    prompt = Path(packet["agent_prompt_refs"]["deepseek-api-agent"]["path"]).read_text(encoding="utf-8")
+    assert "ObservabilityPanel metric parsing" in prompt
+    assert "src/components/observabilityPresentation.ts" in prompt
+    assert "service-token scope policy" in prompt
+    local_prompt = Path(packet["agent_prompt_refs"]["local-gpu-agent"]["path"]).read_text(encoding="utf-8")
+    assert "## src/services/apiClient.ts" not in local_prompt
+
+
 def test_orchestrator_reconciliation_records_selected_plan(tmp_path: Path) -> None:
     run = tmp_path / "run"
     mediation = run / "mediation"
@@ -102,6 +119,7 @@ def test_orchestrator_extracts_camel_case_patch_proposal_verdict() -> None:
 def _frontend(path: Path) -> Path:
     (path / "src/components").mkdir(parents=True)
     (path / "src/components/TaskPoolPanel.tsx").write_text("export const TaskPoolPanel = () => null;\n", encoding="utf-8")
+    (path / "src/components/ObservabilityPanel.tsx").write_text("export const ObservabilityPanel = () => null;\n", encoding="utf-8")
     (path / "src/services").mkdir(parents=True)
     (path / "src/services/taskPoolApi.ts").write_text("export const taskPoolApi = true;\n", encoding="utf-8")
     (path / "src/adapters").mkdir(parents=True)

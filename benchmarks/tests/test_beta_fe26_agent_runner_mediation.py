@@ -62,6 +62,11 @@ def test_beta_fe26_posts_claims_generates_after_claim_and_delivers(tmp_path: Pat
     assert client.call_kinds["/api/v1/a2a/pool/claim"] == 3
     assert client.call_kinds["/api/v1/a2a/task/execute"] == 3
     assert client.call_kinds["/api/v1/a2a/pool/confirm"] == 3
+    first_output = client.tasks["task-1"]["output"]
+    assert "response_excerpt" not in first_output
+    assert first_output["response_text_stored_in_generation_response_ref"] is True
+    assert first_output["response_sha256"]
+    assert "H.3 blocked" in first_output["contract_boundary_statement"]
     for generator in generators.values():
         assert generator.seen_claimed_task_statuses == ["Claimed"]
         assert generator.seen_claimed_by

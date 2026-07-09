@@ -126,7 +126,12 @@ def delivery_output(
         "prompt_ref": artifact_ref(prompt_path),
         "generation_response": artifact_ref(generation_path),
         "generation_report": artifact_ref(generation_report_path),
-        "response_excerpt": content[:4000],
+        "response_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "response_text_stored_in_generation_response_ref": True,
+        "contract_boundary_statement": (
+            "H.3 blocked; production runtime disabled; production receipt disabled; "
+            "deploy disabled; merge disabled; source mutation disabled."
+        ),
         "generated_after_claim": True,
         "boundary": boundary(),
         "h3_boundary": h3_boundary(),

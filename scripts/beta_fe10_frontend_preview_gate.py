@@ -133,6 +133,23 @@ def run_preview_gate(
     if not _is_private_preview_url(backend_url):
         failures.append("backend_url must be local/private preview URL")
 
+    requested_service_scopes = service_token_scopes or _default_service_token_scopes()
+    service_secret = (
+        service_token_secret
+        or _read_secret_file(service_token_secret_file)
+        or os.getenv("CIVITASOS_FE10_SERVICE_TOKEN_SECRET")
+        or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
+    )
+    backend_service_token_scope_preflight: dict[str, Any] | None = None
+    if not failures and auth_mode == "service-token" and service_secret:
+        backend_service_token_scope_preflight = _preflight_service_token_scope(
+            backend_url=backend_url,
+            service_id=service_id,
+            service_secret=service_secret,
+            requested_scopes=requested_service_scopes,
+        )
+        failures.extend(str(reason) for reason in backend_service_token_scope_preflight.get("failure_reasons", []))
+
     frontend_checks = [] if failures else _check_frontend(frontend_url, failures)
     backend_checks: list[dict[str, Any]] = []
     auth_report: dict[str, Any] | None = None
@@ -152,14 +169,9 @@ def run_preview_gate(
                     os.getenv("CIVITASOS_FE10_BEARER_TOKEN"),
                     os.getenv("CIVITASOS_BEARER_TOKEN"),
                 ),
-                service_token_secret=(
-                    service_token_secret
-                    or _read_secret_file(service_token_secret_file)
-                    or os.getenv("CIVITASOS_FE10_SERVICE_TOKEN_SECRET")
-                    or os.getenv("CIVITASOS_SERVICE_TOKEN_SECRET")
-                ),
+                service_token_secret=service_secret,
                 service_id=service_id,
-                service_scopes=service_token_scopes or _default_service_token_scopes(),
+                service_scopes=requested_service_scopes,
                 demo_login_agent_id=demo_login_agent_id,
             )
             token = session.token
@@ -207,6 +219,7 @@ def run_preview_gate(
         "backend_url": backend_url,
         "preview_scope": "local_or_private_preview_only",
         "frontend_checks": frontend_checks,
+        "backend_service_token_scope_preflight": backend_service_token_scope_preflight,
         "backend_auth": auth_report,
         "backend_read_model_checks": backend_checks,
         "operator_id": operator_id,
@@ -261,6 +274,80 @@ def _default_service_token_scopes() -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _preflight_service_token_scope(
+    *,
+    backend_url: str,
+    service_id: str,
+    service_secret: str,
+    requested_scopes: list[str],
+) -> dict[str, Any]:
+    """Validate preview service-token scopes before runtime read checks.
+
+    The preflight intentionally discards the returned bearer token. Its only
+    purpose is to surface backend scope policy gaps before FE-10 starts the
+    frontend/backend preview smoke.
+    """
+    payload = {
+        "service_id": service_id,
+        "secret": service_secret,
+        "scopes": requested_scopes,
+    }
+    result = _http_json_payload(
+        f"{backend_url}/api/v1/auth/service-token",
+        payload,
+        redact_fields={"secret", "token"},
+    )
+    failure_reasons: list[str] = []
+    response = result.get("json") if isinstance(result.get("json"), dict) else {}
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    granted_scopes = _string_list(data.get("scopes")) if isinstance(data, dict) else []
+    allowed_scopes = _string_list(response.get("allowed_scopes"))
+    if not allowed_scopes and isinstance(data, dict):
+        allowed_scopes = _string_list(data.get("allowed_scopes"))
+    status_code = result.get("status_code")
+    if status_code != 200:
+        missing = sorted(set(requested_scopes) - set(allowed_scopes)) if allowed_scopes else []
+        if missing:
+            failure_reasons.append(
+                "backend service-token allowed scopes missing required scope: "
+                + ",".join(missing)
+            )
+        else:
+            error = str(response.get("error") or result.get("error") or f"HTTP {status_code}")
+            failure_reasons.append(f"backend service-token scope preflight failed: {error}")
+    else:
+        missing = sorted(set(requested_scopes) - set(granted_scopes))
+        if missing:
+            failure_reasons.append(
+                "backend service-token granted scopes missing required scope: "
+                + ",".join(missing)
+            )
+        if bool(data.get("production_allowed", False)):
+            failure_reasons.append("backend service-token scope preflight must keep production_allowed=false")
+        if bool(data.get("evidence_allowed", False)):
+            failure_reasons.append("backend service-token scope preflight must keep evidence_allowed=false")
+
+    return {
+        "schema_version": "beta-fe10-service-token-scope-preflight:v1",
+        "passed": not failure_reasons,
+        "failure_reasons": failure_reasons,
+        "backend_url": backend_url,
+        "service_id": service_id,
+        "requested_scopes": list(requested_scopes),
+        "granted_scopes": granted_scopes,
+        "allowed_scopes": allowed_scopes,
+        "status_code": status_code,
+        "token_recorded": False,
+        "secret_recorded": False,
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
 def _bearer_token_files(argument_file: Path | None) -> list[Path]:
     paths = [argument_file] if argument_file else []
     env_file = os.getenv("CIVITASOS_FE10_BEARER_TOKEN_FILE")
@@ -286,6 +373,52 @@ def _http_json(url: str, headers: dict[str, str] | None, method: str = "GET") ->
     if isinstance(parsed, dict):
         result["top_level_keys"] = sorted(str(key) for key in parsed.keys())[:20]
     return result
+
+
+def _http_json_payload(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    redact_fields: set[str],
+) -> dict[str, Any]:
+    safe_payload = {
+        key: "<redacted>" if key in redact_fields else value
+        for key, value in payload.items()
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            parsed = json.loads(body) if body else None
+            return {
+                "status_code": response.status,
+                "json": parsed if isinstance(parsed, dict) else {},
+                "request_payload": safe_payload,
+            }
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else None
+        except json.JSONDecodeError:
+            parsed = None
+        return {
+            "status_code": exc.code,
+            "json": parsed if isinstance(parsed, dict) else {},
+            "request_payload": safe_payload,
+            "error": exc.reason,
+        }
+    except Exception as exc:
+        return {
+            "status_code": None,
+            "json": {},
+            "request_payload": safe_payload,
+            "error": str(exc),
+        }
 
 
 def _http_text(url: str, headers: dict[str, str] | None = None, method: str = "GET") -> dict[str, Any]:

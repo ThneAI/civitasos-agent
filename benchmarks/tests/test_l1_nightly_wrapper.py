@@ -102,6 +102,21 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT" = "1" ]; then' in text
     assert 'scripts/beta_fe_frontend_four_agent_orchestrator.py' in text
     assert 'CIVITASOS_FE_MEDIATION_SERVICE_TOKEN_SCOPES="$BETA_FE26_EXTERNAL_AGENT_SCHEMA_REPEAT_SERVICE_SCOPES"' in text
+    assert 'RUN_BETA_FE_FRONTEND_CHAIN_CLOSEOUT="${RUN_BETA_FE_FRONTEND_CHAIN_CLOSEOUT:-0}"' in text
+    assert 'RUN_BETA_FE_FRONTEND_CHAIN_CLOSEOUT_ONLY="${RUN_BETA_FE_FRONTEND_CHAIN_CLOSEOUT_ONLY:-0}"' in text
+    assert 'BETA_FE_FRONTEND_CHAIN_CLOSEOUT_MEDIATION_SUMMARY="${BETA_FE_FRONTEND_CHAIN_CLOSEOUT_MEDIATION_SUMMARY:-}"' in text
+    assert 'BETA_FE_FRONTEND_CHAIN_CLOSEOUT_FE10_RECEIPT="${BETA_FE_FRONTEND_CHAIN_CLOSEOUT_FE10_RECEIPT:-}"' in text
+    assert "run_beta_fe_frontend_chain_closeout()" in text
+    assert 'if [ "$RUN_BETA_FE_FRONTEND_CHAIN_CLOSEOUT_ONLY" = "1" ]; then' in text
+    assert 'if [ "$RUN_BETA_FE_FRONTEND_CHAIN_CLOSEOUT" = "1" ]; then' in text
+    assert "scripts/beta_fe_frontend_chain_closeout.py closeout" in text
+    assert 'RUN_BETA_FE_FRONTEND_CHAIN_INDEX="${RUN_BETA_FE_FRONTEND_CHAIN_INDEX:-0}"' in text
+    assert 'RUN_BETA_FE_FRONTEND_CHAIN_INDEX_ONLY="${RUN_BETA_FE_FRONTEND_CHAIN_INDEX_ONLY:-0}"' in text
+    assert 'BETA_FE_FRONTEND_CHAIN_INDEX_HANDOFF_PATHS="${BETA_FE_FRONTEND_CHAIN_INDEX_HANDOFF_PATHS:-$BETA_FE_FRONTEND_CHAIN_CLOSEOUT_OUTPUT_ROOT/frontend_release_operator_handoff.json}"' in text
+    assert "run_beta_fe_frontend_chain_index()" in text
+    assert 'if [ "$RUN_BETA_FE_FRONTEND_CHAIN_INDEX_ONLY" = "1" ]; then' in text
+    assert 'if [ "$RUN_BETA_FE_FRONTEND_CHAIN_INDEX" = "1" ]; then' in text
+    assert 'Beta FE frontend cumulative evidence index completed: $BETA_FE_FRONTEND_CHAIN_INDEX_OUTPUT' in text
     assert 'RUN_POST_H3_OBSERVER_READINESS_CHECK="${RUN_POST_H3_OBSERVER_READINESS_CHECK:-0}"' in text
     assert 'RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY="${RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY:-0}"' in text
     assert 'POST_H3_OBSERVER_READINESS_AB_SUMMARY="${POST_H3_OBSERVER_READINESS_AB_SUMMARY:-}"' in text
@@ -115,7 +130,7 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert "--ack-observer-readiness" in text
     assert 'RUN_POST_H3_OBSERVER_MODE_BASELINE="${RUN_POST_H3_OBSERVER_MODE_BASELINE:-0}"' in text
     assert 'RUN_POST_H3_OBSERVER_MODE_BASELINE_ONLY="${RUN_POST_H3_OBSERVER_MODE_BASELINE_ONLY:-0}"' in text
-    assert 'POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY="${POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY:-$POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_SUMMARY}"' in text
+    assert 'POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY="${POST_H3_OBSERVER_MODE_BASELINE_CLOSEOUT_STRATEGY_SUMMARY:-${POST_H3_LIMITED_FEEDBACK_CLOSEOUT_STRATEGY_SUMMARY:-}}"' in text
     assert "run_post_h3_observer_mode_baseline()" in text
     assert 'if [ "$RUN_POST_H3_OBSERVER_MODE_BASELINE_ONLY" = "1" ]; then' in text
     assert 'if [ "$RUN_POST_H3_OBSERVER_MODE_BASELINE" = "1" ]; then' in text

@@ -201,6 +201,44 @@ SCENARIOS: dict[str, FrontendScenario] = {
         safe_next_step="operator_review_before_bounded_fe3_apply_for_runtime_data_adapter_decomposition",
         excerpt_lines=140,
     ),
+    "fe15-observability-presentation-extraction": FrontendScenario(
+        scenario_id="fe15-observability-presentation-extraction",
+        stage="beta_fe15_four_agent_observability_presentation_planning",
+        patch_slice_id="observability_presentation_extraction",
+        title="Observability panel presentation extraction",
+        goal=(
+            "Plan a bounded frontend refactor that extracts ObservabilityPanel metric parsing, trace row "
+            "presentation helpers, and tab metadata into a typed presentation module without changing API calls, "
+            "auth behavior, routes, visual semantics, deploy, rollback, or monitoring policy."
+        ),
+        current_state=(
+            "FE-14 extracted runtime data fetching and preview passed with service-token auth.",
+            "ObservabilityPanel still mixes API polling, metric parsing, inline style decisions, and trace rendering.",
+            "This FE-15 gate is planning-only; it must not authorize direct code mutation.",
+        ),
+        allowed_files=(
+            "src/components/ObservabilityPanel.tsx",
+            "src/components/observabilityPresentation.ts",
+            "src/components/observabilityPresentation.test.ts",
+        ),
+        forbidden_changes=(
+            "backend API contract",
+            "AuthContext behavior",
+            "I18n or Theme context behavior",
+            "route semantics",
+            "service-token scope policy",
+            "deploy, rollback, monitoring, or production flags",
+            "visual redesign beyond preserving current semantics",
+        ),
+        focus_files=(
+            "src/components/ObservabilityPanel.tsx",
+            "src/services/apiClient.ts",
+            "src/app/AppShell.tsx",
+            "src/app/panelRegistry.ts",
+        ),
+        safe_next_step="operator_review_before_bounded_fe3_apply_for_observability_presentation_extraction",
+        excerpt_lines=160,
+    ),
 }
 
 

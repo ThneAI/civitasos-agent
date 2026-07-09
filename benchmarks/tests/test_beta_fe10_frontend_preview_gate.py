@@ -143,6 +143,42 @@ def test_fe10_preview_gate_prefers_service_token_when_secret_supplied(tmp_path: 
     assert report["backend_auth"]["auth_method"] == "service_token"
     assert report["backend_auth"]["token"] == "<redacted>"
     assert report["backend_auth"]["scopes"] == ["pool:read", "audit:read"]
+    assert report["backend_service_token_scope_preflight"]["passed"] is True
+    assert report["backend_service_token_scope_preflight"]["token_recorded"] is False
+
+
+def test_fe10_preview_gate_preflights_backend_service_token_scopes(tmp_path: Path) -> None:
+    frontend = _server(_FrontendHandler)
+    backend = _server(_ScopeRejectingBackendHandler)
+    frontend_root = _frontend_repo(tmp_path / "frontend")
+    fe9 = _write_fe9_receipt(tmp_path / "fe9.json", frontend_root)
+
+    report = module.run_preview_gate(
+        source_fe9_receipt=fe9,
+        frontend_root=frontend_root,
+        output_root=tmp_path / "out",
+        frontend_url=frontend.url,
+        backend_url=backend.url,
+        auth_mode="service-token",
+        service_token_secret="test-secret",
+        service_id="preview-service",
+        service_token_scopes=["pool:read", "audit:read"],
+        demo_login_agent_id="tester",
+        operator_id="operator",
+        operator_authorization="test",
+    )
+
+    frontend.close()
+    backend.close()
+    assert report["passed"] is False
+    assert "backend service-token allowed scopes missing required scope: audit:read" in report["failure_reasons"]
+    assert report["backend_service_token_scope_preflight"]["passed"] is False
+    assert report["backend_service_token_scope_preflight"]["requested_scopes"] == ["pool:read", "audit:read"]
+    assert report["backend_service_token_scope_preflight"]["allowed_scopes"] == ["pool:read"]
+    assert report["backend_service_token_scope_preflight"]["token_recorded"] is False
+    assert report["frontend_checks"] == []
+    assert report["backend_auth"] is None
+    assert report["backend_read_model_checks"] == []
 
 
 def test_fe10_preview_gate_blocks_failed_fe9(tmp_path: Path) -> None:
@@ -266,6 +302,18 @@ class _BackendHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *_args):
         return
+
+
+class _ScopeRejectingBackendHandler(_BackendHandler):
+    def do_POST(self):  # noqa: N802
+        if self.path == "/api/v1/auth/service-token":
+            self._json(403, {
+                "success": False,
+                "error": "scope not allowed: audit:read",
+                "allowed_scopes": ["pool:read"],
+            })
+            return
+        super().do_POST()
 
 
 class _Server:
