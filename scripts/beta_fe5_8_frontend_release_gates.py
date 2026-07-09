@@ -654,11 +654,12 @@ def _run_openai_reviewer(reviewer_id: str, env_file: Path, prompt: str) -> tuple
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are a strict CivitasOS release review Agent."},
+            {"role": "system", "content": "You are a strict CivitasOS release review Agent. Return only one JSON object and no explanatory prose."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0,
         "max_tokens": 900,
+        "response_format": {"type": "json_object"},
     }
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if api_key:
@@ -954,6 +955,7 @@ def _local_review(diff: str) -> dict[str, Any]:
         "task_pool_api_adapter": ("taskPoolApi", "createTaskPoolApi", "PoolTaskPostRequest", "apiClient"),
         "task_pool_presentation": ("taskPoolPresentation", "operatorFollowUp", "wakeTraceDetail", "TaskPoolPanel"),
         "app_shell_panel_registry": ("AppShell", "PANEL_REGISTRY", "PanelRenderContext", "panelRegistry"),
+        "runtime_data_adapter": ("useRuntimeData", "runtimeDataModel", "mergeA2AAgents", "mapPoolTaskToAppTask"),
     }
     profile_matches = {
         name: all(token in diff for token in tokens)
@@ -995,6 +997,7 @@ def _external_review(env_file: Path, pr: dict[str, Any], diff: str, failures: li
     prompt = (
         "Review this CivitasOS frontend PR diff. Return only JSON with keys: "
         "verdict ('approved' or 'changes_requested'), risk_level ('low','medium','high'), findings (array), summary (string). "
+        "Do not include prose before or after the JSON object. "
         "Approve only if the change is limited to a bounded frontend adapter, presentation, or app-shell helper slice "
         "and does not expand deploy/production authority.\n\n"
         f"PR: {json.dumps(pr, ensure_ascii=False)}\n\nDIFF:\n{diff}"
@@ -1006,7 +1009,8 @@ def _external_review(env_file: Path, pr: dict[str, Any], diff: str, failures: li
             {"role": "user", "content": prompt},
         ],
         "temperature": 0,
-        "max_tokens": 900,
+        "max_tokens": 1600,
+        "response_format": {"type": "json_object"},
     }
     request = urllib.request.Request(
         f"{base_url}/chat/completions",
@@ -1019,7 +1023,8 @@ def _external_review(env_file: Path, pr: dict[str, Any], diff: str, failures: li
     try:
         with urllib.request.urlopen(request, timeout=90) as response:
             api_payload = json.loads(response.read().decode("utf-8"))
-        raw_text = str(api_payload.get("choices", [{}])[0].get("message", {}).get("content", ""))
+        message = api_payload.get("choices", [{}])[0].get("message", {})
+        raw_text = _message_text(message)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         api_failure = f"HTTP {exc.code}: {detail[:1000]}"
@@ -1057,7 +1062,7 @@ def _external_review(env_file: Path, pr: dict[str, Any], diff: str, failures: li
 def _parse_review_json(raw: str) -> dict[str, Any]:
     text = raw.strip()
     if not text:
-        return {}
+        return ""
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
@@ -1072,6 +1077,16 @@ def _parse_review_json(raw: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {}
     return value if isinstance(value, dict) else {}
+
+
+def _message_text(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    for field in ("content", "reasoning_content", "reasoning", "text"):
+        value = message.get(field)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def _read_env(path: Path, failures: list[str]) -> dict[str, str]:

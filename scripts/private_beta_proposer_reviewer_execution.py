@@ -122,6 +122,7 @@ def run_execution(
         failures.append("operator_statement is required")
     if ack_consume_authorization is not True:
         failures.append("explicit authorization consumption acknowledgement is required")
+    _validate_scenario_binding(authorization, scenario_id, failures)
     if failures:
         summary = _blocked_summary(output_root, authorization_path, failures)
         _write_json(output_root / "private_beta_proposer_reviewer_execution_summary.json", summary)
@@ -177,6 +178,7 @@ def run_execution(
             backend_url=backend_url,
             packet_path=packet_path,
             participants=participants,
+            mediation_root=mediation_root,
             error=str(exc),
         )
     receipt_report = _write_execution_receipt(
@@ -233,6 +235,26 @@ def _validate_authorization(authorization: Any, failures: list[str]) -> None:
     for key in ("apply_allowed", "commit_allowed", "push_allowed", "merge_allowed", "deploy_allowed", "external_public_ingress_opened", "production_runtime_execution_allowed", "production_receipt_write_allowed"):
         if boundary.get(key) is not False:
             failures.append(f"authorization boundary must keep {key}=false")
+
+
+def _validate_scenario_binding(authorization: dict[str, Any], scenario_id: str, failures: list[str]) -> None:
+    scope = authorization.get("authorized_scope") if isinstance(authorization.get("authorized_scope"), dict) else {}
+    bound_scenario = str(scope.get("scenario_id") or "").strip()
+    bound_slice = str(scope.get("patch_slice_id") or "").strip()
+    if not bound_scenario and not bound_slice:
+        return
+    if not bound_scenario or not bound_slice:
+        failures.append("authorization scenario binding is incomplete")
+        return
+    if bound_scenario != scenario_id:
+        failures.append(f"execution scenario must match authorization scenario_id: {bound_scenario}")
+        return
+    scenario = four_agent.SCENARIOS.get(scenario_id)
+    if scenario is None:
+        failures.append(f"execution scenario is unknown: {scenario_id}")
+        return
+    if scenario.patch_slice_id != bound_slice:
+        failures.append(f"execution patch_slice_id must match authorization patch_slice_id: {bound_slice}")
 
 
 def _validate_package(package: Any, failures: list[str]) -> None:
@@ -378,7 +400,9 @@ def _write_mediation_summary(*, output: Path, backend_url: str, client: fe26.Htt
     return report
 
 
-def _write_blocked_mediation_summary(*, output: Path, backend_url: str, packet_path: Path, participants: list[str], error: str) -> dict[str, Any]:
+def _write_blocked_mediation_summary(*, output: Path, backend_url: str, packet_path: Path, participants: list[str], mediation_root: Path, error: str) -> dict[str, Any]:
+    partial_receipts = _load_partial_receipts(mediation_root)
+    statuses = [str(receipt.get("final_task", {}).get("status") or "") for receipt in partial_receipts]
     report = {
         "schema_version": "private-beta-controlled-proposer-reviewer-mediation:v1",
         "checked_at": _now(),
@@ -389,14 +413,14 @@ def _write_blocked_mediation_summary(*, output: Path, backend_url: str, packet_p
         "backend_auth": {"auth_method": "unavailable_after_failure", "token_recorded": False},
         "source_packet": artifact_ref(packet_path) if packet_path.is_file() else {"path": str(packet_path.resolve()), "sha256": None},
         "participant_ids": participants,
-        "task_receipt_count": 0,
-        "task_receipts": [],
-        "task_ids": [],
-        "final_statuses": [],
-        "claim_observed_count": 0,
-        "generation_after_claim_observed_count": 0,
-        "delivery_observed_count": 0,
-        "boundary": _boundary(authorization_consumed=True, agent_execution_performed=False),
+        "task_receipt_count": len(partial_receipts),
+        "task_receipts": [artifact_ref(mediation_root / f"{receipt['participant_id']}.task_receipt.json") for receipt in partial_receipts if receipt.get("participant_id")],
+        "task_ids": [receipt.get("task_id") for receipt in partial_receipts],
+        "final_statuses": statuses,
+        "claim_observed_count": sum(1 for receipt in partial_receipts if receipt.get("claim_observed") is True),
+        "generation_after_claim_observed_count": sum(1 for receipt in partial_receipts if receipt.get("generation_observed_after_claim") is True),
+        "delivery_observed_count": sum(1 for receipt in partial_receipts if receipt.get("delivery_observed") is True),
+        "boundary": _boundary(authorization_consumed=True, agent_execution_performed=bool(partial_receipts)),
         "non_claims": list(NON_CLAIMS),
     }
     _write_json(output, report)
@@ -505,9 +529,26 @@ def _boundary(*, authorization_consumed: bool, agent_execution_performed: bool) 
 
 def _failures(*reports: dict[str, Any]) -> list[str]:
     out: list[str] = []
+    seen: set[str] = set()
     for report in reports:
-        out.extend(str(item) for item in report.get("failure_reasons", []) if item)
+        for item in report.get("failure_reasons", []):
+            text = str(item)
+            if text and text not in seen:
+                out.append(text)
+                seen.add(text)
     return out
+
+
+def _load_partial_receipts(mediation_root: Path) -> list[dict[str, Any]]:
+    receipts: list[dict[str, Any]] = []
+    for path in sorted(mediation_root.glob("*.task_receipt.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            receipts.append(value)
+    return receipts
 
 
 def _default_consumption_lease_path(authorization_path: Path) -> Path:

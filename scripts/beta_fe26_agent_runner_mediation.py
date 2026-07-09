@@ -281,9 +281,9 @@ class OllamaNativeGenerator:
 
 
 class CommandGenerator:
-    def __init__(self, *, command: str, timeout_secs: int = 180) -> None:
+    def __init__(self, *, command: str, timeout_secs: int | None = None) -> None:
         self.command = command
-        self.timeout_secs = timeout_secs
+        self.timeout_secs = timeout_secs or _env_int("BETA_FE26_COMMAND_TIMEOUT_SECS", 180)
 
     def generate(
         self,
@@ -725,6 +725,17 @@ def _normalize_model(model: str) -> str:
     return model
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _chat_endpoint(base_url: str) -> str:
     base_url = base_url.strip().rstrip("/")
     if base_url.endswith("/chat/completions"):
@@ -741,7 +752,10 @@ def _extract_openai_content(payload: dict[str, Any]) -> str:
         return ""
     message = first.get("message")
     if isinstance(message, dict):
-        return str(message.get("content") or "")
+        for key in ("content", "reasoning_content", "reasoning", "text"):
+            value = message.get(key)
+            if value:
+                return str(value)
     return str(first.get("text") or "")
 
 

@@ -32,12 +32,16 @@ def test_private_beta_proposer_reviewer_request_decision_and_validation(tmp_path
         max_proposals=1,
         max_reviews=3,
         service_token_scopes=["agents:read", "pool:post", "pool:read", "pool:claim", "pool:write"],
+        scenario_id="fe14-runtime-data-adapter-decomposition",
+        patch_slice_id="runtime_data_adapter_decomposition",
         ack_authorization_request=True,
     )
     assert request["passed"] is True
     assert request["readiness"]["authorization_request_ready"] is True
     assert request["boundary"]["patch_proposal_allowed"] is False
     assert request["requested_scope"]["service_token_scopes"] == ["agents:read", "pool:claim", "pool:post", "pool:read", "pool:write"]
+    assert request["requested_scope"]["scenario_id"] == "fe14-runtime-data-adapter-decomposition"
+    assert request["requested_scope"]["patch_slice_id"] == "runtime_data_adapter_decomposition"
 
     decision = module.write_authorization_decision(
         authorization_request=tmp_path / "request" / "private_beta_proposer_reviewer_authorization_request.json",
@@ -53,6 +57,8 @@ def test_private_beta_proposer_reviewer_request_decision_and_validation(tmp_path
     assert decision["boundary"]["patch_proposal_allowed"] is True
     assert decision["boundary"]["release_review_allowed"] is True
     assert decision["boundary"]["apply_allowed"] is False
+    assert decision["authorized_scope"]["scenario_id"] == "fe14-runtime-data-adapter-decomposition"
+    assert decision["authorized_scope"]["patch_slice_id"] == "runtime_data_adapter_decomposition"
 
     validation = module.validate_authorization(tmp_path / "decision" / "private_beta_proposer_reviewer_authorization.json")
     assert validation["passed"] is True

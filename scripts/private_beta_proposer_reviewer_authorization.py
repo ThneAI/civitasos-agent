@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     request.add_argument("--max-proposals", type=int, default=1)
     request.add_argument("--max-reviews", type=int, default=3)
     request.add_argument("--service-token-scope", action="append", default=[])
+    request.add_argument("--scenario-id")
+    request.add_argument("--patch-slice-id")
     request.add_argument("--ack-authorization-request", action="store_true")
 
     decide = subparsers.add_parser("decide", help="write a single-use proposer/reviewer authorization")
@@ -90,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
             max_proposals=args.max_proposals,
             max_reviews=args.max_reviews,
             service_token_scopes=args.service_token_scope or list(DEFAULT_SERVICE_SCOPES),
+            scenario_id=args.scenario_id,
+            patch_slice_id=args.patch_slice_id,
             ack_authorization_request=bool(args.ack_authorization_request),
         )
     elif args.command == "decide":
@@ -119,6 +123,8 @@ def write_authorization_request(
     max_proposals: int,
     max_reviews: int,
     service_token_scopes: list[str],
+    scenario_id: str | None = None,
+    patch_slice_id: str | None = None,
     ack_authorization_request: bool = False,
 ) -> dict[str, Any]:
     output_root = output_root.resolve()
@@ -131,6 +137,7 @@ def write_authorization_request(
     reviewers = _validate_agents(reviewer_agents, participants, "reviewer_agents", failures)
     modes = _validate_modes(allowed_modes, package, failures)
     scopes = _validate_service_scopes(service_token_scopes, failures)
+    scenario = _scenario_scope(scenario_id, patch_slice_id, failures)
     if set(proposers) & set(reviewers):
         failures.append("proposer and reviewer sets must be disjoint")
     if max_proposals < 1 or max_proposals > 3:
@@ -146,7 +153,7 @@ def write_authorization_request(
 
     passed = not failures
     package_ref = artifact_ref(private_beta_package) if private_beta_package.is_file() else None
-    request_id = f"private-beta-proposer-reviewer-request:{_digest([package_ref, proposers, reviewers, modes, scopes])[:24]}" if package_ref else ""
+    request_id = f"private-beta-proposer-reviewer-request:{_digest([package_ref, proposers, reviewers, modes, scopes, scenario])[:24]}" if package_ref else ""
     report = {
         "schema_version": REQUEST_SCHEMA,
         "artifact_envelope": build_artifact_envelope(
@@ -167,7 +174,7 @@ def write_authorization_request(
         "operator_id": operator_id,
         "operator_statement": operator_statement,
         "source_private_beta_package": package_ref,
-        "requested_scope": _scope(proposers, reviewers, modes, max_proposals, max_reviews, scopes),
+        "requested_scope": _scope(proposers, reviewers, modes, max_proposals, max_reviews, scopes, scenario),
         "readiness": {
             "authorization_request_ready": passed,
             "authorization_granted": False,
@@ -329,6 +336,18 @@ def _validate_service_scopes(values: list[str], failures: list[str]) -> list[str
     return scopes
 
 
+def _scenario_scope(scenario_id: str | None, patch_slice_id: str | None, failures: list[str]) -> dict[str, str] | None:
+    scenario = str(scenario_id or "").strip()
+    patch_slice = str(patch_slice_id or "").strip()
+    if not scenario and not patch_slice:
+        return None
+    if not scenario or not patch_slice:
+        failures.append("scenario_id and patch_slice_id must be supplied together")
+        return None
+    return {"scenario_id": scenario, "patch_slice_id": patch_slice}
+
+
+
 def _validate_authorization_boundary(authorization: dict[str, Any], failures: list[str]) -> None:
     boundary = authorization.get("boundary") if isinstance(authorization.get("boundary"), dict) else {}
     if boundary.get("patch_proposal_allowed") is not True:
@@ -349,8 +368,16 @@ def _agent_model(package: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _scope(proposers: list[str], reviewers: list[str], modes: list[str], max_proposals: int, max_reviews: int, scopes: list[str]) -> dict[str, Any]:
-    return {
+def _scope(
+    proposers: list[str],
+    reviewers: list[str],
+    modes: list[str],
+    max_proposals: int,
+    max_reviews: int,
+    scopes: list[str],
+    scenario: dict[str, str] | None,
+) -> dict[str, Any]:
+    result = {
         "proposer_agents": proposers,
         "reviewer_agents": reviewers,
         "allowed_modes": modes,
@@ -359,6 +386,9 @@ def _scope(proposers: list[str], reviewers: list[str], modes: list[str], max_pro
         "service_token_scopes": scopes,
         "forbidden_actions": list(FORBIDDEN_ACTIONS),
     }
+    if scenario:
+        result.update(scenario)
+    return result
 
 
 def _boundary(*, request_written: bool, authorization_written: bool, authorization_granted: bool) -> dict[str, Any]:

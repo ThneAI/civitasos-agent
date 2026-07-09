@@ -73,6 +73,22 @@ def test_bounded_apply_authorization_requires_ack(tmp_path: Path) -> None:
     assert any("acknowledgement" in reason for reason in request["failure_reasons"])
 
 
+def test_bounded_apply_authorization_accepts_private_beta_closeout_summary(tmp_path: Path) -> None:
+    source = _write_private_beta_closeout_summary(tmp_path / "closeout_summary.json")
+
+    request = module.write_authorization_request(
+        source_mediation_summary=source,
+        output_root=tmp_path / "request",
+        operator_id="operator",
+        operator_statement="request bounded apply from private Beta closeout",
+        allowed_changed_files=["src/app/useRuntimeData.ts"],
+        ack_authorization_request=True,
+    )
+
+    assert request["passed"] is True
+    assert request["source_mediation_summary"]["path"] == str(source.resolve())
+
+
 def _write_four_agent_summary(path: Path) -> Path:
     payload = {
         "schema_version": "beta-fe-four-agent-frontend-orchestration-summary:v1",
@@ -85,6 +101,27 @@ def _write_four_agent_summary(path: Path) -> Path:
         "delivery_observed_count": 4,
         "safe_next_step": "prepare_bounded_fe3_apply_for_app_shell_panel_registry_decomposition",
         "selected_plan": {"slice_id": "app_shell_panel_registry_decomposition"},
+        "boundary": {"frontend_code_modified": False},
+        "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_private_beta_closeout_summary(path: Path) -> Path:
+    payload = {
+        "schema_version": "private-beta-controlled-proposer-reviewer-closeout-summary:v1",
+        "passed": True,
+        "decision": "controlled_proposer_reviewer_ready_for_bounded_apply_request",
+        "readiness": {
+            "bounded_apply_authorization_request_ready": True,
+            "bounded_apply_authorization_granted": False,
+        },
+        "scenario_binding": {
+            "scenario_id": "fe14-runtime-data-adapter-decomposition",
+            "patch_slice_id": "runtime_data_adapter_decomposition",
+        },
+        "verdict_counts": {"inconclusive": 0, "proceed": 2, "reject": 0, "revise": 1},
         "boundary": {"frontend_code_modified": False},
         "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
     }

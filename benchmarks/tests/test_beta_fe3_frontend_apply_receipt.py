@@ -161,6 +161,28 @@ def test_beta_fe3_apply_receipt_accepts_four_agent_orchestration_summary(tmp_pat
     assert receipt["source_mediation_schema"] == "beta-fe-four-agent-frontend-orchestration-summary:v1"
 
 
+def test_beta_fe3_apply_receipt_accepts_private_beta_closeout_summary(tmp_path: Path) -> None:
+    frontend = _frontend_repo(tmp_path / "frontend")
+    custom = frontend / "src/app/useRuntimeData.ts"
+    custom.parent.mkdir(parents=True, exist_ok=True)
+    custom.write_text("export function useRuntimeData() { return {}; }\n", encoding="utf-8")
+    summary = _write_private_beta_closeout_summary(tmp_path / "closeout_summary.json")
+
+    receipt = module.write_receipt(
+        frontend_root=frontend,
+        source_fe26_summary=summary,
+        single_use_authorization=_write_authorization(tmp_path, summary, ["src/app/useRuntimeData.ts"]),
+        output_root=tmp_path / "receipt",
+        operator_id="operator",
+        operator_authorization="test authorization",
+        test_commands=["true"],
+        allowed_changed_files=["src/app/useRuntimeData.ts"],
+    )
+
+    assert receipt["passed"] is True
+    assert receipt["source_mediation_schema"] == "private-beta-controlled-proposer-reviewer-closeout-summary:v1"
+
+
 def test_beta_fe3_apply_receipt_blocks_unsafe_custom_allowlist(tmp_path: Path) -> None:
     frontend = _frontend_repo(tmp_path / "frontend")
     fe26 = _write_fe26_summary(tmp_path / "fe26.json")
@@ -262,6 +284,27 @@ def _write_four_agent_orchestration_summary(path: Path) -> Path:
         "delivery_observed_count": 4,
         "safe_next_step": "prepare_bounded_fe3_apply_for_app_shell_panel_registry_decomposition",
         "selected_plan": {"slice_id": "app_shell_panel_registry_decomposition"},
+        "boundary": {"frontend_code_modified": False},
+        "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_private_beta_closeout_summary(path: Path) -> Path:
+    payload = {
+        "schema_version": "private-beta-controlled-proposer-reviewer-closeout-summary:v1",
+        "passed": True,
+        "decision": "controlled_proposer_reviewer_ready_for_bounded_apply_request",
+        "readiness": {
+            "bounded_apply_authorization_request_ready": True,
+            "bounded_apply_authorization_granted": False,
+        },
+        "scenario_binding": {
+            "scenario_id": "fe14-runtime-data-adapter-decomposition",
+            "patch_slice_id": "runtime_data_adapter_decomposition",
+        },
+        "verdict_counts": {"inconclusive": 0, "proceed": 2, "reject": 0, "revise": 1},
         "boundary": {"frontend_code_modified": False},
         "h3_boundary": {"h3_remains_blocked": True, "h3_production_readiness_claimed": False},
     }

@@ -187,6 +187,23 @@ def test_local_review_accepts_app_shell_panel_registry_slice() -> None:
     assert review["matched_profile"] == "app_shell_panel_registry"
 
 
+def test_local_review_accepts_runtime_data_adapter_slice() -> None:
+    diff = "\n".join([
+        "diff --git a/src/App.tsx b/src/App.tsx",
+        "+import { useRuntimeData } from './app/useRuntimeData';",
+        "diff --git a/src/app/useRuntimeData.ts b/src/app/useRuntimeData.ts",
+        "+import { mergeA2AAgents, mapPoolTaskToAppTask } from './runtimeDataModel';",
+        "diff --git a/src/app/runtimeDataModel.ts b/src/app/runtimeDataModel.ts",
+        "+export const mergeA2AAgents = () => [];",
+        "+export const mapPoolTaskToAppTask = () => ({});",
+    ])
+
+    review = module._local_review(diff)
+
+    assert review["verdict"] == "approved"
+    assert review["matched_profile"] == "runtime_data_adapter"
+
+
 def test_external_review_accepts_shared_llm_env_keys(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / "external.env"
     env_file.write_text(
@@ -238,6 +255,49 @@ def test_external_review_accepts_shared_llm_env_keys(tmp_path: Path, monkeypatch
     assert review["verdict"] == "approved"
     assert review["model"] == "review-model"
     assert review["api_key_recorded"] is False
+
+
+def test_external_review_accepts_reasoning_content_fallback(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / "external.env"
+    env_file.write_text(
+        "LLM_BASE_URL=https://example.test/v1\n"
+        "AGENT_LLM=openai:review-model\n"
+        "LLM_API_KEY=secret-not-recorded\n",
+        encoding="utf-8",
+    )
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{
+                    "message": {
+                        "content": "",
+                        "reasoning_content": json.dumps({
+                            "verdict": "approved",
+                            "risk_level": "low",
+                            "findings": [],
+                            "summary": "bounded runtime data adapter",
+                        }),
+                    },
+                }],
+            }).encode()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda _req, timeout: FakeResponse())
+    failures: list[str] = []
+
+    review = module._external_review(env_file, {"number": 5}, "+ useRuntimeData runtimeDataModel\n", failures)
+
+    assert failures == []
+    assert review["verdict"] == "approved"
+    assert review["summary"] == "bounded runtime data adapter"
 
 
 def test_additional_agent_review_command_spec_records_approved(tmp_path: Path) -> None:

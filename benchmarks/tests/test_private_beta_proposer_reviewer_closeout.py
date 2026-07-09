@@ -53,7 +53,7 @@ def test_closeout_no_apply_records_operator_reconciliation(tmp_path: Path, monke
     assert validation["passed"] is True
 
 
-def test_closeout_blocks_bounded_apply_when_revision_verdict_exists(tmp_path: Path, monkeypatch: Any) -> None:
+def test_closeout_blocks_bounded_apply_when_revision_constraints_are_missing(tmp_path: Path, monkeypatch: Any) -> None:
     execution = _write_execution_fixture(tmp_path)
     monkeypatch.setattr(module, "_frontend_state", lambda _root: _frontend_state(already_decomposed=False))
 
@@ -63,15 +63,49 @@ def test_closeout_blocks_bounded_apply_when_revision_verdict_exists(tmp_path: Pa
         output_root=tmp_path / "closeout",
         operator_id="operator",
         operator_decision="approve_bounded_apply_request",
-        operator_statement="Try to approve bounded apply despite one revision verdict.",
+        operator_statement="Approve bounded apply based only on majority support.",
         selected_participant="deepseek-api-agent",
         allowed_changed_files=["src/App.tsx"],
         ack_reconciliation=True,
     )
 
     assert summary["passed"] is False
-    assert "bounded apply request cannot be approved while any Agent verdict is reject or revise" in summary["failure_reasons"]
+    assert "bounded apply request with revise verdict requires explicit revision constraints in operator_statement" in summary["failure_reasons"]
     assert summary["readiness"]["bounded_apply_authorization_request_ready"] is False
+
+
+def test_fe14_closeout_allows_conditional_bounded_apply_request(tmp_path: Path, monkeypatch: Any) -> None:
+    execution = _write_execution_fixture(
+        tmp_path,
+        scenario_id="fe14-runtime-data-adapter-decomposition",
+        patch_slice_id="runtime_data_adapter_decomposition",
+    )
+    monkeypatch.setattr(module, "_frontend_state", lambda _root: _frontend_state(already_decomposed=True))
+
+    summary = module.run_closeout(
+        execution_summary_path=execution,
+        frontend_root=tmp_path / "frontend",
+        output_root=tmp_path / "closeout",
+        operator_id="operator",
+        operator_decision="approve_bounded_apply_request",
+        operator_statement=(
+            "Approve bounded apply request with revision constraints: preserve existing runtime behavior, "
+            "add model/hook tests, and keep the later apply behind separate single-use authorization."
+        ),
+        selected_participant="deepseek-api-agent",
+        allowed_changed_files=[
+            "src/App.tsx",
+            "src/app/useRuntimeData.ts",
+            "src/app/runtimeDataModel.ts",
+        ],
+        ack_reconciliation=True,
+    )
+
+    assert summary["passed"] is True
+    assert summary["decision"] == "controlled_proposer_reviewer_ready_for_bounded_apply_request"
+    assert summary["scenario_binding"]["patch_slice_id"] == "runtime_data_adapter_decomposition"
+    assert summary["readiness"]["bounded_apply_authorization_request_ready"] is True
+    assert summary["readiness"]["bounded_apply_authorization_granted"] is False
 
 
 def test_closeout_requires_ack(tmp_path: Path, monkeypatch: Any) -> None:
@@ -94,7 +128,7 @@ def test_closeout_requires_ack(tmp_path: Path, monkeypatch: Any) -> None:
     assert any("acknowledgement" in reason for reason in summary["failure_reasons"])
 
 
-def _write_execution_fixture(root: Path) -> Path:
+def _write_execution_fixture(root: Path, *, scenario_id: str | None = None, patch_slice_id: str | None = None) -> Path:
     mediation_root = root / "mediation"
     mediation_root.mkdir(parents=True)
     receipts = []
@@ -134,6 +168,17 @@ def _write_execution_fixture(root: Path) -> Path:
             "boundary": _execution_boundary(),
         },
     )
+    packet = root / "packet_summary.json"
+    _write_json(
+        packet,
+        {
+            "schema_version": "beta-fe2-frontend-patch-proposal-packet:v1",
+            "scenario_id": scenario_id,
+            "patch_slice_id": patch_slice_id,
+            "stage": "test",
+            "passed": True,
+        },
+    )
     execution = root / "execution_summary.json"
     _write_json(
         execution,
@@ -142,7 +187,7 @@ def _write_execution_fixture(root: Path) -> Path:
             "passed": True,
             "decision": "private_beta_controlled_proposer_reviewer_execution_passed",
             "authorization_id": "private-beta-proposer-reviewer-auth:test",
-            "artifacts": {"mediation": _artifact_ref(mediation)},
+            "artifacts": {"mediation": _artifact_ref(mediation), "packet": _artifact_ref(packet)},
             "readiness": {"proposer_reviewer_outputs_ready_for_closeout": True},
             "boundary": _execution_boundary(),
         },

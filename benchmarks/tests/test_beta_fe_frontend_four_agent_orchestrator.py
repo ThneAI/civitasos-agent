@@ -37,10 +37,29 @@ def test_orchestrator_fe13_packet_targets_app_shell_decomposition(tmp_path: Path
     assert "src/App.tsx" in packet["frontend_snapshot"]["focus_file_lines"]
     assert Path(packet["brief_ref"]["path"]).is_file()
     local_prompt = Path(packet["agent_prompt_refs"]["local-gpu-agent"]["path"]).read_text(encoding="utf-8")
+    claude_prompt = Path(packet["agent_prompt_refs"]["claude-cli-agent"]["path"]).read_text(encoding="utf-8")
     assert "Candidate allowed files:" in local_prompt
     assert "src/app/panelRegistry.ts" in local_prompt
     assert "## src/contexts/AuthContext.tsx" not in local_prompt
     assert "this local reviewer receives no raw implementation excerpts" in local_prompt
+    assert "## src/contexts/AuthContext.tsx" not in claude_prompt
+    assert "this architecture reviewer receives no raw implementation excerpts" in claude_prompt
+
+
+def test_orchestrator_fe14_packet_targets_runtime_data_adapter(tmp_path: Path) -> None:
+    frontend = _frontend(tmp_path / "frontend")
+    scenario = module.SCENARIOS["fe14-runtime-data-adapter-decomposition"]
+
+    packet = module.write_packet(scenario=scenario, frontend_root=frontend, output_root=tmp_path / "run")
+
+    assert packet["scenario_id"] == "fe14-runtime-data-adapter-decomposition"
+    assert packet["patch_slice_id"] == "runtime_data_adapter_decomposition"
+    assert packet["collaboration_boundary"]["apply_allowed"] is False
+    prompt = Path(packet["agent_prompt_refs"]["deepseek-api-agent"]["path"]).read_text(encoding="utf-8")
+    assert "runtime data fetching" in prompt
+    assert "src/app/useRuntimeData.ts" in prompt
+    assert "src/services/websocket.ts" in prompt
+    assert "backend API contract" in prompt
 
 
 def test_orchestrator_reconciliation_records_selected_plan(tmp_path: Path) -> None:
@@ -87,6 +106,12 @@ def _frontend(path: Path) -> Path:
     (path / "src/services/taskPoolApi.ts").write_text("export const taskPoolApi = true;\n", encoding="utf-8")
     (path / "src/adapters").mkdir(parents=True)
     (path / "src/adapters/TaskReadAdapter.ts").write_text("export const TaskReadAdapter = true;\n", encoding="utf-8")
+    (path / "src/adapters/taskReadModel.ts").write_text("export const taskReadModel = true;\n", encoding="utf-8")
+    (path / "src/app").mkdir(parents=True)
+    (path / "src/app/AppShell.tsx").write_text("export const AppShell = () => null;\n", encoding="utf-8")
+    (path / "src/app/panelRegistry.ts").write_text("export const PANEL_REGISTRY = [];\n", encoding="utf-8")
+    (path / "src/services/apiClient.ts").write_text("export const apiClient = true;\n", encoding="utf-8")
+    (path / "src/services/websocket.ts").write_text("export const wsService = true;\n", encoding="utf-8")
     (path / "src/contexts").mkdir(parents=True)
     (path / "src/contexts/AuthContext.tsx").write_text("export const AuthContext = null;\n", encoding="utf-8")
     (path / "src/contexts/I18nContext.tsx").write_text("export const I18nContext = null;\n", encoding="utf-8")

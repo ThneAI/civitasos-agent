@@ -119,6 +119,9 @@ def run_closeout(
     mediation_path = _path_from_ref((execution.get("artifacts") or {}).get("mediation")) if isinstance(execution, dict) else None
     mediation = _read_json(mediation_path, failures, "mediation summary") if mediation_path else {}
     _validate_mediation_summary(mediation, failures)
+    packet_path = _path_from_ref((execution.get("artifacts") or {}).get("packet")) if isinstance(execution, dict) else None
+    packet = _read_json(packet_path, failures, "frontend packet summary") if packet_path else {}
+    scenario_binding = _scenario_binding(packet)
     outputs = _collect_outputs(mediation, failures)
     verdicts = _verdict_counts(outputs)
     frontend_state = _frontend_state(frontend_root)
@@ -132,6 +135,7 @@ def run_closeout(
         outputs=outputs,
         verdicts=verdicts,
         frontend_state=frontend_state,
+        scenario_binding=scenario_binding,
         allowed_changed_files=allowed,
         ack_reconciliation=ack_reconciliation,
         failures=failures,
@@ -160,7 +164,9 @@ def run_closeout(
         "closeout_id": closeout_id,
         "source_execution_summary": source_ref,
         "source_mediation_summary": artifact_ref(mediation_path) if mediation_path and mediation_path.is_file() else None,
+        "source_frontend_packet": artifact_ref(packet_path) if packet_path and packet_path.is_file() else None,
         "authorization_id": execution.get("authorization_id"),
+        "scenario_binding": scenario_binding,
         "operator_reconciliation": {
             "operator_id": operator_id,
             "operator_decision": operator_decision,
@@ -294,6 +300,7 @@ def _validate_operator_reconciliation(
     outputs: list[dict[str, Any]],
     verdicts: dict[str, int],
     frontend_state: dict[str, Any],
+    scenario_binding: dict[str, Any],
     allowed_changed_files: list[str],
     ack_reconciliation: bool,
     failures: list[str],
@@ -311,14 +318,16 @@ def _validate_operator_reconciliation(
     if selected_output is None and operator_decision in {"closeout_no_apply", "approve_bounded_apply_request"}:
         failures.append("selected_participant is required for closeout_no_apply or approve_bounded_apply_request")
     if operator_decision == "approve_bounded_apply_request":
-        if verdicts.get("reject", 0) or verdicts.get("revise", 0):
-            failures.append("bounded apply request cannot be approved while any Agent verdict is reject or revise")
-        if frontend_state.get("app_shell_panel_registry_already_decomposed") is True:
+        if verdicts.get("reject", 0):
+            failures.append("bounded apply request cannot be approved while any Agent verdict is reject")
+        if verdicts.get("revise", 0) and not _statement_records_revision_constraints(operator_statement):
+            failures.append("bounded apply request with revise verdict requires explicit revision constraints in operator_statement")
+        if _is_app_shell_panel_registry_slice(scenario_binding) and frontend_state.get("app_shell_panel_registry_already_decomposed") is True:
             failures.append("bounded apply request is not appropriate: app shell/panel registry decomposition already exists")
         if not allowed_changed_files:
             failures.append("allowed_changed_files are required before bounded apply request input can be ready")
     if operator_decision == "closeout_no_apply":
-        if frontend_state.get("app_shell_panel_registry_already_decomposed") is not True:
+        if _is_app_shell_panel_registry_slice(scenario_binding) and frontend_state.get("app_shell_panel_registry_already_decomposed") is not True:
             failures.append("closeout_no_apply requires evidence that app shell/panel registry decomposition already exists")
     if operator_decision == "request_revision" and not (verdicts.get("revise", 0) or verdicts.get("reject", 0)):
         failures.append("request_revision requires at least one revise or reject verdict")
@@ -365,6 +374,23 @@ def _frontend_state(frontend_root: Path) -> dict[str, Any]:
     }
 
 
+def _scenario_binding(packet: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "scenario_id": packet.get("scenario_id") if isinstance(packet, dict) else None,
+        "patch_slice_id": packet.get("patch_slice_id") if isinstance(packet, dict) else None,
+        "stage": packet.get("stage") if isinstance(packet, dict) else None,
+    }
+
+
+def _is_app_shell_panel_registry_slice(scenario_binding: dict[str, Any]) -> bool:
+    return scenario_binding.get("patch_slice_id") == "app_shell_panel_registry_decomposition"
+
+
+def _statement_records_revision_constraints(operator_statement: str) -> bool:
+    statement = operator_statement.lower()
+    return any(token in statement for token in ("revision", "revise", "constraint", "条件", "修订", "约束"))
+
+
 def _readiness(passed: bool, operator_decision: str) -> dict[str, bool]:
     return {
         "proposer_reviewer_closeout_complete": passed,
@@ -405,6 +431,7 @@ def _summary(closeout: dict[str, Any], closeout_path: Path) -> dict[str, Any]:
         "operator_decision": operator.get("operator_decision"),
         "selected_participant": operator.get("selected_participant"),
         "verdict_counts": (closeout.get("agent_output_summary") or {}).get("verdict_counts"),
+        "scenario_binding": closeout.get("scenario_binding"),
         "readiness": readiness,
         "boundary": closeout.get("boundary"),
         "h3_boundary": closeout.get("h3_boundary"),

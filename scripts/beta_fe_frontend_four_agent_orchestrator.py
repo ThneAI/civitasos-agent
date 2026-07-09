@@ -157,6 +157,50 @@ SCENARIOS: dict[str, FrontendScenario] = {
         safe_next_step="operator_review_before_bounded_fe3_apply_for_app_shell_panel_registry_decomposition",
         excerpt_lines=90,
     ),
+    "fe14-runtime-data-adapter-decomposition": FrontendScenario(
+        scenario_id="fe14-runtime-data-adapter-decomposition",
+        stage="beta_fe14_four_agent_runtime_data_adapter_planning",
+        patch_slice_id="runtime_data_adapter_decomposition",
+        title="Runtime data adapter decomposition",
+        goal=(
+            "Plan a bounded frontend refactor that extracts App.tsx runtime data fetching, A2A/core merge, "
+            "task-pool mapping, runtime-health polling, and WebSocket subscription wiring into typed app data modules "
+            "without changing auth, routes, backend contracts, or visual behavior."
+        ),
+        current_state=(
+            "AppShell.tsx and panelRegistry.ts already own navigation and panel rendering.",
+            "App.tsx still owns runtime data fetching, A2A/core Agent merge logic, task-pool to AppTask mapping, runtime-health polling, and WebSocket subscription wiring.",
+            "TaskReadAdapter already exists for task-pool read normalization and should be reused rather than duplicated.",
+            "This FE-14 gate is planning-only; it must not authorize direct code mutation.",
+        ),
+        allowed_files=(
+            "src/App.tsx",
+            "src/app/useRuntimeData.ts",
+            "src/app/useRuntimeData.test.ts",
+            "src/app/runtimeDataModel.ts",
+            "src/app/runtimeDataModel.test.ts",
+        ),
+        forbidden_changes=(
+            "backend API contract",
+            "AuthContext behavior",
+            "I18n or Theme context behavior",
+            "route semantics",
+            "visual layout or panel registry redesign",
+            "task-pool HTTP endpoint shape",
+            "deploy or production flags",
+        ),
+        focus_files=(
+            "src/App.tsx",
+            "src/app/AppShell.tsx",
+            "src/app/panelRegistry.ts",
+            "src/adapters/TaskReadAdapter.ts",
+            "src/adapters/taskReadModel.ts",
+            "src/services/apiClient.ts",
+            "src/services/websocket.ts",
+        ),
+        safe_next_step="operator_review_before_bounded_fe3_apply_for_runtime_data_adapter_decomposition",
+        excerpt_lines=140,
+    ),
 }
 
 
@@ -473,12 +517,14 @@ This is a CivitasOS-mediated task. You will only respond after your worker ident
 
 
 def _participant_context(participant_id: str, scenario: FrontendScenario, full_context: str) -> str:
-    if participant_id != "local-gpu-agent":
+    if participant_id not in {"local-gpu-agent", "claude-cli-agent"}:
         return full_context
     state = "\n".join(f"- {item}" for item in scenario.current_state)
     allowed = "\n".join(f"- `{item}`" for item in scenario.allowed_files)
     forbidden = "\n".join(f"- {item}" for item in scenario.forbidden_changes)
-    return f"""# {scenario.title} Local Verification Context
+    context_label = "Architecture Review" if participant_id == "claude-cli-agent" else "Local Verification"
+    raw_excerpt_note = "this architecture reviewer receives no raw implementation excerpts" if participant_id == "claude-cli-agent" else "this local reviewer receives no raw implementation excerpts"
+    return f"""# {scenario.title} {context_label} Context
 
 Target slice:
 
@@ -501,7 +547,7 @@ Verification focus:
 - Confirm the proposal is limited to the candidate allowed files.
 - Require focused unit tests plus build and rollback checks.
 - Reject recommendations that introduce routes, new providers, backend contracts, deploy flags, or visual redesign.
-- Do not infer new behavior from unrelated source excerpts; this local reviewer receives no raw implementation excerpts.
+- Do not infer new behavior from unrelated source excerpts; {raw_excerpt_note}.
 """
 
 

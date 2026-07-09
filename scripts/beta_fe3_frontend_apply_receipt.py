@@ -29,6 +29,7 @@ AUTHORIZATION_SCHEMA = "beta-fe3-bounded-apply-single-use-authorization:v1"
 FE26_SCHEMA = "beta-fe26-agent-runner-mediation-summary:v1"
 FE12_SCHEMA = "beta-fe12-four-agent-frontend-mediation-summary:v1"
 FE_ORCHESTRATION_SCHEMA = "beta-fe-four-agent-frontend-orchestration-summary:v1"
+PRIVATE_BETA_CLOSEOUT_SCHEMA = "private-beta-controlled-proposer-reviewer-closeout-summary:v1"
 ALLOWED_CHANGED_FILES = {
     "src/adapters/taskReadModel.ts",
     "src/adapters/TaskReadAdapter.ts",
@@ -204,8 +205,13 @@ def validate_source_mediation_summary(summary: Any, failures: list[str]) -> None
         _validate_fe12(summary, failures)
     elif schema == FE_ORCHESTRATION_SCHEMA:
         _validate_four_agent_orchestration(summary, failures)
+    elif schema == PRIVATE_BETA_CLOSEOUT_SCHEMA:
+        _validate_private_beta_closeout(summary, failures)
     else:
-        failures.append(f"source mediation schema_version must be {FE26_SCHEMA}, {FE12_SCHEMA}, or {FE_ORCHESTRATION_SCHEMA}")
+        failures.append(
+            "source mediation schema_version must be "
+            f"{FE26_SCHEMA}, {FE12_SCHEMA}, {FE_ORCHESTRATION_SCHEMA}, or {PRIVATE_BETA_CLOSEOUT_SCHEMA}"
+        )
 
 
 def _validate_fe26(summary: dict[str, Any], failures: list[str]) -> None:
@@ -265,6 +271,25 @@ def _validate_four_agent_orchestration(summary: dict[str, Any], failures: list[s
     if _text(summary.get("safe_next_step")) == "operator_review_required_before_any_apply":
         failures.append("four-Agent orchestration safe_next_step must authorize bounded FE-3 preparation")
     _validate_common_boundaries(summary, failures, "four-Agent orchestration")
+
+
+def _validate_private_beta_closeout(summary: dict[str, Any], failures: list[str]) -> None:
+    if summary.get("passed") is not True:
+        failures.append("private Beta proposer/reviewer closeout summary must be passed")
+    if summary.get("decision") != "controlled_proposer_reviewer_ready_for_bounded_apply_request":
+        failures.append("private Beta proposer/reviewer closeout decision must be ready for bounded apply request")
+    readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
+    if readiness.get("bounded_apply_authorization_request_ready") is not True:
+        failures.append("private Beta closeout must mark bounded_apply_authorization_request_ready=true")
+    if readiness.get("bounded_apply_authorization_granted") is not False:
+        failures.append("private Beta closeout must not grant bounded apply authorization")
+    scenario = summary.get("scenario_binding") if isinstance(summary.get("scenario_binding"), dict) else {}
+    if not _text(scenario.get("patch_slice_id")):
+        failures.append("private Beta closeout must include scenario_binding.patch_slice_id")
+    verdicts = summary.get("verdict_counts") if isinstance(summary.get("verdict_counts"), dict) else {}
+    if int(verdicts.get("reject") or 0) > 0:
+        failures.append("private Beta closeout must not contain reject verdicts before bounded apply request")
+    _validate_common_boundaries(summary, failures, "private Beta proposer/reviewer closeout")
 
 
 def _validate_common_boundaries(summary: dict[str, Any], failures: list[str], label: str) -> None:

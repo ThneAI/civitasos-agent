@@ -25,6 +25,12 @@ def _load(name: str, path: Path):
 module = _load("beta_fe26_agent_runner_mediation", SCRIPTS / "beta_fe26_agent_runner_mediation.py")
 
 
+def test_beta_fe26_extracts_reasoning_content_when_content_empty() -> None:
+    payload = {"choices": [{"message": {"content": "", "reasoning_content": "Patch proposal verdict: proceed"}}]}
+
+    assert module._extract_openai_content(payload) == "Patch proposal verdict: proceed"
+
+
 def test_beta_fe26_posts_claims_generates_after_claim_and_delivers(tmp_path: Path) -> None:
     packet_path = _write_fe2_packet(tmp_path / "fe2_packet.json", tmp_path)
     client = FakeClient()

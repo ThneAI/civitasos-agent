@@ -91,6 +91,31 @@ def test_private_beta_proposer_reviewer_execution_requires_ack(tmp_path: Path) -
     assert any("acknowledgement" in item for item in summary["failure_reasons"])
 
 
+def test_private_beta_proposer_reviewer_execution_blocks_scenario_drift(tmp_path: Path) -> None:
+    authorization = _write_authorization_chain(
+        tmp_path,
+        scenario_id="fe14-runtime-data-adapter-decomposition",
+        patch_slice_id="runtime_data_adapter_decomposition",
+    )
+    summary = module.run_execution(
+        authorization_path=authorization,
+        frontend_root=tmp_path / "frontend",
+        output_root=tmp_path / "blocked",
+        backend_url="http://localhost.example.test:8099",
+        scenario_id="fake-scenario",
+        runner_specs=["deepseek-api-agent=command:echo ok", "claude-cli-agent=command:echo ok", "hermes-cli-agent=command:echo ok", "local-gpu-agent=command:echo ok"],
+        service_token_secret="test-secret",
+        service_id="test-private-beta-exec",
+        authorization_consumption_path=None,
+        operator_id="operator-cc",
+        operator_statement="Attempt scenario drift.",
+        ack_consume_authorization=True,
+    )
+    assert summary["passed"] is False
+    assert any("execution scenario must match authorization scenario_id" in item for item in summary["failure_reasons"])
+    assert summary["readiness"]["authorization_consumed"] is False
+
+
 def _patch_execution_dependencies(monkeypatch, tmp_path: Path) -> None:
     class FakeClient:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -151,7 +176,7 @@ def _patch_execution_dependencies(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(module.fe26, "_auth_report", lambda client: {"auth_method": "service_token", "token_recorded": False})
 
 
-def _write_authorization_chain(tmp_path: Path) -> Path:
+def _write_authorization_chain(tmp_path: Path, scenario_id: str | None = None, patch_slice_id: str | None = None) -> Path:
     mediation = tmp_path / "source_mediation.json"
     receipts = []
     for participant_id in ["deepseek-api-agent", "claude-cli-agent", "hermes-cli-agent", "local-gpu-agent"]:
@@ -209,6 +234,7 @@ def _write_authorization_chain(tmp_path: Path) -> Path:
                     "proposer_agents": ["deepseek-api-agent"],
                     "reviewer_agents": ["claude-cli-agent", "hermes-cli-agent", "local-gpu-agent"],
                     "service_token_scopes": ["agents:read", "pool:post", "pool:read", "pool:claim", "pool:write"],
+                    **({"scenario_id": scenario_id, "patch_slice_id": patch_slice_id} if scenario_id and patch_slice_id else {}),
                 },
                 "boundary": {
                     "patch_proposal_allowed": True,
