@@ -73,6 +73,29 @@ def test_closeout_blocks_broken_stage_hash_chain(tmp_path: Path) -> None:
     assert any("fe5.source_fe4_receipt sha256 mismatch" in item for item in handoff["failure_reasons"])
 
 
+def test_closeout_accepts_private_beta_proposer_reviewer_closeout(tmp_path: Path) -> None:
+    mediation, stages = _chain_artifacts(tmp_path / "chain", "chain-private-beta", pr_number=6)
+    _write_private_beta_closeout_summary(mediation)
+    fe3 = json.loads(stages["fe3"].read_text(encoding="utf-8"))
+    fe3["source_fe26_summary"] = _ref(mediation)
+    stages["fe3"].write_text(json.dumps(fe3, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _refresh_stage_hash_chain(stages)
+
+    handoff = module.closeout_frontend_chain(
+        chain_id="chain-private-beta",
+        mediation_summary=mediation,
+        stage_paths=stages,
+        output_root=tmp_path / "out-private",
+        roles={"operator": "operator", "monitoring_owner": "monitor", "audit_owner": "audit"},
+    )
+
+    assert handoff["passed"] is True
+    assert handoff["handoff_metrics"]["pool_task_count"] == 3
+    assert handoff["handoff_metrics"]["participant_ids"] == ["deepseek-api-agent", "hermes-cli-agent", "local-gpu-agent"]
+    assert handoff["handoff_metrics"]["claim_observed_count"] == 3
+    assert handoff["handoff_metrics"]["delivery_observed_count"] == 3
+
+
 def test_cumulative_index_aggregates_two_chains(tmp_path: Path) -> None:
     handoffs = []
     for index, chain_id in enumerate(("chain-a", "chain-b"), start=1):
@@ -218,6 +241,80 @@ def _chain_artifacts(root: Path, chain_id: str, pr_number: int) -> tuple[Path, d
         },
     )
     return mediation, stages
+
+
+def _write_private_beta_closeout_summary(path: Path) -> Path:
+    source_execution = _write(path.parent / "source_execution.json", {"passed": True})
+    source_mediation = _write(path.parent / "source_mediation.json", {"passed": True})
+    detail = _write(
+        path.parent / "private_beta_closeout.json",
+        {
+            "schema_version": "private-beta-controlled-proposer-reviewer-closeout:v1",
+            "passed": True,
+            "decision": "controlled_proposer_reviewer_ready_for_bounded_apply_request",
+            "source_execution_summary": _ref(source_execution),
+            "source_mediation_summary": _ref(source_mediation),
+            "agent_output_summary": {
+                "output_count": 3,
+                "outputs": [
+                    {
+                        "participant_id": "deepseek-api-agent",
+                        "claim_observed": True,
+                        "generation_observed_after_claim": True,
+                        "delivery_observed": True,
+                    },
+                    {
+                        "participant_id": "hermes-cli-agent",
+                        "claim_observed": True,
+                        "generation_observed_after_claim": True,
+                        "delivery_observed": True,
+                    },
+                    {
+                        "participant_id": "local-gpu-agent",
+                        "claim_observed": True,
+                        "generation_observed_after_claim": True,
+                        "delivery_observed": True,
+                    },
+                ],
+            },
+            "boundary": _safe_stage_boundary(),
+            "h3_boundary": _h3(),
+        },
+    )
+    return _write(
+        path,
+        {
+            "schema_version": "private-beta-controlled-proposer-reviewer-closeout-summary:v1",
+            "passed": True,
+            "decision": "controlled_proposer_reviewer_ready_for_bounded_apply_request",
+            "operator_decision": "approve_bounded_apply_request",
+            "selected_participant": "deepseek-api-agent",
+            "verdict_counts": {"proceed": 2, "revise": 1, "reject": 0, "inconclusive": 0},
+            "readiness": {
+                "bounded_apply_authorization_request_ready": True,
+                "bounded_apply_authorization_granted": False,
+            },
+            "closeout": _ref(detail),
+            "boundary": _safe_stage_boundary(),
+            "h3_boundary": _h3(),
+        },
+    )
+
+
+def _refresh_stage_hash_chain(stages: dict[str, Path]) -> None:
+    previous_refs = {
+        "fe4": ("source_fe3_receipt", "fe3"),
+        "fe5": ("source_fe4_receipt", "fe4"),
+        "fe6": ("source_fe5_receipt", "fe5"),
+        "fe7": ("source_fe6_receipt", "fe6"),
+        "fe8": ("source_fe7_reconciliation", "fe7"),
+        "fe9": ("source_fe8_receipt", "fe8"),
+        "fe10": ("source_fe9_receipt", "fe9"),
+    }
+    for stage, (field, previous) in previous_refs.items():
+        payload = json.loads(stages[stage].read_text(encoding="utf-8"))
+        payload[field] = _ref(stages[previous])
+        stages[stage].write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _write_stage(root: Path, stage: str, extra: dict) -> Path:

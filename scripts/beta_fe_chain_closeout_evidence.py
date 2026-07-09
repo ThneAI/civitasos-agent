@@ -40,6 +40,8 @@ except ModuleNotFoundError:
 CHAIN_SCHEMA = "beta-fe-frontend-chain-closeout-summary:v1"
 HANDOFF_SCHEMA = "beta-fe-frontend-chain-operator-handoff:v1"
 INDEX_SCHEMA = "beta-fe-frontend-cumulative-evidence-index:v1"
+PRIVATE_BETA_CLOSEOUT_SUMMARY_SCHEMA = "private-beta-controlled-proposer-reviewer-closeout-summary:v1"
+PRIVATE_BETA_CLOSEOUT_SCHEMA = "private-beta-controlled-proposer-reviewer-closeout:v1"
 
 STAGES = {
     "fe3": ("beta-fe3-frontend-apply-receipt:v1", "beta_fe3_frontend_apply_receipt_passed"),
@@ -104,6 +106,9 @@ def required_text(value: Any, failures: list[str], label: str) -> str:
 
 
 def validate_mediation(value: dict[str, Any], failures: list[str]) -> None:
+    if value.get("schema_version") == PRIVATE_BETA_CLOSEOUT_SUMMARY_SCHEMA:
+        validate_private_beta_closeout_summary(value, failures)
+        return
     if value.get("passed") is not True:
         failures.append("mediation summary must be passed")
     participants = value.get("participants")
@@ -120,6 +125,62 @@ def validate_mediation(value: dict[str, Any], failures: list[str]) -> None:
     validate_ref(value.get("mediation_summary"), failures, "mediation_summary.mediation_summary")
     validate_ref(value.get("reconciliation"), failures, "mediation_summary.reconciliation")
     validate_safe_boundaries(value, failures, "mediation summary")
+
+
+def validate_private_beta_closeout_summary(value: dict[str, Any], failures: list[str]) -> None:
+    if value.get("passed") is not True:
+        failures.append("private Beta closeout summary must be passed")
+    if value.get("decision") != "controlled_proposer_reviewer_ready_for_bounded_apply_request":
+        failures.append("private Beta closeout summary must be ready for bounded apply request")
+    if value.get("operator_decision") != "approve_bounded_apply_request":
+        failures.append("private Beta closeout summary must record operator approve_bounded_apply_request")
+    readiness = value.get("readiness") if isinstance(value.get("readiness"), dict) else {}
+    if readiness.get("bounded_apply_authorization_request_ready") is not True:
+        failures.append("private Beta closeout summary must mark bounded apply request ready")
+    if readiness.get("bounded_apply_authorization_granted") is not False:
+        failures.append("private Beta closeout summary must not grant bounded apply authorization")
+    verdict_counts = value.get("verdict_counts") if isinstance(value.get("verdict_counts"), dict) else {}
+    if int(verdict_counts.get("reject") or 0) != 0:
+        failures.append("private Beta closeout summary must not contain reject verdicts")
+    validate_safe_boundaries(value, failures, "private Beta closeout summary")
+
+    closeout_path = validate_ref(value.get("closeout"), failures, "private Beta closeout summary.closeout")
+    if closeout_path is None:
+        return
+    closeout = read_json_or_empty(closeout_path, failures, "private Beta closeout detail")
+    if closeout.get("schema_version") != PRIVATE_BETA_CLOSEOUT_SCHEMA:
+        failures.append(f"private Beta closeout detail schema_version must be {PRIVATE_BETA_CLOSEOUT_SCHEMA}")
+    if closeout.get("passed") is not True:
+        failures.append("private Beta closeout detail must be passed")
+    if closeout.get("decision") != "controlled_proposer_reviewer_ready_for_bounded_apply_request":
+        failures.append("private Beta closeout detail must be ready for bounded apply request")
+    validate_safe_boundaries(closeout, failures, "private Beta closeout detail")
+    validate_ref(closeout.get("source_execution_summary"), failures, "private Beta closeout source_execution_summary")
+    validate_ref(closeout.get("source_mediation_summary"), failures, "private Beta closeout source_mediation_summary")
+
+    output_summary = closeout.get("agent_output_summary") if isinstance(closeout.get("agent_output_summary"), dict) else {}
+    outputs = output_summary.get("outputs") if isinstance(output_summary.get("outputs"), list) else []
+    if len(outputs) < 3:
+        failures.append("private Beta closeout detail must contain at least three delivered participant outputs")
+    participant_ids = {
+        str(output.get("participant_id") or "").strip()
+        for output in outputs
+        if isinstance(output, dict)
+    }
+    participant_ids.discard("")
+    if len(participant_ids) != len(outputs):
+        failures.append("private Beta closeout detail participant ids must be unique and non-empty")
+    for output in outputs:
+        if not isinstance(output, dict):
+            failures.append("private Beta closeout output must be an object")
+            continue
+        participant = str(output.get("participant_id") or "unknown")
+        if output.get("claim_observed") is not True:
+            failures.append(f"private Beta closeout output {participant} must observe claim")
+        if output.get("generation_observed_after_claim") is not True:
+            failures.append(f"private Beta closeout output {participant} must observe generation after claim")
+        if output.get("delivery_observed") is not True:
+            failures.append(f"private Beta closeout output {participant} must observe delivery")
 
 
 def validate_stages(
@@ -178,7 +239,8 @@ def validate_stages(
 
 
 def metrics(mediation: dict[str, Any], stages: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    participants = sorted(set(str(item) for item in mediation.get("participants", []) if item))
+    mediation_metrics = mediation_observation_metrics(mediation)
+    participants = mediation_metrics["participants"]
     reconciliation = stages["fe7"].get("review_reconciliation")
     reconciliation = reconciliation if isinstance(reconciliation, dict) else {}
     verdicts = reconciliation.get("all_agent_verdicts")
@@ -190,10 +252,10 @@ def metrics(mediation: dict[str, Any], stages: dict[str, dict[str, Any]]) -> dic
         "mediation_observed": True,
         "participant_ids": participants,
         "participant_count": len(participants),
-        "pool_task_count": int(mediation.get("task_receipt_count") or 0),
-        "claim_observed_count": int(mediation.get("claim_observed_count") or 0),
-        "generation_after_claim_observed_count": int(mediation.get("generation_after_claim_observed_count") or 0),
-        "delivery_observed_count": int(mediation.get("delivery_observed_count") or 0),
+        "pool_task_count": mediation_metrics["task_receipt_count"],
+        "claim_observed_count": mediation_metrics["claim_observed_count"],
+        "generation_after_claim_observed_count": mediation_metrics["generation_after_claim_observed_count"],
+        "delivery_observed_count": mediation_metrics["delivery_observed_count"],
         "passed_gate_count": sum(1 for value in stages.values() if value.get("passed") is True),
         "changed_files": stages["fe3"].get("changed_files") or [],
         "changed_file_count": len(stages["fe3"].get("changed_files") or []),
@@ -211,6 +273,42 @@ def metrics(mediation: dict[str, Any], stages: dict[str, dict[str, Any]]) -> dic
         "preview_check_count": len(frontend_checks or []) + len(backend_checks or []),
         "preview_auth_method": (stages["fe10"].get("backend_auth") or {}).get("auth_method"),
     }
+
+
+def mediation_observation_metrics(mediation: dict[str, Any]) -> dict[str, Any]:
+    if mediation.get("schema_version") == PRIVATE_BETA_CLOSEOUT_SUMMARY_SCHEMA:
+        detail = private_beta_closeout_detail(mediation)
+        output_summary = detail.get("agent_output_summary") if isinstance(detail.get("agent_output_summary"), dict) else {}
+        outputs = output_summary.get("outputs") if isinstance(output_summary.get("outputs"), list) else []
+        participants = sorted({
+            str(output.get("participant_id") or "")
+            for output in outputs
+            if isinstance(output, dict) and str(output.get("participant_id") or "")
+        })
+        return {
+            "participants": participants,
+            "task_receipt_count": len(outputs),
+            "claim_observed_count": sum(1 for output in outputs if isinstance(output, dict) and output.get("claim_observed") is True),
+            "generation_after_claim_observed_count": sum(1 for output in outputs if isinstance(output, dict) and output.get("generation_observed_after_claim") is True),
+            "delivery_observed_count": sum(1 for output in outputs if isinstance(output, dict) and output.get("delivery_observed") is True),
+        }
+    return {
+        "participants": sorted(set(str(item) for item in mediation.get("participants", []) if item)),
+        "task_receipt_count": int(mediation.get("task_receipt_count") or 0),
+        "claim_observed_count": int(mediation.get("claim_observed_count") or 0),
+        "generation_after_claim_observed_count": int(mediation.get("generation_after_claim_observed_count") or 0),
+        "delivery_observed_count": int(mediation.get("delivery_observed_count") or 0),
+    }
+
+
+def private_beta_closeout_detail(mediation: dict[str, Any]) -> dict[str, Any]:
+    ref = mediation.get("closeout")
+    if not isinstance(ref, dict):
+        return {}
+    path = Path(str(ref.get("path") or ""))
+    if not path.is_file():
+        return {}
+    return read_json_or_empty(path, [], "private Beta closeout detail")
 
 
 def build_chain_summary(
