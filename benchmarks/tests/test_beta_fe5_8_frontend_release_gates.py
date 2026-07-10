@@ -204,6 +204,23 @@ def test_local_review_accepts_runtime_data_adapter_slice() -> None:
     assert review["matched_profile"] == "runtime_data_adapter"
 
 
+def test_local_review_accepts_observability_presentation_slice() -> None:
+    diff = "\n".join([
+        "diff --git a/src/components/ObservabilityPanel.tsx b/src/components/ObservabilityPanel.tsx",
+        "+import { OBSERVABILITY_TABS, parseMetricLines, statusColor, tabStyle } from './observabilityPresentation';",
+        "diff --git a/src/components/observabilityPresentation.ts b/src/components/observabilityPresentation.ts",
+        "+export const OBSERVABILITY_TABS = [];",
+        "+export const parseMetricLines = () => [];",
+        "+export const statusColor = () => '#4CAF50';",
+        "+export const tabStyle = () => ({});",
+    ])
+
+    review = module._local_review(diff)
+
+    assert review["verdict"] == "approved"
+    assert review["matched_profile"] == "observability_presentation"
+
+
 def test_external_review_accepts_shared_llm_env_keys(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / "external.env"
     env_file.write_text(

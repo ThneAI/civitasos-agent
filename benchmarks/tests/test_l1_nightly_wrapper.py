@@ -117,6 +117,21 @@ def test_nightly_wrapper_wires_l1_pilot_contract_chain() -> None:
     assert 'if [ "$RUN_BETA_FE_FRONTEND_CHAIN_INDEX_ONLY" = "1" ]; then' in text
     assert 'if [ "$RUN_BETA_FE_FRONTEND_CHAIN_INDEX" = "1" ]; then' in text
     assert 'Beta FE frontend cumulative evidence index completed: $BETA_FE_FRONTEND_CHAIN_INDEX_OUTPUT' in text
+    assert 'RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION="${RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION:-0}"' in text
+    assert 'RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION_ONLY="${RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION_ONLY:-0}"' in text
+    assert 'PRIVATE_BETA_VM_PREVIEW_EXECUTION_ACK="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_ACK:-0}"' in text
+    assert 'RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX="${RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX:-0}"' in text
+    assert 'RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX_ONLY="${RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX_ONLY:-0}"' in text
+    assert 'PRIVATE_BETA_VM_PREVIEW_READINESS_SUMMARY_PATHS="${PRIVATE_BETA_VM_PREVIEW_READINESS_SUMMARY_PATHS:-$PRIVATE_BETA_VM_PREVIEW_EXECUTION_OUTPUT_ROOT/private_beta_vm_preview_chain_summary.json}"' in text
+    assert "run_private_beta_vm_preview_execution()" in text
+    assert "run_private_beta_vm_preview_readiness_index()" in text
+    assert 'if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION_ONLY" = "1" ]; then' in text
+    assert 'if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX_ONLY" = "1" ]; then' in text
+    assert 'if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION" = "1" ]; then' in text
+    assert 'if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX" = "1" ]; then' in text
+    assert 'PRIVATE_BETA_VM_PREVIEW_EXECUTION_ACK=1' in text
+    assert 'scripts/private_beta_vm_preview_execution.py' in text
+    assert 'scripts/private_beta_vm_preview_readiness.py' in text
     assert 'RUN_POST_H3_OBSERVER_READINESS_CHECK="${RUN_POST_H3_OBSERVER_READINESS_CHECK:-0}"' in text
     assert 'RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY="${RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY:-0}"' in text
     assert 'POST_H3_OBSERVER_READINESS_AB_SUMMARY="${POST_H3_OBSERVER_READINESS_AB_SUMMARY:-}"' in text

@@ -237,6 +237,24 @@ RUN_BETA_FE_FRONTEND_CHAIN_INDEX_ONLY="${RUN_BETA_FE_FRONTEND_CHAIN_INDEX_ONLY:-
 BETA_FE_FRONTEND_CHAIN_INDEX_HANDOFF_PATHS="${BETA_FE_FRONTEND_CHAIN_INDEX_HANDOFF_PATHS:-$BETA_FE_FRONTEND_CHAIN_CLOSEOUT_OUTPUT_ROOT/frontend_release_operator_handoff.json}"
 BETA_FE_FRONTEND_CHAIN_INDEX_OUTPUT="${BETA_FE_FRONTEND_CHAIN_INDEX_OUTPUT:-$RUNS_ROOT/beta_fe_frontend_cumulative_evidence_index.json}"
 BETA_FE_FRONTEND_CHAIN_INDEX_MIN_CHAINS="${BETA_FE_FRONTEND_CHAIN_INDEX_MIN_CHAINS:-1}"
+RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION="${RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION:-0}"
+RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION_ONLY="${RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION_ONLY:-0}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_AUTHORIZATION="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_AUTHORIZATION:-}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_OUTPUT_ROOT="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_OUTPUT_ROOT:-$RUNS_ROOT/private_beta_vm_preview}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_BACKEND_BIN="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_BACKEND_BIN:-../civitasos-backend/target/debug/api_only}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_FRONTEND_BUILD_DIR="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_FRONTEND_BUILD_DIR:-../civitasos-frontend/build}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_NODES="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_NODES:-vm1,vm1,192.168.56.4 vm2,vm2,192.168.56.5 vm3,vm3,192.168.56.6}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_REMOTE_ROOT="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_REMOTE_ROOT:-/home/cal/civitasos_beta5_real_multivm_preview}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_BACKEND_PORT="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_BACKEND_PORT:-18181}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_FRONTEND_PORT="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_FRONTEND_PORT:-18182}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_PREPARED_RUN_ROOT="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_PREPARED_RUN_ROOT:-}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_OPERATOR_ID="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_OPERATOR_ID:-local-operator-cc}"
+PRIVATE_BETA_VM_PREVIEW_EXECUTION_ACK="${PRIVATE_BETA_VM_PREVIEW_EXECUTION_ACK:-0}"
+RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX="${RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX:-0}"
+RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX_ONLY="${RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX_ONLY:-0}"
+PRIVATE_BETA_VM_PREVIEW_READINESS_SUMMARY_PATHS="${PRIVATE_BETA_VM_PREVIEW_READINESS_SUMMARY_PATHS:-$PRIVATE_BETA_VM_PREVIEW_EXECUTION_OUTPUT_ROOT/private_beta_vm_preview_chain_summary.json}"
+PRIVATE_BETA_VM_PREVIEW_READINESS_OUTPUT="${PRIVATE_BETA_VM_PREVIEW_READINESS_OUTPUT:-$RUNS_ROOT/private_beta_vm_preview_readiness_index.json}"
+PRIVATE_BETA_VM_PREVIEW_READINESS_MIN_PREVIEWS="${PRIVATE_BETA_VM_PREVIEW_READINESS_MIN_PREVIEWS:-1}"
 RUN_POST_H3_OBSERVER_READINESS_CHECK="${RUN_POST_H3_OBSERVER_READINESS_CHECK:-0}"
 RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY="${RUN_POST_H3_OBSERVER_READINESS_CHECK_ONLY:-0}"
 POST_H3_OBSERVER_READINESS_AB_SUMMARY="${POST_H3_OBSERVER_READINESS_AB_SUMMARY:-}"
@@ -692,6 +710,52 @@ run_beta_fe_frontend_chain_index() {
     index_args+=(--handoff "$handoff_path")
   done
   "$PYTHON" scripts/beta_fe_frontend_chain_closeout.py "${index_args[@]}"
+}
+
+run_private_beta_vm_preview_execution() {
+  if [ "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_ACK" != "1" ]; then
+    echo "Private Beta VM preview execution requires PRIVATE_BETA_VM_PREVIEW_EXECUTION_ACK=1" >&2
+    exit 1
+  fi
+  if [ -z "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_AUTHORIZATION" ] || [ ! -s "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_AUTHORIZATION" ]; then
+    echo "Private Beta VM preview authorization not found: ${PRIVATE_BETA_VM_PREVIEW_EXECUTION_AUTHORIZATION:-<missing>}" >&2
+    exit 1
+  fi
+  local -a execution_args=(
+    --single-use-authorization "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_AUTHORIZATION"
+    --output-root "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_OUTPUT_ROOT"
+    --backend-bin "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_BACKEND_BIN"
+    --frontend-build-dir "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_FRONTEND_BUILD_DIR"
+    --remote-root "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_REMOTE_ROOT"
+    --backend-port "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_BACKEND_PORT"
+    --frontend-port "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_FRONTEND_PORT"
+    --operator-id "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_OPERATOR_ID"
+    --ack-private-beta-vm-preview-execution
+  )
+  local preview_node
+  for preview_node in $PRIVATE_BETA_VM_PREVIEW_EXECUTION_NODES; do
+    execution_args+=(--node "$preview_node")
+  done
+  if [ -n "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_PREPARED_RUN_ROOT" ]; then
+    execution_args+=(--prepared-run-root "$PRIVATE_BETA_VM_PREVIEW_EXECUTION_PREPARED_RUN_ROOT")
+  fi
+  "$PYTHON" scripts/private_beta_vm_preview_execution.py "${execution_args[@]}"
+}
+
+run_private_beta_vm_preview_readiness_index() {
+  local -a index_args=(
+    --output "$PRIVATE_BETA_VM_PREVIEW_READINESS_OUTPUT"
+    --min-previews "$PRIVATE_BETA_VM_PREVIEW_READINESS_MIN_PREVIEWS"
+  )
+  local summary_path
+  for summary_path in $PRIVATE_BETA_VM_PREVIEW_READINESS_SUMMARY_PATHS; do
+    if [ -z "$summary_path" ] || [ ! -s "$summary_path" ]; then
+      echo "Private Beta VM preview readiness summary not found: ${summary_path:-<missing>}" >&2
+      exit 1
+    fi
+    index_args+=(--summary "$summary_path")
+  done
+  "$PYTHON" scripts/private_beta_vm_preview_readiness.py "${index_args[@]}"
 }
 
 run_post_h3_observer_readiness_check() {
@@ -1772,6 +1836,16 @@ if [ "$REQUIRE_H2_ACTIVE" = "1" ]; then
     echo "  beta_fe_frontend_chain_index_output: $BETA_FE_FRONTEND_CHAIN_INDEX_OUTPUT"
     echo "  beta_fe_frontend_chain_index_min_chains: $BETA_FE_FRONTEND_CHAIN_INDEX_MIN_CHAINS"
   fi
+  echo "  private_beta_vm_preview_execution: $RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION"
+  if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION" = "1" ]; then
+    echo "  private_beta_vm_preview_execution_output_root: $PRIVATE_BETA_VM_PREVIEW_EXECUTION_OUTPUT_ROOT"
+    echo "  private_beta_vm_preview_execution_ack: $PRIVATE_BETA_VM_PREVIEW_EXECUTION_ACK"
+  fi
+  echo "  private_beta_vm_preview_readiness_index: $RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX"
+  if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX" = "1" ]; then
+    echo "  private_beta_vm_preview_readiness_output: $PRIVATE_BETA_VM_PREVIEW_READINESS_OUTPUT"
+    echo "  private_beta_vm_preview_readiness_min_previews: $PRIVATE_BETA_VM_PREVIEW_READINESS_MIN_PREVIEWS"
+  fi
   echo "  h2_value_report: $RUN_H2_VALUE_CALIBRATION_REPORT"
   if [ "$RUN_H2_VALUE_CALIBRATION_REPORT" = "1" ]; then
     echo "  h2_value_report_path: $H2_VALUE_CALIBRATION_REPORT"
@@ -2149,6 +2223,18 @@ fi
 if [ "$RUN_BETA_FE_FRONTEND_CHAIN_INDEX_ONLY" = "1" ]; then
   run_beta_fe_frontend_chain_index
   echo "Beta FE frontend cumulative evidence index completed: $BETA_FE_FRONTEND_CHAIN_INDEX_OUTPUT"
+  exit 0
+fi
+
+if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION_ONLY" = "1" ]; then
+  run_private_beta_vm_preview_execution
+  echo "Private Beta VM preview execution completed: $PRIVATE_BETA_VM_PREVIEW_EXECUTION_OUTPUT_ROOT/private_beta_vm_preview_chain_summary.json"
+  exit 0
+fi
+
+if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX_ONLY" = "1" ]; then
+  run_private_beta_vm_preview_readiness_index
+  echo "Private Beta VM preview readiness index completed: $PRIVATE_BETA_VM_PREVIEW_READINESS_OUTPUT"
   exit 0
 fi
 
@@ -3853,6 +3939,14 @@ fi
 
 if [ "$RUN_BETA_FE_FRONTEND_CHAIN_INDEX" = "1" ]; then
   run_beta_fe_frontend_chain_index
+fi
+
+if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_EXECUTION" = "1" ]; then
+  run_private_beta_vm_preview_execution
+fi
+
+if [ "$RUN_PRIVATE_BETA_VM_PREVIEW_READINESS_INDEX" = "1" ]; then
+  run_private_beta_vm_preview_readiness_index
 fi
 
 if [ "$RUN_BETA_DEPLOYMENT_PREVIEW_READINESS_CHECK" = "1" ]; then

@@ -956,6 +956,7 @@ def _local_review(diff: str) -> dict[str, Any]:
         "task_pool_presentation": ("taskPoolPresentation", "operatorFollowUp", "wakeTraceDetail", "TaskPoolPanel"),
         "app_shell_panel_registry": ("AppShell", "PANEL_REGISTRY", "PanelRenderContext", "panelRegistry"),
         "runtime_data_adapter": ("useRuntimeData", "runtimeDataModel", "mergeA2AAgents", "mapPoolTaskToAppTask"),
+        "observability_presentation": ("ObservabilityPanel", "observabilityPresentation", "OBSERVABILITY_TABS", "parseMetricLines", "statusColor", "tabStyle"),
     }
     profile_matches = {
         name: all(token in diff for token in tokens)
