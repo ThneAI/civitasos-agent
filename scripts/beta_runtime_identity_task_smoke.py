@@ -103,12 +103,37 @@ def main() -> int:
 
             posted = requester.pool_post("general", {"brief": "fresh-state identity task smoke"}, reward=1)
             task_id = str(posted.get("task_id") or posted.get("id"))
+            receipt_status, receipt_response = request(
+                f"/api/v1/a2a/facts/tasks/{task_id}/receipt",
+                token=requester._jwt_token,  # noqa: SLF001
+            )
+            receipt = receipt_response.get("data", {})
+            if receipt_status != 200 or receipt.get("fact_count") != 1:
+                raise RuntimeError(f"task receipt projection failed: {receipt_response}")
             worker.pool_claim(task_id)
             worker.pool_complete(task_id, output={"result": "verified delivery"})
             requester.pool_confirm(task_id)
             completed = requester.pool_get_task(task_id)
             if completed.get("status") != "Completed":
                 raise RuntimeError(f"task did not complete: {completed}")
+            final_receipt_status, final_receipt_response = request(
+                f"/api/v1/a2a/facts/tasks/{task_id}/receipt",
+                token=requester._jwt_token,  # noqa: SLF001
+            )
+            final_receipt = final_receipt_response.get("data", {})
+            event_types = [fact.get("event_type") for fact in final_receipt.get("facts", [])]
+            expected_events = [
+                "task.posted",
+                "task.claimed",
+                "task.delivered",
+                "task.confirmed",
+                "settlement.completed",
+            ]
+            if final_receipt_status != 200 or event_types != expected_events:
+                raise RuntimeError(f"task lifecycle receipt incomplete: {final_receipt_response}")
+            lifecycle = final_receipt.get("lifecycle", {})
+            if lifecycle.get("status") != "completed" or lifecycle.get("settled") is not True:
+                raise RuntimeError(f"task lifecycle projection incomplete: {lifecycle}")
 
             old_token = requester._jwt_token  # noqa: SLF001 - smoke verifies token invalidation.
             old_signing_key = requester._signing_key  # noqa: SLF001
@@ -128,6 +153,8 @@ def main() -> int:
             )
             if status != 200 or rotation_result.get("data", {}).get("rotated") is not True:
                 raise RuntimeError(rotation_result)
+            if not rotation_result.get("data", {}).get("fact_id"):
+                raise RuntimeError(f"rotation fact missing: {rotation_result}")
             old_token_status, _ = request("/api/v1/a2a/pool/tasks", token=old_token)
             if old_token_status != 401:
                 raise RuntimeError(f"old token remained valid after rotation: {old_token_status}")
@@ -148,6 +175,8 @@ def main() -> int:
             )
             if status != 200 or revoke_result.get("data", {}).get("revoked") is not True:
                 raise RuntimeError(revoke_result)
+            if not revoke_result.get("data", {}).get("fact_id"):
+                raise RuntimeError(f"revocation fact missing: {revoke_result}")
             revoked_token_status, _ = request("/api/v1/a2a/pool/tasks", token=new_token)
             if revoked_token_status != 401:
                 raise RuntimeError(f"token remained valid after revocation: {revoked_token_status}")
@@ -157,6 +186,11 @@ def main() -> int:
                 "passed": True,
                 "task_id": task_id,
                 "task_status": completed.get("status"),
+                "initial_receipt_fact_count": receipt.get("fact_count"),
+                "initial_receipt_hash_present": len(str(receipt.get("receipt_hash") or "")) == 64,
+                "final_receipt_events": event_types,
+                "final_receipt_status": lifecycle.get("status"),
+                "final_receipt_settled": lifecycle.get("settled"),
                 "did_challenge_auth": True,
                 "old_token_invalidated_after_rotation": True,
                 "new_key_authentication": True,
