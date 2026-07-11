@@ -134,6 +134,18 @@ def main() -> int:
             lifecycle = final_receipt.get("lifecycle", {})
             if lifecycle.get("status") != "completed" or lifecycle.get("settled") is not True:
                 raise RuntimeError(f"task lifecycle projection incomplete: {lifecycle}")
+            evidence_status, evidence_response = request(
+                f"/api/v1/a2a/facts/tasks/{task_id}/evidence",
+                token=requester._jwt_token,  # noqa: SLF001
+            )
+            evidence = evidence_response.get("data", {})
+            if (
+                evidence_status != 200
+                or evidence.get("receipt_hash") != final_receipt.get("receipt_hash")
+                or len(evidence.get("fact_refs", [])) != len(expected_events)
+                or evidence.get("export_mode") != "operator_controlled_append"
+            ):
+                raise RuntimeError(f"task evidence projection incomplete: {evidence_response}")
 
             old_token = requester._jwt_token  # noqa: SLF001 - smoke verifies token invalidation.
             old_signing_key = requester._signing_key  # noqa: SLF001
@@ -191,6 +203,8 @@ def main() -> int:
                 "final_receipt_events": event_types,
                 "final_receipt_status": lifecycle.get("status"),
                 "final_receipt_settled": lifecycle.get("settled"),
+                "evidence_id": evidence.get("evidence_id"),
+                "evidence_export_mode": evidence.get("export_mode"),
                 "did_challenge_auth": True,
                 "old_token_invalidated_after_rotation": True,
                 "new_key_authentication": True,
