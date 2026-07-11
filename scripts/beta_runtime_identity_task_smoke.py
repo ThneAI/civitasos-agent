@@ -199,6 +199,17 @@ def main() -> int:
                 or evidence.get("export_mode") != "operator_controlled_append"
             ):
                 raise RuntimeError(f"task evidence projection incomplete: {evidence_response}")
+            integrity_status, integrity_response = request(
+                "/api/v1/a2a/facts/integrity",
+                token=requester._jwt_token,  # noqa: SLF001
+            )
+            integrity = integrity_response.get("data", {})
+            if (
+                integrity_status != 200
+                or integrity.get("valid") is not True
+                or integrity.get("pending_outbox_count") != 0
+            ):
+                raise RuntimeError(f"fact integrity contract failed: {integrity_response}")
 
             worker_token = worker._jwt_token  # noqa: SLF001
             operator = CivitasAgent(base_url=BASE_URL, auto_discover=False)
@@ -290,6 +301,8 @@ def main() -> int:
                 "idempotent_operation_ids": True,
                 "evidence_id": evidence.get("evidence_id"),
                 "evidence_export_mode": evidence.get("export_mode"),
+                "fact_chain_valid": integrity.get("valid"),
+                "pending_outbox_count": integrity.get("pending_outbox_count"),
                 "emergency_revocation": True,
                 "emergency_revocation_fact_id": emergency_data.get("fact_id"),
                 "did_challenge_auth": True,
