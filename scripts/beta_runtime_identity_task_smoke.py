@@ -66,6 +66,24 @@ def start_backend(env: dict[str, str]) -> subprocess.Popen:
     return process
 
 
+def restart_backend(process: subprocess.Popen, env: dict[str, str]) -> subprocess.Popen:
+    process.terminate()
+    process.wait(timeout=5)
+    return start_backend(env)
+
+
+def process_metrics(process: subprocess.Popen, state_dir: str) -> dict:
+    status = Path(f"/proc/{process.pid}/status").read_text(errors="replace")
+    rss_kib = 0
+    for line in status.splitlines():
+        if line.startswith("VmRSS:"):
+            rss_kib = int(line.split()[1])
+            break
+    fd_count = len(list(Path(f"/proc/{process.pid}/fd").iterdir()))
+    state_bytes = sum(path.stat().st_size for path in Path(state_dir).rglob("*") if path.is_file())
+    return {"backend_rss_kib": rss_kib, "backend_fd_count": fd_count, "state_bytes": state_bytes}
+
+
 def registered_agent(alias: str, service_secret: str) -> CivitasAgent:
     agent = CivitasAgent(base_url=BASE_URL, auto_discover=False)
     public_key = agent.generate_keys()
@@ -89,6 +107,9 @@ def challenge(agent_id: str) -> dict:
 def main() -> int:
     service_secret = secrets.token_urlsafe(32)
     jwt_secret = secrets.token_urlsafe(32)
+    restart_point = os.environ.get("CIVITASOS_SOAK_RESTART_POINT", "posted")
+    if restart_point not in {"posted", "claimed", "delivered"}:
+        raise ValueError(f"unsupported restart point: {restart_point}")
     with tempfile.TemporaryDirectory(prefix="civitasos-identity-task-smoke-") as state_dir:
         env = os.environ | {
             "CIVITASOS_DATA_DIR": state_dir,
@@ -101,7 +122,7 @@ def main() -> int:
             "CIVITASOS_SERVICE_TOKEN_SECRET": service_secret,
             "CIVITASOS_SERVICE_TOKEN_SCOPES": "agents:write,pool:post,pool:read,pool:claim,pool:write,audit:read",
             "CIVITASOS_TASK_CHALLENGE_WINDOW_ENABLED": "true",
-            "CIVITASOS_TASK_CHALLENGE_WINDOW_SECS": "1",
+            "CIVITASOS_TASK_CHALLENGE_WINDOW_SECS": "2",
             "CIVITASOS_A2A_SEED_TASKS": "false",
         }
         process = start_backend(env)
@@ -126,18 +147,22 @@ def main() -> int:
                 raise RuntimeError(f"initial audit read failed: {audit_response}")
             initial_audit_count = len(audit_response.get("data") or [])
 
-            process.terminate()
-            process.wait(timeout=5)
-            process = start_backend(env)
-            restored_status, restored_response = request(
-                f"/api/v1/a2a/facts/tasks/{task_id}/receipt",
-                token=requester._jwt_token,  # noqa: SLF001
-            )
-            restored_receipt = restored_response.get("data", {})
-            if restored_status != 200 or restored_receipt.get("receipt_hash") != initial_receipt_hash:
-                raise RuntimeError(f"receipt did not survive restart: {restored_response}")
+            if restart_point == "posted":
+                process = restart_backend(process, env)
+                restored_status, restored_response = request(
+                    f"/api/v1/a2a/facts/tasks/{task_id}/receipt",
+                    token=requester._jwt_token,  # noqa: SLF001
+                )
+                restored_receipt = restored_response.get("data", {})
+                if restored_status != 200 or restored_receipt.get("receipt_hash") != initial_receipt_hash:
+                    raise RuntimeError(f"receipt did not survive restart: {restored_response}")
 
             worker.pool_claim(task_id)
+            if restart_point == "claimed":
+                process = restart_backend(process, env)
+                claimed = requester.pool_get_task(task_id)
+                if claimed.get("status") != "Claimed":
+                    raise RuntimeError(f"claimed task did not survive restart: {claimed}")
             retry_status, _ = request(
                 "/api/v1/a2a/task/execute",
                 {"task_id": task_id, "agent_id": str(worker.agent_id), "output": {}, "success": True},
@@ -148,6 +173,11 @@ def main() -> int:
             delivery = worker.pool_complete(task_id, output={"result": "verified delivery"})
             if delivery.get("challenge_window_enabled") is not True:
                 raise RuntimeError(f"challenge window was not enabled: {delivery}")
+            if restart_point == "delivered":
+                process = restart_backend(process, env)
+                delivered = requester.pool_get_task(task_id)
+                if delivered.get("status") != "Delivered":
+                    raise RuntimeError(f"delivered task did not survive restart: {delivered}")
             early_confirm_status, _ = request(
                 f"/api/v1/a2a/pool/confirm/{task_id}",
                 {},
@@ -155,7 +185,7 @@ def main() -> int:
             )
             if early_confirm_status != 409:
                 raise RuntimeError(f"challenge window did not block early confirmation: {early_confirm_status}")
-            time.sleep(1.1)
+            time.sleep(2.1)
             requester.pool_confirm(task_id)
             completed = requester.pool_get_task(task_id)
             if completed.get("status") != "Completed":
@@ -282,6 +312,7 @@ def main() -> int:
             if revoked_token_status != 401:
                 raise RuntimeError(f"token remained valid after revocation: {revoked_token_status}")
 
+            metrics = process_metrics(process, state_dir)
             print(json.dumps({
                 "schema_version": "beta-runtime-identity-task-smoke:v1",
                 "passed": True,
@@ -290,6 +321,7 @@ def main() -> int:
                 "initial_receipt_fact_count": receipt.get("fact_count"),
                 "initial_receipt_hash_present": len(str(receipt.get("receipt_hash") or "")) == 64,
                 "restart_recovery": True,
+                "restart_point": restart_point,
                 "failed_delivery_retry": True,
                 "challenge_window": True,
                 "audit_continuity": True,
@@ -312,6 +344,7 @@ def main() -> int:
                 "fresh_state": True,
                 "model_invoked": False,
                 "production_claimed": False,
+                **metrics,
             }, indent=2))
             return 0
         finally:
