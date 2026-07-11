@@ -178,6 +178,15 @@ def main() -> int:
             lifecycle = final_receipt.get("lifecycle", {})
             if lifecycle.get("status") != "completed" or lifecycle.get("settled") is not True:
                 raise RuntimeError(f"task lifecycle projection incomplete: {lifecycle}")
+            operation_ids = [fact.get("operation_id") for fact in final_receipt.get("facts", [])]
+            if (
+                final_receipt.get("complete") is not True
+                or final_receipt.get("consistency_status") != "complete"
+                or final_receipt.get("missing_event_types") != []
+                or any(not operation_id for operation_id in operation_ids)
+                or len(set(operation_ids)) != len(operation_ids)
+            ):
+                raise RuntimeError(f"task receipt consistency contract failed: {final_receipt}")
             evidence_status, evidence_response = request(
                 f"/api/v1/a2a/facts/tasks/{task_id}/evidence",
                 token=requester._jwt_token,  # noqa: SLF001
@@ -277,6 +286,8 @@ def main() -> int:
                 "final_receipt_status": lifecycle.get("status"),
                 "final_receipt_settled": lifecycle.get("settled"),
                 "final_receipt_hash": final_receipt.get("receipt_hash"),
+                "receipt_consistency_status": final_receipt.get("consistency_status"),
+                "idempotent_operation_ids": True,
                 "evidence_id": evidence.get("evidence_id"),
                 "evidence_export_mode": evidence.get("export_mode"),
                 "emergency_revocation": True,
