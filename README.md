@@ -11,6 +11,13 @@ P1 Fact、Evidence、身份、恢复与 soak 统一发布门禁：
 .venv/bin/python scripts/p1_release_gate.py --soak-rounds 10
 ```
 
+P2 并发 Fact、多节点收敛、settlement saga、external signer 和三 VM 门禁：
+
+```bash
+CIVITASOS_P2_MULTIVM_EXECUTION_ACK=1 \
+  .venv/bin/python scripts/p2_release_gate.py --multivm-tasks 12
+```
+
 ## 目录结构
 
 ```
