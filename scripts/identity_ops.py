@@ -99,6 +99,13 @@ def backup(identity_path: Path, output: Path) -> dict:
 def restore(backup_path: Path, output: Path) -> dict:
     if output.exists():
         raise FileExistsError(f"refusing to overwrite identity: {output}")
+    identity = _decrypt_backup(backup_path)
+    _atomic_private_json(output, identity)
+    verified = _identity(output)
+    return {"restored": True, "path": str(output), "public_key_hex": verified["public_key_hex"], "agent_id": verified["agent_id"]}
+
+
+def _decrypt_backup(backup_path: Path) -> dict:
     envelope = json.loads(backup_path.read_text())
     if envelope.get("schema_version") != SCHEMA:
         raise ValueError("unsupported identity backup schema")
@@ -115,9 +122,26 @@ def restore(backup_path: Path, output: Path) -> dict:
         bytes.fromhex(envelope["nonce_hex"]),
     )
     identity = json.loads(plaintext)
-    _atomic_private_json(output, identity)
-    verified = _identity(output)
-    return {"restored": True, "path": str(output), "public_key_hex": verified["public_key_hex"], "agent_id": verified["agent_id"]}
+    seed = bytes.fromhex(identity.get("seed_hex", ""))
+    if len(seed) != 32:
+        raise ValueError("backup identity seed must be 32 bytes")
+    public_key = SigningKey(seed).verify_key.encode().hex()
+    if identity.get("public_key_hex") not in (None, public_key):
+        raise ValueError("backup identity public key does not match seed")
+    if envelope.get("public_key_hex") != public_key or envelope.get("agent_id") != identity.get("agent_id"):
+        raise ValueError("backup envelope metadata does not match encrypted identity")
+    return {"seed_hex": seed.hex(), "public_key_hex": public_key, "agent_id": identity.get("agent_id")}
+
+
+def verify_backup(backup_path: Path) -> dict:
+    identity = _decrypt_backup(backup_path)
+    return {
+        "valid": True,
+        "path": str(backup_path),
+        "public_key_hex": identity["public_key_hex"],
+        "agent_id": identity["agent_id"],
+        "plaintext_written": False,
+    }
 
 
 def main() -> int:
@@ -132,6 +156,8 @@ def main() -> int:
     restore_parser = commands.add_parser("restore")
     restore_parser.add_argument("--backup", type=Path, required=True)
     restore_parser.add_argument("--output", type=Path, required=True)
+    verify_parser = commands.add_parser("verify-backup")
+    verify_parser.add_argument("--backup", type=Path, required=True)
     inspect_parser = commands.add_parser("inspect")
     inspect_parser.add_argument("--identity", type=Path, required=True)
     args = parser.parse_args()
@@ -141,6 +167,8 @@ def main() -> int:
         result = backup(args.identity, args.output)
     elif args.command == "restore":
         result = restore(args.backup, args.output)
+    elif args.command == "verify-backup":
+        result = verify_backup(args.backup)
     else:
         identity = _identity(args.identity)
         result = {"valid": True, "path": str(args.identity), "public_key_hex": identity["public_key_hex"], "agent_id": identity["agent_id"]}

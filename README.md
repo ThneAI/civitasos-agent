@@ -2,6 +2,9 @@
 
 本仓库包含使用 `civitasos-runtime` 构建自治 Agent 的完整示例。
 
+Private Beta 身份创建、离线备份、恢复、轮换和紧急撤销流程见
+[`docs/IDENTITY_OPERATIONS_RUNBOOK.md`](docs/IDENTITY_OPERATIONS_RUNBOOK.md)。
+
 ## 目录结构
 
 ```
