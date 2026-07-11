@@ -51,11 +51,25 @@ plaintext identity. Successful decryption does not authorize credential activati
 
 The executable regression gate is `scripts/beta_runtime_identity_task_smoke.py`.
 
+The operator CLI reads the bearer token from the named environment variable and
+leaves the new key staged for explicit activation:
+
+```bash
+.venv/bin/python scripts/credential_ops.py --base-url "$CIVITASOS_BASE_URL" rotate \
+  --identity "$IDENTITY_PATH" --staged-identity "$STAGED_IDENTITY_PATH" \
+  --token-env CIVITASOS_AGENT_TOKEN
+```
+
 ## Signed Revocation
 
 Sign a fresh challenge with the current key and submit
 `/api/v1/auth/credential/revoke`. Require `revoked=true`, a non-empty `fact_id`,
 and HTTP 401 from the previously valid token.
+
+```bash
+.venv/bin/python scripts/credential_ops.py --base-url "$CIVITASOS_BASE_URL" revoke \
+  --identity "$IDENTITY_PATH" --token-env CIVITASOS_AGENT_TOKEN
+```
 
 ## Emergency Revocation
 
@@ -68,6 +82,14 @@ Acceptance requires HTTP 200, a non-empty Fact ID, HTTP 401 for old tokens, an
 unbroken audit stream, and an incident record linking operator, reason, time, and
 Fact ID. Recovery must create or rotate to a new key, never re-enable the suspected
 credential. The Private Beta soak executes and verifies this path every round.
+
+```bash
+.venv/bin/python scripts/credential_ops.py --base-url "$CIVITASOS_BASE_URL" emergency-revoke \
+  --agent-id "$AGENT_ID" --reason "$INCIDENT_REASON" \
+  --token-env CIVITASOS_OPERATOR_TOKEN
+```
+
+Remote base URLs must use HTTPS. Plain HTTP is accepted only for loopback hosts.
 
 ## Private Beta Gate
 
