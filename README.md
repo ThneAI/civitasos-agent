@@ -5,6 +5,12 @@
 Private Beta 身份创建、离线备份、恢复、轮换和紧急撤销流程见
 [`docs/IDENTITY_OPERATIONS_RUNBOOK.md`](docs/IDENTITY_OPERATIONS_RUNBOOK.md)。
 
+P1 Fact、Evidence、身份、恢复与 soak 统一发布门禁：
+
+```bash
+.venv/bin/python scripts/p1_release_gate.py --soak-rounds 10
+```
+
 ## 目录结构
 
 ```
