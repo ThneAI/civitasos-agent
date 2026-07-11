@@ -147,6 +147,25 @@ def main() -> int:
             ):
                 raise RuntimeError(f"task evidence projection incomplete: {evidence_response}")
 
+            worker_token = worker._jwt_token  # noqa: SLF001
+            operator = CivitasAgent(base_url=BASE_URL, auto_discover=False)
+            operator.authenticate_service_token(
+                service_id="smoke-emergency-operator",
+                secret=service_secret,
+                scopes=["agents:write"],
+            )
+            emergency_status, emergency_response = request(
+                "/api/v1/auth/credential/emergency-revoke",
+                {"agent_id": str(worker.agent_id), "reason": "fresh-state emergency revocation drill"},
+                operator._jwt_token,  # noqa: SLF001
+            )
+            emergency_data = emergency_response.get("data", {})
+            if emergency_status != 200 or not emergency_data.get("fact_id"):
+                raise RuntimeError(f"emergency revocation failed: {emergency_response}")
+            worker_token_status, _ = request("/api/v1/a2a/pool/tasks", token=worker_token)
+            if worker_token_status != 401:
+                raise RuntimeError(f"worker token remained valid after emergency revocation: {worker_token_status}")
+
             old_token = requester._jwt_token  # noqa: SLF001 - smoke verifies token invalidation.
             old_signing_key = requester._signing_key  # noqa: SLF001
             new_signing_key = SigningKey.generate()
@@ -205,6 +224,8 @@ def main() -> int:
                 "final_receipt_settled": lifecycle.get("settled"),
                 "evidence_id": evidence.get("evidence_id"),
                 "evidence_export_mode": evidence.get("export_mode"),
+                "emergency_revocation": True,
+                "emergency_revocation_fact_id": emergency_data.get("fact_id"),
                 "did_challenge_auth": True,
                 "old_token_invalidated_after_rotation": True,
                 "new_key_authentication": True,
