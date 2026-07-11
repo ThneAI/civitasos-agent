@@ -41,8 +41,10 @@ def request(path: str, body: dict | None = None, token: str | None = None) -> tu
         return error.code, parse_response(error.read() or b"{}")
 
 
-def wait_for_backend() -> None:
-    for _ in range(100):
+def wait_for_backend(process: subprocess.Popen) -> None:
+    for _ in range(400):
+        if process.poll() is not None:
+            raise RuntimeError(f"backend exited during startup with code {process.returncode}")
         try:
             if request("/healthz")[0] == 200:
                 return
@@ -52,13 +54,25 @@ def wait_for_backend() -> None:
     raise RuntimeError("backend did not become healthy")
 
 
+def start_backend(env: dict[str, str]) -> subprocess.Popen:
+    process = subprocess.Popen(
+        [str(BACKEND), "--api-port", "18099"],
+        cwd=BACKEND.parents[2],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    wait_for_backend(process)
+    return process
+
+
 def registered_agent(alias: str, service_secret: str) -> CivitasAgent:
     agent = CivitasAgent(base_url=BASE_URL, auto_discover=False)
     public_key = agent.generate_keys()
     agent.authenticate_service_token(
         service_id=f"smoke-{alias}",
         secret=service_secret,
-        scopes=["agents:write", "pool:post", "pool:read", "pool:claim", "pool:write"],
+        scopes=["agents:write", "pool:post", "pool:read", "pool:claim", "pool:write", "audit:read"],
     )
     agent.a2a_quickstart(alias=alias, name=alias, endpoint="", public_key=public_key)
     agent.authenticate(allow_legacy_fallback=False)
@@ -85,19 +99,13 @@ def main() -> int:
             "CIVITASOS_DEMO_LOGIN_ENABLED": "false",
             "CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED": "false",
             "CIVITASOS_SERVICE_TOKEN_SECRET": service_secret,
-            "CIVITASOS_SERVICE_TOKEN_SCOPES": "agents:write,pool:post,pool:read,pool:claim,pool:write",
-            "CIVITASOS_TASK_CHALLENGE_WINDOW_ENABLED": "false",
+            "CIVITASOS_SERVICE_TOKEN_SCOPES": "agents:write,pool:post,pool:read,pool:claim,pool:write,audit:read",
+            "CIVITASOS_TASK_CHALLENGE_WINDOW_ENABLED": "true",
+            "CIVITASOS_TASK_CHALLENGE_WINDOW_SECS": "1",
             "CIVITASOS_A2A_SEED_TASKS": "false",
         }
-        process = subprocess.Popen(
-            [str(BACKEND), "--api-port", "18099"],
-            cwd=BACKEND.parents[2],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        process = start_backend(env)
         try:
-            wait_for_backend()
             requester = registered_agent("smoke-requester", service_secret)
             worker = registered_agent("smoke-worker", service_secret)
 
@@ -110,8 +118,44 @@ def main() -> int:
             receipt = receipt_response.get("data", {})
             if receipt_status != 200 or receipt.get("fact_count") != 1:
                 raise RuntimeError(f"task receipt projection failed: {receipt_response}")
+            initial_receipt_hash = receipt.get("receipt_hash")
+            audit_status, audit_response = request(
+                "/api/v1/audit/events", token=requester._jwt_token  # noqa: SLF001
+            )
+            if audit_status != 200:
+                raise RuntimeError(f"initial audit read failed: {audit_response}")
+            initial_audit_count = len(audit_response.get("data") or [])
+
+            process.terminate()
+            process.wait(timeout=5)
+            process = start_backend(env)
+            restored_status, restored_response = request(
+                f"/api/v1/a2a/facts/tasks/{task_id}/receipt",
+                token=requester._jwt_token,  # noqa: SLF001
+            )
+            restored_receipt = restored_response.get("data", {})
+            if restored_status != 200 or restored_receipt.get("receipt_hash") != initial_receipt_hash:
+                raise RuntimeError(f"receipt did not survive restart: {restored_response}")
+
             worker.pool_claim(task_id)
-            worker.pool_complete(task_id, output={"result": "verified delivery"})
+            retry_status, _ = request(
+                "/api/v1/a2a/task/execute",
+                {"task_id": task_id, "agent_id": str(worker.agent_id), "output": {}, "success": True},
+                worker._jwt_token,  # noqa: SLF001
+            )
+            if retry_status != 400:
+                raise RuntimeError(f"empty delivery did not fail closed: {retry_status}")
+            delivery = worker.pool_complete(task_id, output={"result": "verified delivery"})
+            if delivery.get("challenge_window_enabled") is not True:
+                raise RuntimeError(f"challenge window was not enabled: {delivery}")
+            early_confirm_status, _ = request(
+                f"/api/v1/a2a/pool/confirm/{task_id}",
+                {},
+                token=requester._jwt_token,  # noqa: SLF001
+            )
+            if early_confirm_status != 409:
+                raise RuntimeError(f"challenge window did not block early confirmation: {early_confirm_status}")
+            time.sleep(1.1)
             requester.pool_confirm(task_id)
             completed = requester.pool_get_task(task_id)
             if completed.get("status") != "Completed":
@@ -165,6 +209,12 @@ def main() -> int:
             worker_token_status, _ = request("/api/v1/a2a/pool/tasks", token=worker_token)
             if worker_token_status != 401:
                 raise RuntimeError(f"worker token remained valid after emergency revocation: {worker_token_status}")
+            final_audit_status, final_audit_response = request(
+                "/api/v1/audit/events", token=requester._jwt_token  # noqa: SLF001
+            )
+            final_audit_count = len(final_audit_response.get("data") or [])
+            if final_audit_status != 200 or final_audit_count < initial_audit_count:
+                raise RuntimeError(f"audit continuity failed: {final_audit_response}")
 
             old_token = requester._jwt_token  # noqa: SLF001 - smoke verifies token invalidation.
             old_signing_key = requester._signing_key  # noqa: SLF001
@@ -219,9 +269,14 @@ def main() -> int:
                 "task_status": completed.get("status"),
                 "initial_receipt_fact_count": receipt.get("fact_count"),
                 "initial_receipt_hash_present": len(str(receipt.get("receipt_hash") or "")) == 64,
+                "restart_recovery": True,
+                "failed_delivery_retry": True,
+                "challenge_window": True,
+                "audit_continuity": True,
                 "final_receipt_events": event_types,
                 "final_receipt_status": lifecycle.get("status"),
                 "final_receipt_settled": lifecycle.get("settled"),
+                "final_receipt_hash": final_receipt.get("receipt_hash"),
                 "evidence_id": evidence.get("evidence_id"),
                 "evidence_export_mode": evidence.get("export_mode"),
                 "emergency_revocation": True,
