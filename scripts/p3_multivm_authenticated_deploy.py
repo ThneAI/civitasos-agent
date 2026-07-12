@@ -159,15 +159,14 @@ def failed_task(address: str, context: ssl.SSLContext, suffix: str) -> str:
     return task_id
 
 
-def unknown_envelope() -> dict:
-    key = SigningKey.generate()
+def signed_envelope(key: SigningKey, node_id: str) -> dict:
     public_key = key.verify_key.encode()
-    node_id = "unknown-peer"
     key_id = hashlib.sha256(public_key).digest()[:16].hex()
     nonce = secrets.token_hex(16)
     timestamp = int(time.time())
     payload = json.dumps(
-        {"AgentRegistered": {"id": "unknown", "name": "unknown", "capabilities": [], "stake": 0}},
+        {"type": "AgentRegistered", "id": f"probe-{node_id}-{nonce}", "name": "probe",
+         "capabilities": [], "stake": 0},
         separators=(",", ":"),
     ).encode()
     canonical = b"civitasos-peer-envelope:v1\0"
@@ -185,11 +184,16 @@ def unknown_envelope() -> dict:
     }
 
 
+def unknown_envelope() -> dict:
+    return signed_envelope(SigningKey.generate(), "unknown-peer")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep-running", action="store_true")
     parser.add_argument("--partition-heal", action="store_true")
     parser.add_argument("--kernel-partition", action="store_true")
+    parser.add_argument("--rotate-vm2", action="store_true")
     parser.add_argument("--partition-tasks", type=int, default=4)
     parser.add_argument("--output", type=Path, default=Path("/tmp/civitasos-p3-auth-deploy.json"))
     args = parser.parse_args()
@@ -282,6 +286,118 @@ echo $! >"$ROOT/server.pid"
                 unknown_rejected[node] = status == 401
             if not all(anonymous_rejected.values()) or not all(unknown_rejected.values()):
                 raise RuntimeError("mTLS or unknown-peer rejection failed")
+
+            for peer, peer_key in seeds.items():
+                peer_node_id = f"p3-{peer}"
+                peer_public = peer_key.verify_key.encode().hex()
+                proof = f"civitasos-peer-key-stage:v1\0{peer_node_id}\0{peer_public}".encode()
+                for address in NODES.values():
+                    status, body = request(address, "/api/v1/operator/peer-keys/stage", context, {
+                        "node_id": peer_node_id,
+                        "public_key_hex": peer_public,
+                        "possession_signature": peer_key.sign(proof).signature.hex(),
+                    })
+                    if not 200 <= status < 300:
+                        raise RuntimeError(
+                            f"bootstrap peer key persistence failed: {status} {body}"
+                        )
+
+            rotation_report = None
+            if args.rotate_vm2:
+                old_key = seeds["vm2"]
+                new_key = SigningKey.generate()
+                new_public = new_key.verify_key.encode().hex()
+                stage_message = f"civitasos-peer-key-stage:v1\0p3-vm2\0{new_public}".encode()
+                new_key_id = hashlib.sha256(new_key.verify_key.encode()).digest()[:16].hex()
+                old_key_id = hashlib.sha256(old_key.verify_key.encode()).digest()[:16].hex()
+                for address in NODES.values():
+                    status, body = request(address, "/api/v1/operator/peer-keys/stage", context, {
+                        "node_id": "p3-vm2", "public_key_hex": new_public,
+                        "possession_signature": new_key.sign(stage_message).signature.hex(),
+                    })
+                    if status != 200 or body.get("record", {}).get("key_id") != new_key_id:
+                        raise RuntimeError(f"vm2 key stage failed: {status} {body}")
+
+                openssl(artifacts, "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=p3-vm2",
+                        "-keyout", "vm2-rotated.key", "-out", "vm2-rotated.csr")
+                openssl(artifacts, "x509", "-req", "-days", "1", "-in", "vm2-rotated.csr",
+                        "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial",
+                        "-extfile", "vm2.ext", "-out", "vm2-rotated.crt")
+                (artifacts / "vm2-rotated.seed").write_text(new_key.encode().hex())
+                for source, target in (
+                    ("vm2-rotated.key", "vm2.key"), ("vm2-rotated.crt", "vm2.crt"),
+                    ("vm2-rotated.seed", "vm2.seed"),
+                ):
+                    run(["scp", "-q", str(artifacts / source), f"vm2:{REMOTE_ROOT}/{target}"])
+                remote("vm2", f'''set -e
+ROOT={REMOTE_ROOT!r}
+chmod 600 "$ROOT/vm2.key" "$ROOT/vm2.seed"
+kill "$(cat "$ROOT/server.pid")"
+for _ in $(seq 1 50); do kill -0 "$(cat "$ROOT/server.pid")" 2>/dev/null || break; sleep 0.1; done
+"$ROOT/start.sh"
+''')
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    try:
+                        if request(NODES["vm2"], "/healthz", context)[0] == 200:
+                            break
+                    except OSError:
+                        time.sleep(0.2)
+                trust_probe = {}
+                for node in ("vm1", "vm3"):
+                    status, body = request(
+                        NODES[node], "/api/v1/sync/events", context,
+                        signed_envelope(new_key, "p3-vm2"),
+                    )
+                    trust_probe[node] = status
+                    if not 200 <= status < 300:
+                        raise RuntimeError(f"rotated vm2 key trust probe failed: {status} {body}")
+                time.sleep(1)
+                rotation_task = failed_task(NODES["vm2"], context, "rotated-vm2")
+                rotated_receipts = {
+                    node: wait_receipt(address, rotation_task, 3, context, 60)
+                    for node, address in NODES.items()
+                }
+                if len({item["receipt_hash"] for item in rotated_receipts.values()}) != 1:
+                    raise RuntimeError("rotated vm2 Fact propagation diverged")
+
+                revoke_message = (
+                    f"civitasos-peer-key-revoke:v1\0p3-vm2\0{old_key_id}\0{new_key_id}"
+                ).encode()
+                for address in NODES.values():
+                    status, body = request(address, "/api/v1/operator/peer-keys/revoke", context, {
+                        "node_id": "p3-vm2", "key_id": old_key_id,
+                        "authorizing_key_id": new_key_id,
+                        "authorization_signature": new_key.sign(revoke_message).signature.hex(),
+                    })
+                    if status != 200 or body.get("record", {}).get("status") != "revoked":
+                        raise RuntimeError(f"vm2 old key revoke failed: {status} {body}")
+                remote("vm1", f'''set -e
+ROOT={REMOTE_ROOT!r}
+kill "$(cat "$ROOT/server.pid")"
+for _ in $(seq 1 50); do kill -0 "$(cat "$ROOT/server.pid")" 2>/dev/null || break; sleep 0.1; done
+"$ROOT/start.sh"
+''')
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    try:
+                        if request(NODES["vm1"], "/healthz", context)[0] == 200:
+                            break
+                    except OSError:
+                        time.sleep(0.2)
+                old_rejections = {}
+                for node, address in NODES.items():
+                    status, _ = request(
+                        address, "/api/v1/sync/events", context, signed_envelope(old_key, "p3-vm2")
+                    )
+                    old_rejections[node] = status == 401
+                if not all(old_rejections.values()):
+                    raise RuntimeError(f"revoked vm2 key accepted after restart: {old_rejections}")
+                rotation_report = {
+                    "node": "vm2", "peer_key_rotated": True, "leaf_certificate_rotated": True,
+                    "new_key_trust_probe": trust_probe, "new_key_fact_converged": True,
+                    "old_key_rejected_after_restart": old_rejections,
+                }
 
             partition_report = None
             if args.partition_heal:
@@ -376,6 +492,7 @@ for _ in $(seq 1 50); do kill -0 "$(cat "$ROOT/server.pid")" 2>/dev/null || brea
                 "anonymous_rejected": anonymous_rejected,
                 "unknown_peer_rejected": unknown_rejected,
                 "partition_heal": partition_report,
+                "rotation": rotation_report,
                 "kept_running": args.keep_running,
                 "production_claimed": False,
             }
