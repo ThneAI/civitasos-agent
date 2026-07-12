@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -86,6 +87,49 @@ def request(address: str, path: str, context: ssl.SSLContext, body: dict | None 
         return error.code, json.loads(raw) if raw else {}
 
 
+def wait_receipt(address: str, task_id: str, count: int, context: ssl.SSLContext, timeout: float = 15) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status, body = request(address, f"/api/v1/a2a/facts/tasks/{task_id}/receipt", context)
+        receipt = body.get("data") or {}
+        if status == 200 and receipt.get("fact_count") == count:
+            return receipt
+        time.sleep(0.2)
+    raise RuntimeError(f"receipt {task_id} did not reach {count} facts on {address}")
+
+
+def failed_task(address: str, context: ssl.SSLContext, suffix: str) -> str:
+    agent_ids = []
+    for role in ("requester", "worker"):
+        public_key = SigningKey.generate().verify_key.encode().hex()
+        status, agent = request(address, "/api/v1/a2a/quickstart", context, {
+            "public_key": public_key, "alias": f"p3-{suffix}-{role}",
+            "name": f"p3-{suffix}-{role}", "endpoint": "",
+        })
+        if status not in {200, 201}:
+            raise RuntimeError(f"quickstart failed: {status} {agent}")
+        agent_ids.append(str(agent["agent"]["did"]))
+    requester_id, worker_id = agent_ids
+    status, posted = request(address, "/api/v1/a2a/pool/post", context, {
+        "requester": requester_id, "required_capability": "general", "input": {"brief": suffix},
+        "deadline_secs": 60, "reward": 1, "min_reputation": 0.0, "required_stake": 0,
+    })
+    if status not in {200, 201}:
+        raise RuntimeError(f"task post failed: {status} {posted}")
+    task_id = str(posted["task_id"])
+    status, claimed = request(address, "/api/v1/a2a/pool/claim", context, {
+        "agent_id": worker_id, "task_id": task_id, "stake_amount": 0,
+    })
+    if status != 200:
+        raise RuntimeError(f"task claim failed: {status} {claimed}")
+    status, completed = request(address, "/api/v1/a2a/task/execute", context, {
+        "agent_id": worker_id, "task_id": task_id, "output": {"result": "failed"}, "success": False,
+    })
+    if status != 200:
+        raise RuntimeError(f"task completion failed: {status} {completed}")
+    return task_id
+
+
 def unknown_envelope() -> dict:
     key = SigningKey.generate()
     public_key = key.verify_key.encode()
@@ -115,8 +159,12 @@ def unknown_envelope() -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep-running", action="store_true")
+    parser.add_argument("--partition-heal", action="store_true")
+    parser.add_argument("--partition-tasks", type=int, default=4)
     parser.add_argument("--output", type=Path, default=Path("/tmp/civitasos-p3-auth-deploy.json"))
     args = parser.parse_args()
+    if args.partition_tasks < 1:
+        parser.error("--partition-tasks must be positive")
     if os.environ.get("CIVITASOS_P3_MULTIVM_EXECUTION_ACK") != "1":
         parser.error("set CIVITASOS_P3_MULTIVM_EXECUTION_ACK=1 to authorize vm1/vm2/vm3 deployment")
     if not BACKEND.is_file():
@@ -129,6 +177,7 @@ def main() -> int:
         seeds = {node: SigningKey.generate() for node in NODES}
         trusted = {f"p3-{node}": [key.verify_key.encode().hex()] for node, key in seeds.items()}
         jwt_secret = secrets.token_urlsafe(32)
+        cluster_token = secrets.token_urlsafe(32)
         try:
             for node in NODES:
                 (artifacts / f"{node}.seed").write_text(seeds[node].encode().hex())
@@ -144,7 +193,8 @@ def main() -> int:
                     f"https://{peer_address}:{PORT}"
                     for peer, peer_address in NODES.items() if peer != node
                 )
-                remote(node, f'''set -euo pipefail
+                start_script = f'''#!/bin/bash
+set -euo pipefail
 ROOT={REMOTE_ROOT!r}
 nohup env \
   CIVITASOS_DATA_DIR="$ROOT/data" \
@@ -160,13 +210,16 @@ nohup env \
   CIVITASOS_MTLS_CLIENT_CERT="$ROOT/{node}.crt" \
   CIVITASOS_MTLS_CLIENT_KEY="$ROOT/{node}.key" \
   CIVITASOS_JWT_SECRET={jwt_secret!r} \
+  CIVITASOS_CLUSTER_SYNC_TOKEN={cluster_token!r} \
   CIVITASOS_JWT_ENFORCE=false \
   CIVITASOS_A2A_SEED_TASKS=false \
   CIVITASOS_EPOCH_AUTO_ENABLED=false \
   CIVITASOS_POOL_SWEEP_AUTO_ENABLED=false \
   "$ROOT/api_only" --api-port {PORT} >"$ROOT/server.log" 2>&1 &
 echo $! >"$ROOT/server.pid"
-''')
+'''
+                encoded = base64.b64encode(start_script.encode()).decode()
+                remote(node, f"echo {encoded!r} | base64 -d > {REMOTE_ROOT!r}/start.sh; chmod 700 {REMOTE_ROOT!r}/start.sh; {REMOTE_ROOT!r}/start.sh")
 
             context = ssl.create_default_context(cafile=str(artifacts / "ca.crt"))
             context.load_cert_chain(artifacts / "controller.crt", artifacts / "controller.key")
@@ -198,6 +251,85 @@ echo $! >"$ROOT/server.pid"
             if not all(anonymous_rejected.values()) or not all(unknown_rejected.values()):
                 raise RuntimeError("mTLS or unknown-peer rejection failed")
 
+            partition_report = None
+            if args.partition_heal:
+                baseline_task = failed_task(NODES["vm1"], context, "baseline")
+                baseline = {
+                    node: wait_receipt(address, baseline_task, 3, context)
+                    for node, address in NODES.items()
+                }
+                if len({item["receipt_hash"] for item in baseline.values()}) != 1:
+                    raise RuntimeError("authenticated baseline receipt hashes diverged")
+
+                vm3_url = f"https://{NODES['vm3']}:{PORT}"
+                for node in ("vm1", "vm2"):
+                    request(NODES[node], "/api/v1/cluster/leave", context, {"url": vm3_url})
+                for peer in ("vm1", "vm2"):
+                    request(NODES["vm3"], "/api/v1/cluster/leave", context, {
+                        "url": f"https://{NODES[peer]}:{PORT}"
+                    })
+                with concurrent.futures.ThreadPoolExecutor(max_workers=args.partition_tasks) as pool:
+                    partition_tasks = list(pool.map(
+                        lambda index: failed_task(NODES["vm1"], context, f"partition-{index}"),
+                        range(args.partition_tasks),
+                    ))
+                majority_hashes = {}
+                isolated_statuses = {}
+                for partition_task in partition_tasks:
+                    majority = {
+                        node: wait_receipt(NODES[node], partition_task, 3, context)
+                        for node in ("vm1", "vm2")
+                    }
+                    hashes = {item["receipt_hash"] for item in majority.values()}
+                    if len(hashes) != 1:
+                        raise RuntimeError(f"majority receipt diverged: {partition_task}")
+                    majority_hashes[partition_task] = next(iter(hashes))
+                    isolated_status, _ = request(
+                        NODES["vm3"], f"/api/v1/a2a/facts/tasks/{partition_task}/receipt", context
+                    )
+                    isolated_statuses[partition_task] = isolated_status
+                    if isolated_status != 404:
+                        raise RuntimeError(f"isolated vm3 observed partition task: {isolated_status}")
+
+                for node in ("vm1", "vm2"):
+                    request(NODES[node], "/api/v1/cluster/join", context, {"url": vm3_url})
+                for peer in ("vm1", "vm2"):
+                    request(NODES["vm3"], "/api/v1/cluster/join", context, {
+                        "url": f"https://{NODES[peer]}:{PORT}"
+                    })
+                remote("vm3", f'''set -e
+ROOT={REMOTE_ROOT!r}
+kill "$(cat "$ROOT/server.pid")"
+for _ in $(seq 1 50); do kill -0 "$(cat "$ROOT/server.pid")" 2>/dev/null || break; sleep 0.1; done
+"$ROOT/start.sh"
+''')
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    try:
+                        if request(NODES["vm3"], "/healthz", context)[0] == 200:
+                            break
+                    except OSError:
+                        time.sleep(0.2)
+                for partition_task in partition_tasks:
+                    healed = wait_receipt(NODES["vm3"], partition_task, 3, context, 20)
+                    if healed["receipt_hash"] != majority_hashes[partition_task]:
+                        raise RuntimeError(f"healed receipt hash diverged: {partition_task}")
+                integrity = {}
+                for node, address in NODES.items():
+                    status, body = request(address, "/api/v1/a2a/facts/integrity", context)
+                    data = body.get("data") or {}
+                    if status != 200 or data.get("valid") is not True:
+                        raise RuntimeError(f"{node} Fact integrity failed: {body}")
+                    integrity[node] = data.get("fact_count")
+                partition_report = {
+                    "mode": "application_peer_partition",
+                    "baseline_converged": True,
+                    "concurrent_task_count": len(partition_tasks),
+                    "isolated_statuses": isolated_statuses,
+                    "heal_converged": True,
+                    "integrity_fact_counts": integrity,
+                }
+
             report = {
                 "schema_version": "p3-multivm-authenticated-deploy:v1",
                 "passed": True,
@@ -205,6 +337,7 @@ echo $! >"$ROOT/server.pid"
                 "health": health,
                 "anonymous_rejected": anonymous_rejected,
                 "unknown_peer_rejected": unknown_rejected,
+                "partition_heal": partition_report,
                 "kept_running": args.keep_running,
                 "production_claimed": False,
             }
