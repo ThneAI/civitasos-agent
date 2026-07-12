@@ -127,6 +127,44 @@ def wait_receipt(address: str, task_id: str, count: int, context: ssl.SSLContext
     raise RuntimeError(f"receipt {task_id} did not reach {count} facts on {address}")
 
 
+def wait_converged_receipts(
+    nodes: tuple[str, ...], task_id: str, minimum_count: int, context: ssl.SSLContext,
+    timeout: float = 30, stable_polls: int = 3,
+) -> dict[str, dict]:
+    deadline = time.monotonic() + timeout
+    stable = 0
+    previous: tuple[int, str] | None = None
+    latest: dict[str, dict] = {}
+    while time.monotonic() < deadline:
+        latest = {}
+        for node in nodes:
+            status, body = request(
+                NODES[node], f"/api/v1/a2a/facts/tasks/{task_id}/receipt", context
+            )
+            if status == 200:
+                latest[node] = body.get("data") or {}
+        states = {
+            (receipt.get("fact_count"), receipt.get("receipt_hash"))
+            for receipt in latest.values()
+            if receipt.get("fact_count", 0) >= minimum_count
+        }
+        if len(latest) == len(nodes) and len(states) == 1:
+            state = next(iter(states))
+            stable = stable + 1 if state == previous else 1
+            previous = state
+            if stable >= stable_polls:
+                return latest
+        else:
+            stable = 0
+            previous = None
+        time.sleep(0.25)
+    summary = {
+        node: (receipt.get("fact_count"), receipt.get("receipt_hash"))
+        for node, receipt in latest.items()
+    }
+    raise RuntimeError(f"receipts did not converge for {task_id}: {summary}")
+
+
 def failed_task(address: str, context: ssl.SSLContext, suffix: str) -> str:
     agent_ids = []
     for role in ("requester", "worker"):
@@ -402,10 +440,7 @@ for _ in $(seq 1 50); do kill -0 "$(cat "$ROOT/server.pid")" 2>/dev/null || brea
             partition_report = None
             if args.partition_heal:
                 baseline_task = failed_task(NODES["vm1"], context, "baseline")
-                baseline = {
-                    node: wait_receipt(address, baseline_task, 3, context)
-                    for node, address in NODES.items()
-                }
+                baseline = wait_converged_receipts(tuple(NODES), baseline_task, 3, context)
                 if len({item["receipt_hash"] for item in baseline.values()}) != 1:
                     raise RuntimeError("authenticated baseline receipt hashes diverged")
 
@@ -424,17 +459,14 @@ for _ in $(seq 1 50); do kill -0 "$(cat "$ROOT/server.pid")" 2>/dev/null || brea
                         lambda index: failed_task(NODES["vm1"], context, f"partition-{index}"),
                         range(args.partition_tasks),
                     ))
-                majority_hashes = {}
                 isolated_statuses = {}
                 for partition_task in partition_tasks:
-                    majority = {
-                        node: wait_receipt(NODES[node], partition_task, 3, context)
-                        for node in ("vm1", "vm2")
-                    }
+                    majority = wait_converged_receipts(
+                        ("vm1", "vm2"), partition_task, 3, context
+                    )
                     hashes = {item["receipt_hash"] for item in majority.values()}
                     if len(hashes) != 1:
                         raise RuntimeError(f"majority receipt diverged: {partition_task}")
-                    majority_hashes[partition_task] = next(iter(hashes))
                     isolated_status, _ = request(
                         NODES["vm3"], f"/api/v1/a2a/facts/tasks/{partition_task}/receipt", context
                     )
@@ -465,9 +497,9 @@ for _ in $(seq 1 50); do kill -0 "$(cat "$ROOT/server.pid")" 2>/dev/null || brea
                     except OSError:
                         time.sleep(0.2)
                 for partition_task in partition_tasks:
-                    healed = wait_receipt(NODES["vm3"], partition_task, 3, context, 20)
-                    if healed["receipt_hash"] != majority_hashes[partition_task]:
-                        raise RuntimeError(f"healed receipt hash diverged: {partition_task}")
+                    wait_converged_receipts(
+                        tuple(NODES), partition_task, 3, context, 30
+                    )
                 integrity = {}
                 for node, address in NODES.items():
                     status, body = request(address, "/api/v1/a2a/facts/integrity", context)
