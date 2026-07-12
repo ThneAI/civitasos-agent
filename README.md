@@ -18,6 +18,15 @@ CIVITASOS_P2_MULTIVM_EXECUTION_ACK=1 \
   .venv/bin/python scripts/p2_release_gate.py --multivm-tasks 12
 ```
 
+P3 本地认证门禁（settlement effects、peer envelope/replay、rotation、mTLS、
+SoftHSM PKCS#11、WebAuthn）：
+
+```bash
+.venv/bin/python scripts/p3_release_gate.py
+```
+
+该门禁只授权进入认证多 VM 候选阶段，不代表多 VM soak、实体 HSM 或生产准入完成。
+
 ## 目录结构
 
 ```
