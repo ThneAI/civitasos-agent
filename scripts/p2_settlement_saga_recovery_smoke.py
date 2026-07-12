@@ -60,6 +60,16 @@ def main() -> int:
                 or sagas[0].get("phase") != "prepared"
             ):
                 raise RuntimeError(f"prepared saga was not exposed: {status_response}")
+            effect_status, effect_response = request(
+                "/api/v1/a2a/facts/settlement-effects",
+                token=requester._jwt_token,  # noqa: SLF001
+            )
+            if (
+                effect_status != 200
+                or effect_response.get("effect_count") != 9
+                or effect_response.get("planned_count") != 9
+            ):
+                raise RuntimeError(f"settlement effect plan was not persisted: {effect_response}")
 
             process.terminate()
             process.wait(timeout=5)
@@ -92,6 +102,25 @@ def main() -> int:
                 or final_sagas[0].get("replayable_response") is not True
             ):
                 raise RuntimeError(f"completed saga status invalid: {final_status}")
+            _, final_effects = request(
+                "/api/v1/a2a/facts/settlement-effects",
+                token=requester._jwt_token,  # noqa: SLF001
+            )
+            if final_effects.get("effect_count") != 9:
+                raise RuntimeError(f"settlement effect plan did not survive restart: {final_effects}")
+            effects_by_kind = {
+                effect["effect_kind"]: effect for effect in final_effects.get("effects") or []
+            }
+            for effect_kind in ("gas_charge", "escrow_release", "reputation"):
+                if effects_by_kind.get(effect_kind, {}).get("status") != "applied":
+                    raise RuntimeError(
+                        f"critical effect {effect_kind} was not applied: {final_effects}"
+                    )
+            if effects_by_kind.get("cold_start_bonus", {}).get("status") not in {
+                "applied",
+                "skipped",
+            }:
+                raise RuntimeError(f"cold-start effect is not terminal: {final_effects}")
 
             replay_status, replay = request(
                 "/api/v1/a2a/task/settle",
@@ -109,6 +138,9 @@ def main() -> int:
                         "task_id": task_id,
                         "prepared_phase_recovered": True,
                         "completed_response_replayed": True,
+                        "effect_plan_count": final_effects.get("effect_count"),
+                        "effect_applied_count": final_effects.get("applied_count"),
+                        "effect_skipped_count": final_effects.get("skipped_count"),
                         "blocked_after_recovery": 0,
                         "production_claimed": False,
                     },
