@@ -25,6 +25,7 @@ BACKEND = ROOT / "civitasos-backend" / "target" / "debug" / "api_only"
 REMOTE_ROOT = "/home/cal/civitasos_p3_auth_soak"
 PORT = 18443
 NODES = {"vm1": "192.168.56.4", "vm2": "192.168.56.5", "vm3": "192.168.56.6"}
+PARTITION_COMMENT = "civitasos-p3-partition"
 
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -36,6 +37,7 @@ def remote(node: str, script: str) -> None:
 
 
 def cleanup() -> None:
+    clear_kernel_partition()
     for node in NODES:
         try:
             remote(node, f'''set +e
@@ -46,6 +48,33 @@ rm -rf "$ROOT"
 ''')
         except Exception:
             pass
+
+
+def clear_kernel_partition() -> None:
+    vm3 = NODES["vm3"]
+    for node in NODES:
+        peers = (NODES["vm1"], NODES["vm2"]) if node == "vm3" else (vm3,)
+        for peer in peers:
+            for chain, direction in (("INPUT", "-s"), ("OUTPUT", "-d")):
+                rule = (
+                    f"-p tcp {direction} {peer} --dport {PORT} "
+                    f"-m comment --comment {PARTITION_COMMENT} -j REJECT"
+                )
+                try:
+                    remote(node, f"while sudo -n /usr/sbin/iptables -C {chain} {rule} 2>/dev/null; do sudo -n /usr/sbin/iptables -D {chain} {rule}; done")
+                except Exception:
+                    pass
+
+
+def apply_kernel_partition() -> None:
+    vm3 = NODES["vm3"]
+    for node in NODES:
+        peers = (NODES["vm1"], NODES["vm2"]) if node == "vm3" else (vm3,)
+        for peer in peers:
+            remote(node, f'''set -e
+sudo -n /usr/sbin/iptables -I INPUT -p tcp -s {peer} --dport {PORT} -m comment --comment {PARTITION_COMMENT} -j REJECT
+sudo -n /usr/sbin/iptables -I OUTPUT -p tcp -d {peer} --dport {PORT} -m comment --comment {PARTITION_COMMENT} -j REJECT
+''')
 
 
 def openssl(directory: Path, *args: str) -> None:
@@ -160,11 +189,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep-running", action="store_true")
     parser.add_argument("--partition-heal", action="store_true")
+    parser.add_argument("--kernel-partition", action="store_true")
     parser.add_argument("--partition-tasks", type=int, default=4)
     parser.add_argument("--output", type=Path, default=Path("/tmp/civitasos-p3-auth-deploy.json"))
     args = parser.parse_args()
     if args.partition_tasks < 1:
         parser.error("--partition-tasks must be positive")
+    if args.kernel_partition:
+        args.partition_heal = True
     if os.environ.get("CIVITASOS_P3_MULTIVM_EXECUTION_ACK") != "1":
         parser.error("set CIVITASOS_P3_MULTIVM_EXECUTION_ACK=1 to authorize vm1/vm2/vm3 deployment")
     if not BACKEND.is_file():
@@ -262,12 +294,15 @@ echo $! >"$ROOT/server.pid"
                     raise RuntimeError("authenticated baseline receipt hashes diverged")
 
                 vm3_url = f"https://{NODES['vm3']}:{PORT}"
-                for node in ("vm1", "vm2"):
-                    request(NODES[node], "/api/v1/cluster/leave", context, {"url": vm3_url})
-                for peer in ("vm1", "vm2"):
-                    request(NODES["vm3"], "/api/v1/cluster/leave", context, {
-                        "url": f"https://{NODES[peer]}:{PORT}"
-                    })
+                if args.kernel_partition:
+                    apply_kernel_partition()
+                else:
+                    for node in ("vm1", "vm2"):
+                        request(NODES[node], "/api/v1/cluster/leave", context, {"url": vm3_url})
+                    for peer in ("vm1", "vm2"):
+                        request(NODES["vm3"], "/api/v1/cluster/leave", context, {
+                            "url": f"https://{NODES[peer]}:{PORT}"
+                        })
                 with concurrent.futures.ThreadPoolExecutor(max_workers=args.partition_tasks) as pool:
                     partition_tasks = list(pool.map(
                         lambda index: failed_task(NODES["vm1"], context, f"partition-{index}"),
@@ -291,12 +326,15 @@ echo $! >"$ROOT/server.pid"
                     if isolated_status != 404:
                         raise RuntimeError(f"isolated vm3 observed partition task: {isolated_status}")
 
-                for node in ("vm1", "vm2"):
-                    request(NODES[node], "/api/v1/cluster/join", context, {"url": vm3_url})
-                for peer in ("vm1", "vm2"):
-                    request(NODES["vm3"], "/api/v1/cluster/join", context, {
-                        "url": f"https://{NODES[peer]}:{PORT}"
-                    })
+                if args.kernel_partition:
+                    clear_kernel_partition()
+                else:
+                    for node in ("vm1", "vm2"):
+                        request(NODES[node], "/api/v1/cluster/join", context, {"url": vm3_url})
+                    for peer in ("vm1", "vm2"):
+                        request(NODES["vm3"], "/api/v1/cluster/join", context, {
+                            "url": f"https://{NODES[peer]}:{PORT}"
+                        })
                 remote("vm3", f'''set -e
 ROOT={REMOTE_ROOT!r}
 kill "$(cat "$ROOT/server.pid")"
@@ -322,7 +360,7 @@ for _ in $(seq 1 50); do kill -0 "$(cat "$ROOT/server.pid")" 2>/dev/null || brea
                         raise RuntimeError(f"{node} Fact integrity failed: {body}")
                     integrity[node] = data.get("fact_count")
                 partition_report = {
-                    "mode": "application_peer_partition",
+                    "mode": "kernel_tcp_partition" if args.kernel_partition else "application_peer_partition",
                     "baseline_converged": True,
                     "concurrent_task_count": len(partition_tasks),
                     "isolated_statuses": isolated_statuses,
