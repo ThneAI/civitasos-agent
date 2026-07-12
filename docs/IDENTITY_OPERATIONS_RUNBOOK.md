@@ -100,3 +100,25 @@ Remote base URLs must use HTTPS. Plain HTTP is accepted only for loopback hosts.
 Use `scripts/private_beta_soak.py` for repeated restart recovery, challenge expiry,
 retry, rotation, signed revocation, emergency revocation, Fact integrity, and audit
 continuity coverage.
+
+## PKCS#11 Development Gate
+
+SoftHSM provides a concrete PKCS#11 integration test but is not hardware-backed
+custody. Install `softhsm2` and the SDK `hardware` extra, then run:
+
+```bash
+.venv/bin/python scripts/p3_softhsm_pkcs11_smoke.py
+```
+
+The smoke creates an isolated temporary token, generates a non-exportable
+`CKK_EC_EDWARDS` key, signs with `CKM_EDDSA`, independently verifies the
+signature, and removes the token store. Override the module only when needed:
+
+```bash
+CIVITASOS_PKCS11_MODULE=/path/to/libsofthsm2.so \
+  .venv/bin/python scripts/p3_softhsm_pkcs11_smoke.py
+```
+
+Do not claim hardware-backed custody from a SoftHSM result. Production evidence
+must name the HSM model, firmware, PKCS#11 module version, key policy, operator
+roles, backup policy, and a successful rotation/revocation drill.
