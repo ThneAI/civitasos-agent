@@ -143,12 +143,15 @@ def wait_converged_receipts(
             )
             if status == 200:
                 latest[node] = body.get("data") or {}
+        all_ready = len(latest) == len(nodes) and all(
+            receipt.get("fact_count", 0) >= minimum_count
+            for receipt in latest.values()
+        )
         states = {
             (receipt.get("fact_count"), receipt.get("receipt_hash"))
             for receipt in latest.values()
-            if receipt.get("fact_count", 0) >= minimum_count
         }
-        if len(latest) == len(nodes) and len(states) == 1:
+        if all_ready and len(states) == 1:
             state = next(iter(states))
             stable = stable + 1 if state == previous else 1
             previous = state
