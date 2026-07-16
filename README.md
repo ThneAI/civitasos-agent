@@ -78,6 +78,16 @@ P4-A/P4-B 统一门禁：
 .venv/bin/python scripts/p4_release_gate.py
 ```
 
+P4-E production auth 配置 fail-closed 与临时 TLS 启动 smoke：
+
+```bash
+.venv/bin/python scripts/p4e_production_security_smoke.py \
+  --output /private/audit/p4e-production-security-smoke.json
+```
+
+该 smoke 仅使用 loopback 和临时自签证书，不打开公网入口、不读取生产数据，
+也不证明生产证书 custody。
+
 ## 目录结构
 
 ```
