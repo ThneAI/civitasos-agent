@@ -27,6 +27,24 @@ SoftHSM PKCS#11、WebAuthn）：
 
 该门禁只授权进入认证多 VM 候选阶段，不代表多 VM soak、实体 HSM 或生产准入完成。
 
+P3 认证三 VM graded soak（必须显式授权；`--hours` 可取 1、8、24）：
+
+```bash
+CIVITASOS_P3_MULTIVM_EXECUTION_ACK=1 \
+  .venv/bin/python scripts/p3_graded_soak.py --hours 24 --partition-tasks 4
+```
+
+复验已归档的 24 小时报告及全部 2627 个逐轮证据：
+
+```bash
+.venv/bin/python scripts/p3_soak_evidence_check.py \
+  --evidence-dir evidence/p3-24h-20260715
+```
+
+nightly 默认不接触 VM。设置 `RUN_P3_SOAK_EVIDENCE_CHECK=1` 可执行快速归档
+复验；设置 `RUN_P3_GRADED_SOAK=1` 和
+`CIVITASOS_P3_MULTIVM_EXECUTION_ACK=1` 才会执行真实多 VM soak。
+
 ## 目录结构
 
 ```
