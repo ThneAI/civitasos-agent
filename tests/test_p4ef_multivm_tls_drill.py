@@ -1,5 +1,6 @@
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,20 @@ def test_authorization_binds_tls_release_and_nonproduction_boundaries(tmp_path: 
     assert authorization["public_ingress_allowed"] is False
     assert authorization["production_data_allowed"] is False
     validate_authorization(authorization, args)
+    subprocess.run(
+        [
+            "openssl",
+            "verify",
+            "-x509_strict",
+            "-CAfile",
+            str(materials / "ca.crt"),
+            str(materials / "vm1.crt"),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
 
 
 def test_authorization_rejects_missing_ack_and_material_tampering(tmp_path: Path) -> None:

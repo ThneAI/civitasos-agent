@@ -150,7 +150,11 @@ def prepare_materials(args: argparse.Namespace) -> int:
     require_success(["openssl", "genrsa", "-out", str(ca_key), "2048"])
     require_success([
         "openssl", "req", "-x509", "-new", "-key", str(ca_key), "-days", str(valid_days),
-        "-subj", "/CN=CivitasOS P4-EF Test CA", "-out", str(ca_cert),
+        "-subj", "/CN=CivitasOS P4-EF Test CA",
+        "-addext", "basicConstraints=critical,CA:TRUE",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        "-addext", "subjectKeyIdentifier=hash",
+        "-out", str(ca_cert),
     ])
     os.chmod(ca_key, 0o600)
     for node in nodes:
@@ -165,7 +169,10 @@ def prepare_materials(args: argparse.Namespace) -> int:
             "-out", str(csr),
         ])
         ext.write_text(
-            f"subjectAltName=DNS:{hostname},IP:{node.node_ip}\nextendedKeyUsage=serverAuth\n"
+            f"subjectAltName=DNS:{hostname},IP:{node.node_ip}\n"
+            "basicConstraints=critical,CA:FALSE\n"
+            "keyUsage=critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage=serverAuth\n"
         )
         require_success([
             "openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_cert),
