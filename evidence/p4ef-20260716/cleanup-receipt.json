@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    {
+      "node_id": "vm1",
+      "passed": true
+    },
+    {
+      "node_id": "vm2",
+      "passed": true
+    },
+    {
+      "node_id": "vm3",
+      "passed": true
+    }
+  ],
+  "passed": true
+}

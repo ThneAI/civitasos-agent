@@ -1,0 +1,9 @@
+curl: (7) Failed to connect to 127.0.0.1 port 18444 after 0 ms: Could not connect to server
+
+curl: (7) Failed to connect to 127.0.0.1 port 18444 after 0 ms: Could not connect to server
+
+curl: (7) Failed to connect to 127.0.0.1 port 18444 after 2 ms: Could not connect to server
+
+ERROR: command failed (35): ['curl', '-fsS', '--max-time', '5', '--cacert', '/tmp/civitasos-p4ef-materials/ca.crt', '--resolve', 'vm1.civitas.internal:18444:192.168.56.4', 'https://vm1.civitas.internal:18444/healthz']
+curl: (35) TLS connect error: error:0A000126:SSL routines::unexpected eof while reading
+

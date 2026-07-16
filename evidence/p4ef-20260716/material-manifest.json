@@ -1,0 +1,83 @@
+{
+  "created_at": 1784213729,
+  "files": {
+    "ca.crt": {
+      "mode": "0o664",
+      "sha256": "72c64331dbc2b8de1aa1e37b106c20286cff76d5660f2f5154c1529b0b329c9f"
+    },
+    "ca.key": {
+      "mode": "0o600",
+      "sha256": "a903cccca7d924346c6661f77078c0a975ad8c77d3d35ce031a1afb02775cb09"
+    },
+    "vm1.crt": {
+      "mode": "0o664",
+      "sha256": "6a7c48a0e5c710c4dc19d95b27b848855e2d06715444f75733a2313495c07706"
+    },
+    "vm1.jwt": {
+      "mode": "0o600",
+      "sha256": "4aff5e8825f0eefbfcc3518dc3c10d272311030c53d1dd17d33bd51fb54aafbb"
+    },
+    "vm1.key": {
+      "mode": "0o600",
+      "sha256": "673e5a048bc5001b90d797003dcd9fab808df5af021ad0b86ddb706a691e2e69"
+    },
+    "vm1.service": {
+      "mode": "0o600",
+      "sha256": "fd961ffb6ae8e168d4dc151c72a767e7fcf5272507cbe8a0b59c45704ab0443a"
+    },
+    "vm2.crt": {
+      "mode": "0o664",
+      "sha256": "587393058462928ea2f338f94ebd7598b60a9f8006d31107fee8a8a69c0d20a7"
+    },
+    "vm2.jwt": {
+      "mode": "0o600",
+      "sha256": "7bcca91c47354380e3d7fdfe5d7ea9edb1eb47477ddf4b72c620c603535a5755"
+    },
+    "vm2.key": {
+      "mode": "0o600",
+      "sha256": "e4ba147a8c868d5063984f727a3ac1e4cb194f4d36a01fa17558db5bda3a8098"
+    },
+    "vm2.service": {
+      "mode": "0o600",
+      "sha256": "689347328ec9538b318244350b8cb34882e7870dd3f16020fb250c879a3a3e35"
+    },
+    "vm3.crt": {
+      "mode": "0o664",
+      "sha256": "5e82554af676c9ec920ac9eb0b761c1940aff54f2f1290f525a4693a9876bdf0"
+    },
+    "vm3.jwt": {
+      "mode": "0o600",
+      "sha256": "0c0f4b867758a41ccbb59dfb29b79de64d9791a90512e81a22631aae607b354d"
+    },
+    "vm3.key": {
+      "mode": "0o600",
+      "sha256": "c4f2f51aae411458d793ed84c15db79ac635fe63a82ef570bab4753a65b3fa88"
+    },
+    "vm3.service": {
+      "mode": "0o600",
+      "sha256": "08a684b0cb96585bc78ef3bac2c05915d874d724475ccd9e8cc5346fb9486ac3"
+    }
+  },
+  "nodes": [
+    {
+      "hostname": "vm1.civitas.internal",
+      "ip": "192.168.56.4",
+      "node_id": "vm1"
+    },
+    {
+      "hostname": "vm2.civitas.internal",
+      "ip": "192.168.56.5",
+      "node_id": "vm2"
+    },
+    {
+      "hostname": "vm3.civitas.internal",
+      "ip": "192.168.56.6",
+      "node_id": "vm3"
+    }
+  ],
+  "production_data_allowed": false,
+  "public_ingress_allowed": false,
+  "schema_version": "civitasos-p4ef-tls-material-manifest:v1",
+  "secret_values_recorded": false,
+  "test_only": true
+}

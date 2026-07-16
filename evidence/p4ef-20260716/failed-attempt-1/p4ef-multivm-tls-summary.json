@@ -1,0 +1,44 @@
+{
+  "authorization_consumed": true,
+  "authorization_id": "p4ef-tls:a7f1877de5c19c347f25a761",
+  "authorization_sha256": "03d962db3b3fc2b91aa3aef466f831575eccb22aec67fd7f75bc635819da57b7",
+  "baseline_sha256": "1a2caf60d35d6e9174e4e4855ee30ef0803ad6c3a88155903b80274b5c37b725",
+  "boundaries": {
+    "automatic_ledger_append_enabled": false,
+    "production_data_used": false,
+    "production_evidence_claimed": false,
+    "public_ingress_opened": false,
+    "virtual_authenticator_proves_hardware_provenance": false
+  },
+  "candidate_browser_webauthn": null,
+  "candidate_sha256": "d378769431323ee531e788fffb93d7c4a7e302cd60bb73915c3aaf2e46e1bb55",
+  "candidate_task_receipt": null,
+  "cleanup": {
+    "nodes": [
+      {
+        "node_id": "vm1",
+        "passed": true
+      },
+      {
+        "node_id": "vm2",
+        "passed": true
+      },
+      {
+        "node_id": "vm3",
+        "passed": true
+      }
+    ],
+    "passed": true
+  },
+  "decision": "no_go",
+  "failure_reasons": [
+    "baseline_deploy_failed"
+  ],
+  "frontend_sha256": "4045ce5a88b9244eb7d273b744e6b307429b8f82ea21e2f65fe97ffe2c44df5c",
+  "material_manifest_sha256": "69c2f20d8cb46cac3569fde1d3c4f644ecb2f8bf4987da0392b5c17dda6f2567",
+  "passed": false,
+  "receipts": [
+    "/tmp/civitasos-p4ef-run/deploy-receipt.json"
+  ],
+  "schema_version": "civitasos-p4ef-multivm-tls-summary:v1"
+}

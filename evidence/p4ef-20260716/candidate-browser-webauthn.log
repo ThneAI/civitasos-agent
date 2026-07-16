@@ -1,0 +1,43 @@
+{
+  "schema_version": "civitasos-p4ef-multivm-browser-webauthn:v1",
+  "passed": true,
+  "node_count": 3,
+  "observations": [
+    {
+      "node_id": "vm1",
+      "hostname": "vm1.civitas.internal",
+      "did_challenge_login": true,
+      "secure_context": true,
+      "credential_sha256": "a9b0059d32771ae0ea6e9da52d4d366581664542a87e4de7a641a1212d19b735",
+      "protected_before_revoke_status": 200,
+      "protected_after_revoke_status": 401,
+      "passed": true
+    },
+    {
+      "node_id": "vm2",
+      "hostname": "vm2.civitas.internal",
+      "did_challenge_login": true,
+      "secure_context": true,
+      "credential_sha256": "69f800d6ec9c81cc77ddf830ba2f367d6326713eb1dcf31ff37788350bb2f04d",
+      "protected_before_revoke_status": 200,
+      "protected_after_revoke_status": 401,
+      "passed": true
+    },
+    {
+      "node_id": "vm3",
+      "hostname": "vm3.civitas.internal",
+      "did_challenge_login": true,
+      "secure_context": true,
+      "credential_sha256": "f7ea16f694c5e47439c6ee68833a2eed790b60458d786b710f17e02daaf82574",
+      "protected_before_revoke_status": 200,
+      "protected_after_revoke_status": 401,
+      "passed": true
+    }
+  ],
+  "boundaries": {
+    "public_ingress_opened": false,
+    "production_data_used": false,
+    "virtual_authenticator_proves_hardware_provenance": false,
+    "service_token_bootstrap_is_production_identity": false
+  }
+}

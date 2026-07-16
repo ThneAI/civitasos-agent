@@ -1,0 +1,48 @@
+{
+  "authorization_id": "p4ef-tls:a7f1877de5c19c347f25a761",
+  "backend_port": 18444,
+  "baseline_sha256": "1a2caf60d35d6e9174e4e4855ee30ef0803ad6c3a88155903b80274b5c37b725",
+  "candidate_sha256": "d378769431323ee531e788fffb93d7c4a7e302cd60bb73915c3aaf2e46e1bb55",
+  "consumed": false,
+  "expires_at": 1784217329,
+  "frontend_port": 18443,
+  "frontend_sha256": "4045ce5a88b9244eb7d273b744e6b307429b8f82ea21e2f65fe97ffe2c44df5c",
+  "issued_at": 1784213729,
+  "material_file_sha256": {
+    "ca.crt": "72c64331dbc2b8de1aa1e37b106c20286cff76d5660f2f5154c1529b0b329c9f",
+    "ca.key": "a903cccca7d924346c6661f77078c0a975ad8c77d3d35ce031a1afb02775cb09",
+    "vm1.crt": "6a7c48a0e5c710c4dc19d95b27b848855e2d06715444f75733a2313495c07706",
+    "vm1.jwt": "4aff5e8825f0eefbfcc3518dc3c10d272311030c53d1dd17d33bd51fb54aafbb",
+    "vm1.key": "673e5a048bc5001b90d797003dcd9fab808df5af021ad0b86ddb706a691e2e69",
+    "vm1.service": "fd961ffb6ae8e168d4dc151c72a767e7fcf5272507cbe8a0b59c45704ab0443a",
+    "vm2.crt": "587393058462928ea2f338f94ebd7598b60a9f8006d31107fee8a8a69c0d20a7",
+    "vm2.jwt": "7bcca91c47354380e3d7fdfe5d7ea9edb1eb47477ddf4b72c620c603535a5755",
+    "vm2.key": "e4ba147a8c868d5063984f727a3ac1e4cb194f4d36a01fa17558db5bda3a8098",
+    "vm2.service": "689347328ec9538b318244350b8cb34882e7870dd3f16020fb250c879a3a3e35",
+    "vm3.crt": "5e82554af676c9ec920ac9eb0b761c1940aff54f2f1290f525a4693a9876bdf0",
+    "vm3.jwt": "0c0f4b867758a41ccbb59dfb29b79de64d9791a90512e81a22631aae607b354d",
+    "vm3.key": "c4f2f51aae411458d793ed84c15db79ac635fe63a82ef570bab4753a65b3fa88",
+    "vm3.service": "08a684b0cb96585bc78ef3bac2c05915d874d724475ccd9e8cc5346fb9486ac3"
+  },
+  "material_manifest_sha256": "69c2f20d8cb46cac3569fde1d3c4f644ecb2f8bf4987da0392b5c17dda6f2567",
+  "nodes": [
+    "vm1",
+    "vm2",
+    "vm3"
+  ],
+  "operations": [
+    "deploy",
+    "upgrade",
+    "tls_browser_identity",
+    "task_receipt",
+    "rollback",
+    "cleanup"
+  ],
+  "operator_id": "local-operator-cc",
+  "production_data_allowed": false,
+  "production_evidence_allowed": false,
+  "public_ingress_allowed": false,
+  "remote_root": "/tmp/civitasos-p4ef-tls",
+  "schema_version": "civitasos-p4ef-multivm-tls-authorization:v1",
+  "single_use": true
+}

@@ -1,0 +1,33 @@
+{
+  "demo_auth_used": false,
+  "node_count": 3,
+  "observations": [
+    {
+      "evidence_metrics_exposed": true,
+      "fact_count": 5,
+      "node_id": "vm1",
+      "receipt_hash": "a16e9a3018aef72dc93c0b09c439e2304776cc7433dc597f0b2554bf6242f084",
+      "settled": true,
+      "task_id": "a629ed57-06aa-4091-8342-321150f82519"
+    },
+    {
+      "evidence_metrics_exposed": true,
+      "fact_count": 5,
+      "node_id": "vm2",
+      "receipt_hash": "8324b666bd3bffcf0e1ced78794fd8ceb75a2c1bad0509a12cc6c7bb735a9ab2",
+      "settled": true,
+      "task_id": "9afed08e-c3e1-46f0-a582-b615e5fb11e3"
+    },
+    {
+      "evidence_metrics_exposed": true,
+      "fact_count": 5,
+      "node_id": "vm3",
+      "receipt_hash": "20561830ecd26e9353ec21297893162e3434eb98c881b4089f26b1d0bef78359",
+      "settled": true,
+      "task_id": "7c48d566-d43f-46d2-bd67-ee7d91c5f591"
+    }
+  ],
+  "passed": true,
+  "production_evidence_claimed": false,
+  "schema_version": "civitasos-p4ef-multivm-task-receipt:v1"
+}

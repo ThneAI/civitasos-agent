@@ -1,0 +1,118 @@
+{
+  "authorization_consumed": true,
+  "authorization_id": "p4ef-tls:02ad81c7e51725e5166c749b",
+  "authorization_sha256": "707f4f2217587a949a6486bac21fed776f5f9f96b4681230594e80f0ca14d1c3",
+  "baseline_sha256": "1a2caf60d35d6e9174e4e4855ee30ef0803ad6c3a88155903b80274b5c37b725",
+  "boundaries": {
+    "automatic_ledger_append_enabled": false,
+    "production_data_used": false,
+    "production_evidence_claimed": false,
+    "public_ingress_opened": false,
+    "virtual_authenticator_proves_hardware_provenance": false
+  },
+  "candidate_browser_webauthn": {
+    "boundaries": {
+      "production_data_used": false,
+      "public_ingress_opened": false,
+      "service_token_bootstrap_is_production_identity": false,
+      "virtual_authenticator_proves_hardware_provenance": false
+    },
+    "node_count": 3,
+    "observations": [
+      {
+        "credential_sha256": "a9b0059d32771ae0ea6e9da52d4d366581664542a87e4de7a641a1212d19b735",
+        "did_challenge_login": true,
+        "hostname": "vm1.civitas.internal",
+        "node_id": "vm1",
+        "passed": true,
+        "protected_after_revoke_status": 401,
+        "protected_before_revoke_status": 200,
+        "secure_context": true
+      },
+      {
+        "credential_sha256": "69f800d6ec9c81cc77ddf830ba2f367d6326713eb1dcf31ff37788350bb2f04d",
+        "did_challenge_login": true,
+        "hostname": "vm2.civitas.internal",
+        "node_id": "vm2",
+        "passed": true,
+        "protected_after_revoke_status": 401,
+        "protected_before_revoke_status": 200,
+        "secure_context": true
+      },
+      {
+        "credential_sha256": "f7ea16f694c5e47439c6ee68833a2eed790b60458d786b710f17e02daaf82574",
+        "did_challenge_login": true,
+        "hostname": "vm3.civitas.internal",
+        "node_id": "vm3",
+        "passed": true,
+        "protected_after_revoke_status": 401,
+        "protected_before_revoke_status": 200,
+        "secure_context": true
+      }
+    ],
+    "passed": true,
+    "schema_version": "civitasos-p4ef-multivm-browser-webauthn:v1"
+  },
+  "candidate_sha256": "d378769431323ee531e788fffb93d7c4a7e302cd60bb73915c3aaf2e46e1bb55",
+  "candidate_task_receipt": {
+    "demo_auth_used": false,
+    "node_count": 3,
+    "observations": [
+      {
+        "evidence_metrics_exposed": true,
+        "fact_count": 5,
+        "node_id": "vm1",
+        "receipt_hash": "a16e9a3018aef72dc93c0b09c439e2304776cc7433dc597f0b2554bf6242f084",
+        "settled": true,
+        "task_id": "a629ed57-06aa-4091-8342-321150f82519"
+      },
+      {
+        "evidence_metrics_exposed": true,
+        "fact_count": 5,
+        "node_id": "vm2",
+        "receipt_hash": "8324b666bd3bffcf0e1ced78794fd8ceb75a2c1bad0509a12cc6c7bb735a9ab2",
+        "settled": true,
+        "task_id": "9afed08e-c3e1-46f0-a582-b615e5fb11e3"
+      },
+      {
+        "evidence_metrics_exposed": true,
+        "fact_count": 5,
+        "node_id": "vm3",
+        "receipt_hash": "20561830ecd26e9353ec21297893162e3434eb98c881b4089f26b1d0bef78359",
+        "settled": true,
+        "task_id": "7c48d566-d43f-46d2-bd67-ee7d91c5f591"
+      }
+    ],
+    "passed": true,
+    "production_evidence_claimed": false,
+    "schema_version": "civitasos-p4ef-multivm-task-receipt:v1"
+  },
+  "cleanup": {
+    "nodes": [
+      {
+        "node_id": "vm1",
+        "passed": true
+      },
+      {
+        "node_id": "vm2",
+        "passed": true
+      },
+      {
+        "node_id": "vm3",
+        "passed": true
+      }
+    ],
+    "passed": true
+  },
+  "decision": "go_p4ef_private_tls_operations",
+  "failure_reasons": [],
+  "frontend_sha256": "4045ce5a88b9244eb7d273b744e6b307429b8f82ea21e2f65fe97ffe2c44df5c",
+  "material_manifest_sha256": "69c2f20d8cb46cac3569fde1d3c4f644ecb2f8bf4987da0392b5c17dda6f2567",
+  "passed": true,
+  "receipts": [
+    "/tmp/civitasos-p4ef-run-r2/deploy-receipt.json",
+    "/tmp/civitasos-p4ef-run-r2/upgrade-receipt.json",
+    "/tmp/civitasos-p4ef-run-r2/rollback-receipt.json"
+  ],
+  "schema_version": "civitasos-p4ef-multivm-tls-summary:v1"
+}

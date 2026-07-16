@@ -1,0 +1,39 @@
+{
+  "duration_seconds": 8.801,
+  "error": null,
+  "log_sha256": "fda3cc6ae5b0f7c9b4e864419b5d8a0538a382208e2747c15b755ca7192bd650",
+  "nodes": [
+    {
+      "backend_tls_verified": true,
+      "frontend_tls_verified": true,
+      "hostname": "vm1.civitas.internal",
+      "node_id": "vm1",
+      "passed": true,
+      "plaintext_backend_rejected": true
+    },
+    {
+      "backend_tls_verified": true,
+      "frontend_tls_verified": true,
+      "hostname": "vm2.civitas.internal",
+      "node_id": "vm2",
+      "passed": true,
+      "plaintext_backend_rejected": true
+    },
+    {
+      "backend_tls_verified": true,
+      "frontend_tls_verified": true,
+      "hostname": "vm3.civitas.internal",
+      "node_id": "vm3",
+      "passed": true,
+      "plaintext_backend_rejected": true
+    }
+  ],
+  "operation": "upgrade",
+  "passed": true,
+  "previous_release_sha256": "1a2caf60d35d6e9174e4e4855ee30ef0803ad6c3a88155903b80274b5c37b725",
+  "production_operation": false,
+  "recorded_at": "2026-07-16T14:57:23.163163+00:00",
+  "release_sha256": "d378769431323ee531e788fffb93d7c4a7e302cd60bb73915c3aaf2e46e1bb55",
+  "schema_version": "civitasos-p4ef-operational-change-receipt:v1",
+  "total_checks": 9
+}

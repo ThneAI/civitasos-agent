@@ -1,0 +1,14 @@
+{
+  "duration_seconds": 11.611,
+  "error": "command failed (35): ['curl', '-fsS', '--max-time', '5', '--cacert', '/tmp/civitasos-p4ef-materials/ca.crt', '--resolve', 'vm1.civitas.internal:18444:192.168.56.4', 'https://vm1.civitas.internal:18444/healthz']\ncurl: (35) TLS connect error: error:0A000126:SSL routines::unexpected eof while reading\n",
+  "log_sha256": "a97c7f99e8437e63f9a07068ca56931ea17dce347848d01190e206826271da41",
+  "nodes": [],
+  "operation": "deploy",
+  "passed": false,
+  "previous_release_sha256": null,
+  "production_operation": false,
+  "recorded_at": "2026-07-16T14:55:55.908273+00:00",
+  "release_sha256": "1a2caf60d35d6e9174e4e4855ee30ef0803ad6c3a88155903b80274b5c37b725",
+  "schema_version": "civitasos-p4ef-operational-change-receipt:v1",
+  "total_checks": 0
+}
