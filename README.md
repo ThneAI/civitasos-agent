@@ -45,6 +45,17 @@ nightly 默认不接触 VM。设置 `RUN_P3_SOAK_EVIDENCE_CHECK=1` 可执行快�
 复验；设置 `RUN_P3_GRADED_SOAK=1` 和
 `CIVITASOS_P3_MULTIVM_EXECUTION_ACK=1` 才会执行真实多 VM soak。
 
+PKCS#11 服务身份可用性检查默认交互读取 PIN，也可从仅 owner 可读的
+PIN 文件读取；PIN 不应放入命令参数：
+
+```bash
+.venv/bin/python scripts/pkcs11_identity_probe.py \
+  --token-label civitas-service \
+  --key-label agent-signing-2026q3 \
+  --key-id 01 \
+  --output /private/audit/pkcs11-probe.json
+```
+
 ## 目录结构
 
 ```

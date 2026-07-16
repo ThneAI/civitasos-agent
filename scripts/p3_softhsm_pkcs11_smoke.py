@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 import pkcs11
-from civitasos import Pkcs11Ed25519Signer
+from civitasos import CivitasError, Pkcs11Ed25519Signer
 from nacl.signing import VerifyKey
 
 
@@ -47,6 +47,7 @@ def main() -> int:
                         pkcs11.Attribute.EC_PARAMS: bytes.fromhex("06032b6570")
                     },
                     label="agent-key",
+                    id=b"\x01",
                     store=True,
                 )
                 encoded_point = bytes(public_key[pkcs11.Attribute.EC_POINT])
@@ -59,13 +60,51 @@ def main() -> int:
                 MODULE,
                 "civitas-test",
                 "agent-key",
-                public_key_hex,
+                None,
                 "123456",
+                key_id=b"\x01",
             ) as signer:
+                if signer.public_key_hex != public_key_hex:
+                    raise RuntimeError("PKCS#11 signer did not derive the token public key")
                 signature = signer.sign(message)
                 VerifyKey(bytes.fromhex(signer.public_key_hex)).verify(message, signature)
                 if hasattr(signer, "export_seed_hex"):
                     raise RuntimeError("PKCS#11 signer unexpectedly exposes seed export")
+
+            try:
+                signer.sign(message)
+                raise RuntimeError("closed PKCS#11 signer unexpectedly signed")
+            except CivitasError as error:
+                if "closed" not in str(error):
+                    raise
+
+            try:
+                Pkcs11Ed25519Signer(
+                    MODULE,
+                    "civitas-test",
+                    "agent-key",
+                    "00" * 32,
+                    "123456",
+                    key_id=b"\x01",
+                )
+                raise RuntimeError("mismatched PKCS#11 public key was accepted")
+            except CivitasError as error:
+                if "does not match" not in str(error):
+                    raise
+
+            try:
+                Pkcs11Ed25519Signer(
+                    MODULE,
+                    "civitas-test",
+                    "agent-key",
+                    None,
+                    "incorrect-pin",
+                    key_id=b"\x01",
+                )
+                raise RuntimeError("incorrect PKCS#11 PIN was accepted")
+            except CivitasError as error:
+                if "initialization failed" not in str(error):
+                    raise
 
             print(
                 json.dumps(
@@ -77,6 +116,11 @@ def main() -> int:
                         "key_type": "CKK_EC_EDWARDS",
                         "signature_bytes": len(signature),
                         "seed_exported": False,
+                        "public_key_derived_from_token": True,
+                        "key_id_selected": True,
+                        "public_key_mismatch_rejected": True,
+                        "incorrect_pin_rejected": True,
+                        "closed_signer_rejected": True,
                         "hardware_claimed": False,
                         "production_claimed": False,
                     },
