@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import ssl
 import stat
 import subprocess
 import time
@@ -47,6 +48,7 @@ def request_json(
     url: str,
     token: str,
     body: dict | None = None,
+    ssl_context: ssl.SSLContext | None = None,
 ) -> dict:
     payload = json.dumps(body, separators=(",", ":")).encode() if body is not None else None
     request = Request(
@@ -59,7 +61,7 @@ def request_json(
         },
     )
     try:
-        with urlopen(request, timeout=15) as response:
+        with urlopen(request, timeout=15, context=ssl_context) as response:
             result = json.loads(response.read())
     except HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
@@ -137,6 +139,7 @@ def main() -> int:
     parser.add_argument("--actor-id", required=True)
     parser.add_argument("--source-system", default="civitasos_backend")
     parser.add_argument("--staging-root", type=Path, required=True)
+    parser.add_argument("--ca-cert", type=Path)
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--retry-delay-secs", type=float, default=1.0)
     parser.add_argument("--output", type=Path)
@@ -147,12 +150,19 @@ def main() -> int:
         parser.error("--retry-delay-secs must not be negative")
 
     token = read_service_token(args.service_token_file)
+    ssl_context = (
+        ssl.create_default_context(cafile=str(args.ca_cert.resolve()))
+        if args.ca_cert
+        else None
+    )
     base_url = args.backend_url.rstrip("/")
     query = urlencode({"pending_only": "true"})
     response, list_attempts = retry_operation(
         "list pending evidence exports",
         lambda: request_json(
-            f"{base_url}/api/v1/a2a/operator/evidence-exports?{query}", token
+            f"{base_url}/api/v1/a2a/operator/evidence-exports?{query}",
+            token,
+            ssl_context=ssl_context,
         ),
         args.max_attempts,
         args.retry_delay_secs,
@@ -193,6 +203,7 @@ def main() -> int:
                     "ledger_event_sha256": receipt["ledger_event_sha256"],
                     "source_manifest_ref": receipt["source_manifest_ref"],
                 },
+                ssl_context,
             )
             return receipt, acknowledgement
 

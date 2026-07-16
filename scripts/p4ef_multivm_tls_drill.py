@@ -142,11 +142,14 @@ def prepare_materials(args: argparse.Namespace) -> int:
     output.mkdir(parents=True, mode=0o700)
     os.chmod(output, 0o700)
     nodes = [parse_node(raw) for raw in (args.node or DEFAULT_NODES)]
+    valid_days = getattr(args, "valid_days", 2)
+    if valid_days < 1:
+        raise SystemExit("TLS material validity must be at least one day")
     ca_key = output / "ca.key"
     ca_cert = output / "ca.crt"
     require_success(["openssl", "genrsa", "-out", str(ca_key), "2048"])
     require_success([
-        "openssl", "req", "-x509", "-new", "-key", str(ca_key), "-days", "2",
+        "openssl", "req", "-x509", "-new", "-key", str(ca_key), "-days", str(valid_days),
         "-subj", "/CN=CivitasOS P4-EF Test CA", "-out", str(ca_cert),
     ])
     os.chmod(ca_key, 0o600)
@@ -166,7 +169,7 @@ def prepare_materials(args: argparse.Namespace) -> int:
         )
         require_success([
             "openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_cert),
-            "-CAkey", str(ca_key), "-CAcreateserial", "-days", "2",
+            "-CAkey", str(ca_key), "-CAcreateserial", "-days", str(valid_days),
             "-extfile", str(ext), "-out", str(cert),
         ])
         csr.unlink()
@@ -183,6 +186,7 @@ def prepare_materials(args: argparse.Namespace) -> int:
     manifest = {
         "schema_version": MATERIAL_SCHEMA,
         "created_at": now(),
+        "valid_days": valid_days,
         "nodes": [
             {
                 "node_id": node.node_id,
@@ -544,6 +548,27 @@ def api_request(
         return error.code, json.loads(error.read() or b"{}")
 
 
+def api_text_request(
+    node: PreviewNode,
+    frontend_port: int,
+    path: str,
+    token: str,
+    ca_cert: Path,
+) -> tuple[int, str]:
+    request = urllib.request.Request(
+        f"https://{node.node_ip}:{frontend_port}{path}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    context = ssl.create_default_context(cafile=str(ca_cert.resolve()))
+    try:
+        with urllib.request.urlopen(
+            request, context=context, timeout=10
+        ) as response:
+            return response.status, response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode("utf-8", errors="replace")
+
+
 def identity_token(
     node: PreviewNode,
     frontend_port: int,
@@ -692,12 +717,17 @@ def candidate_task_smoke(
             raise RuntimeError(
                 f"{node.node_id} task receipt incomplete: {receipt_response}"
             )
-        metrics = require_success([
-            "curl", "-ksS", "--noproxy", "*", "--max-time", "5",
-            "-H", f"Authorization: Bearer {service_token}",
-            f"https://{node.node_ip}:{frontend_port}/metrics",
-        ])
-        if "civitasos_evidence_export_pending" not in metrics:
+        metrics_status, metrics = api_text_request(
+            node,
+            frontend_port,
+            "/metrics",
+            service_token,
+            materials / "ca.crt",
+        )
+        if (
+            metrics_status != 200
+            or "civitasos_evidence_export_pending" not in metrics
+        ):
             raise RuntimeError(
                 f"{node.node_id} Evidence metrics were not exposed"
             )
@@ -904,6 +934,7 @@ def parser() -> argparse.ArgumentParser:
     material = subparsers.add_parser("prepare-materials")
     material.add_argument("--output-dir", required=True)
     material.add_argument("--node", action="append", default=[])
+    material.add_argument("--valid-days", type=int, default=2)
     material.set_defaults(func=prepare_materials)
     auth = subparsers.add_parser("authorize")
     auth.add_argument("--baseline-bin", required=True)
