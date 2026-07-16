@@ -1,0 +1,27 @@
+{
+  "authorization_id": "p4d-upgrade:2784c1bf444bbb06ebfc5036",
+  "baseline_sha256": "e42f0db70ba24357c052614185ac76914451b3ae23a0ce9ae0ddce7bab4e412d",
+  "candidate_sha256": "4f0b2699ae69bf8c21ff045012b49ff1cad656ad6180a961412d9b3355cb1520",
+  "consumed": false,
+  "expires_at": 1784211558,
+  "frontend_sha256": "f4f30c227df82d17f86897e225852af869120c9596cc5dde36eeaa2c5ed351f1",
+  "issued_at": 1784207958,
+  "nodes": [
+    "vm1",
+    "vm2",
+    "vm3"
+  ],
+  "operations": [
+    "deploy",
+    "upgrade",
+    "rollback",
+    "cleanup"
+  ],
+  "operator_id": "local-operator-cc",
+  "production_receipt_write_allowed": false,
+  "production_runtime_allowed": false,
+  "public_ingress_allowed": false,
+  "remote_root": "/tmp/civitasos-p4d-upgrade-preview",
+  "schema_version": "civitasos-p4d-multivm-upgrade-authorization:v1",
+  "single_use": true
+}

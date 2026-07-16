@@ -1,0 +1,77 @@
+{
+  "authorization_consumed": true,
+  "authorization_id": "p4d-upgrade:2784c1bf444bbb06ebfc5036",
+  "authorization_sha256": "0a3e672c6855b03b46b5d5733dd7d9dcb05addcefbc24576e74e446b199a0d6f",
+  "baseline_sha256": "e42f0db70ba24357c052614185ac76914451b3ae23a0ce9ae0ddce7bab4e412d",
+  "boundaries": {
+    "production_receipt_written": false,
+    "production_runtime_executed": false,
+    "public_ingress_opened": false
+  },
+  "candidate_sha256": "4f0b2699ae69bf8c21ff045012b49ff1cad656ad6180a961412d9b3355cb1520",
+  "candidate_task_receipt_smoke": {
+    "browser_contract_compatible": true,
+    "demo_auth_nonproduction": true,
+    "node_count": 3,
+    "observations": [
+      {
+        "claim_mode": "explicit",
+        "fact_count": 5,
+        "node_id": "vm1",
+        "receipt_hash": "e64955fb014a0adeba2da89ac17be30b3c0af7c058bd30bb31f8cd435a5371d4",
+        "review_mode": "challenge_window_auto_settlement",
+        "settled": true,
+        "task_id": "a4cd2e47-5d2c-41cd-a1db-3571dd11fb93"
+      },
+      {
+        "claim_mode": "explicit",
+        "fact_count": 5,
+        "node_id": "vm2",
+        "receipt_hash": "84384001abcdee46ae57f0d22c58a52452aeb3575e7524203775f199640b4710",
+        "review_mode": "challenge_window_auto_settlement",
+        "settled": true,
+        "task_id": "de7856d1-275f-4d1c-8b3c-12eeefa444b4"
+      },
+      {
+        "claim_mode": "explicit",
+        "fact_count": 5,
+        "node_id": "vm3",
+        "receipt_hash": "efa5844d7220868ce0d17a659421bbfed1ecc6ff4a8acfb0bd042f4417ed20f5",
+        "review_mode": "challenge_window_auto_settlement",
+        "settled": true,
+        "task_id": "a0358895-d752-4b9b-bb33-5ec691fbe311"
+      }
+    ],
+    "passed": true,
+    "production_evidence_claimed": false,
+    "schema_version": "civitasos-p4d-multivm-task-receipt-smoke:v1"
+  },
+  "cleanup": {
+    "command": [
+      "/tmp/civitasos-p4d-final-run/baseline-run/rollback_multivm_real_service.sh"
+    ],
+    "duration_seconds": 0.761,
+    "log_path": "/tmp/civitasos-p4d-final-run/cleanup.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "return_code": 0
+  },
+  "cleanup_health": {
+    "command": [
+      "/tmp/civitasos-p4d-final-run/baseline-run/smoke_rollback_multivm_real_service.sh"
+    ],
+    "duration_seconds": 1.907,
+    "log_path": "/tmp/civitasos-p4d-final-run/cleanup-health.log",
+    "log_sha256": "cfe282b3b4b54b55dfbc34b6aa711d15375c147187eccbf010c8cdbc576be30c",
+    "return_code": 0
+  },
+  "decision": "go_p4d_private_multivm_operations",
+  "failure_reasons": [],
+  "frontend_sha256": "f4f30c227df82d17f86897e225852af869120c9596cc5dde36eeaa2c5ed351f1",
+  "passed": true,
+  "receipts": [
+    "/tmp/civitasos-p4d-final-run/deploy-receipt.json",
+    "/tmp/civitasos-p4d-final-run/upgrade-receipt.json",
+    "/tmp/civitasos-p4d-final-run/rollback-receipt.json"
+  ],
+  "schema_version": "civitasos-p4d-multivm-upgrade-summary:v1"
+}

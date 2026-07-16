@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -43,6 +44,8 @@ def run_gate(name: str, command: list[str], cwd: Path, env: dict[str, str] | Non
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("/tmp/civitasos-p4-release-gate.json"))
+    parser.add_argument("--p4d-multivm-summary", type=Path)
+    parser.add_argument("--p4d-candidate-bin", type=Path)
     args = parser.parse_args()
     python = sys.executable
     ledger_python = LEDGER / ".venv" / "bin" / "python"
@@ -90,6 +93,18 @@ def main() -> int:
             None,
         ),
         (
+            "webauthn_registration_revocation_end_to_end",
+            [python, "scripts/p3_webauthn_e2e_smoke.py"],
+            AGENT,
+            None,
+        ),
+        (
+            "p4d_operational_receipt_runner",
+            [python, "-m", "pytest", "-q", "tests/test_p4d_multivm_upgrade_drill.py"],
+            AGENT,
+            None,
+        ),
+        (
             "frontend_identity_receipt_suite",
             ["npm", "test", "--", "--runInBand", "--watchAll=false"],
             FRONTEND,
@@ -111,11 +126,47 @@ def main() -> int:
         if not result["passed"]:
             break
 
-    passed = len(results) == len(definitions) and all(result["passed"] for result in results)
+    if all(result["passed"] for result in results) and args.p4d_multivm_summary:
+        started_summary = time.monotonic()
+        try:
+            summary = json.loads(args.p4d_multivm_summary.read_text())
+            boundaries = summary.get("boundaries", {})
+            candidate_hash = (
+                hashlib.sha256(args.p4d_candidate_bin.read_bytes()).hexdigest()
+                if args.p4d_candidate_bin and args.p4d_candidate_bin.is_file()
+                else None
+            )
+            valid = (
+                summary.get("schema_version") == "civitasos-p4d-multivm-upgrade-summary:v1"
+                and summary.get("passed") is True
+                and summary.get("authorization_consumed") is True
+                and candidate_hash is not None
+                and summary.get("candidate_sha256") == candidate_hash
+                and boundaries.get("public_ingress_opened") is False
+                and boundaries.get("production_runtime_executed") is False
+                and boundaries.get("production_receipt_written") is False
+            )
+            error = None if valid else "P4-D multi-VM summary failed schema, pass, candidate hash, authorization, or boundary checks"
+        except Exception as exc:  # noqa: BLE001
+            valid, error = False, str(exc)
+        result = {
+            "name": "p4d_multivm_upgrade_rollback",
+            "passed": valid,
+            "return_code": 0 if valid else 1,
+            "duration_seconds": round(time.monotonic() - started_summary, 3),
+            "command": ["validate", str(args.p4d_multivm_summary)],
+            "output_tail": [] if valid else [error],
+        }
+        results.append(result)
+        print(f"[{result['name']}] {'PASS' if result['passed'] else 'FAIL'} ({result['duration_seconds']}s)")
+
+    expected_gate_count = len(definitions) + (1 if args.p4d_multivm_summary else 0)
+    passed = len(results) == expected_gate_count and all(result["passed"] for result in results)
+    p4d_validated = args.p4d_multivm_summary is not None and results[-1]["name"] == "p4d_multivm_upgrade_rollback" and results[-1]["passed"]
     report = {
-        "schema_version": "civitasos-p4-release-gate:v2",
+        "schema_version": "civitasos-p4-release-gate:v3",
         "passed": passed,
-        "decision": "go_p4abc_private_beta_operations" if passed else "no_go",
+        "decision": ("go_p4d_private_beta_operations" if passed and p4d_validated else "go_p4abc_private_beta_operations" if passed else "no_go"),
         "duration_seconds": round(time.monotonic() - started, 3),
         "gates": results,
         "boundaries": {
@@ -125,8 +176,11 @@ def main() -> int:
             "production_evidence_claimed": False,
             "public_ingress_authorized": False,
             "production_runtime_authorized": False,
-            "webauthn_attestation_verified": False,
-            "webauthn_existing_jwt_immediately_revoked": False,
+            "webauthn_registration_challenge_verified": True,
+            "webauthn_cose_key_binding_verified": True,
+            "webauthn_device_attestation_provenance_verified": False,
+            "webauthn_existing_jwt_immediately_revoked": True,
+            "private_multivm_upgrade_rollback_validated": p4d_validated,
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

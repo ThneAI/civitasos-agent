@@ -1,0 +1,34 @@
+{
+  "command": {
+    "command": [
+      "/tmp/civitasos-p4d-final-run/baseline-run/deploy_multivm_real_service.sh"
+    ],
+    "duration_seconds": 6.935,
+    "log_path": "/tmp/civitasos-p4d-final-run/rollback.log",
+    "log_sha256": "589e5027d679e87718f5880b9c2f6b399a1805300560a6e44bc15e6253e6266c",
+    "return_code": 0
+  },
+  "nodes": [
+    "vm1",
+    "vm2",
+    "vm3"
+  ],
+  "operation": "rollback",
+  "passed": true,
+  "previous_release_sha256": "4f0b2699ae69bf8c21ff045012b49ff1cad656ad6180a961412d9b3355cb1520",
+  "production_operation": false,
+  "recorded_at": "2026-07-16T13:19:49.362564+00:00",
+  "release_sha256": "e42f0db70ba24357c052614185ac76914451b3ae23a0ce9ae0ddce7bab4e412d",
+  "schema_version": "civitasos-p4d-operational-change-receipt:v1",
+  "smoke": {
+    "command": [
+      "/tmp/civitasos-p4d-final-run/baseline-run/smoke_multivm_real_service.py"
+    ],
+    "duration_seconds": 0.235,
+    "log_path": "/tmp/civitasos-p4d-final-run/rollback-smoke.log",
+    "log_sha256": "f95f3daa3f69f6ffdf6747e9d227ed74aab51c24a5174b54ac828540195d54b8",
+    "return_code": 0
+  },
+  "smoke_summary_sha256": "2ad01da636874406fc740ffdc37c20fe6e653b1afe501be76402e87de3549308",
+  "total_checks": 15
+}

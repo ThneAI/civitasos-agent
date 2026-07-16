@@ -8,6 +8,7 @@ import os
 import secrets
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from civitasos import CivitasAgent
@@ -56,6 +57,7 @@ def main() -> int:
             ),
             "CIVITASOS_TASK_CHALLENGE_WINDOW_ENABLED": "false",
             "CIVITASOS_A2A_SEED_TASKS": "false",
+            "CIVITASOS_EVIDENCE_EXPORT_LAG_THRESHOLD_SECS": "1",
         }
         process = start_backend(env)
         try:
@@ -85,6 +87,19 @@ def main() -> int:
             pending = pending_response.get("data", {}).get("records", [])
             if status != 200 or len(pending) != 1 or pending[0].get("task_id") != task_id:
                 raise RuntimeError(f"durable evidence export was not queued: {pending_response}")
+            time.sleep(1.05)
+            health_status, pending_health_response = request(
+                "/api/v1/a2a/operator/evidence-exports/health",
+                token=operator._jwt_token,  # noqa: SLF001
+            )
+            pending_health = pending_health_response.get("data", {})
+            if (
+                health_status != 200
+                or pending_health.get("pending_count") != 1
+                or pending_health.get("lagging_count") != 1
+                or pending_health.get("healthy") is not False
+            ):
+                raise RuntimeError(f"evidence outbox health missed pending export: {pending_health_response}")
 
             run([
                 str(LEDGER_CLI), "init-run",
@@ -128,6 +143,15 @@ def main() -> int:
             restored = restored_response.get("data", {}).get("records", [])
             if status != 200 or len(restored) != 1 or restored[0].get("status") != "acknowledged":
                 raise RuntimeError(f"evidence acknowledgement did not survive restart: {restored_response}")
+            health_status, acknowledged_health_response = request(
+                "/api/v1/a2a/operator/evidence-exports/health",
+                token=operator._jwt_token,  # noqa: SLF001
+            )
+            acknowledged_health = acknowledged_health_response.get("data", {})
+            if health_status != 200 or acknowledged_health.get("pending_count") != 0:
+                raise RuntimeError(
+                    f"evidence outbox health retained acknowledged export as pending: {acknowledged_health_response}"
+                )
 
             run(bridge_command)
             repeated_bridge = json.loads(bridge_report.read_text())
@@ -144,6 +168,9 @@ def main() -> int:
                 "acknowledgement_survived_restart": True,
                 "repeat_processed_exports": 0,
                 "ledger_event_count": 1,
+                "outbox_health_pending_before_import": 1,
+                "outbox_health_pending_after_acknowledgement": 0,
+                "outbox_lag_alert_observed": True,
                 "automatic_ledger_append": False,
                 "externally_verified": False,
                 "production_evidence": False,

@@ -59,6 +59,48 @@ def assertion(root: Path, challenge: dict, credential_id: str, sign_count: int) 
     }
 
 
+def registration_payload(
+    challenge: dict,
+    credential_id: str,
+    public_key: bytes,
+    agent_id: str,
+) -> dict:
+    client_data = json.dumps(
+        {
+            "type": "webauthn.create",
+            "challenge": challenge["challenge"],
+            "origin": "https://localhost",
+        },
+        separators=(",", ":"),
+    ).encode()
+    cose_key = (
+        b"\xa5\x01\x02\x03\x26\x20\x01\x21\x58\x20"
+        + public_key[1:33]
+        + b"\x22\x58\x20"
+        + public_key[33:65]
+    )
+    credential_bytes = base64.urlsafe_b64decode(credential_id + "==")
+    authenticator_data = (
+        hashlib.sha256(b"localhost").digest()
+        + b"\x41"
+        + (0).to_bytes(4, "big")
+        + bytes(16)
+        + len(credential_bytes).to_bytes(2, "big")
+        + credential_bytes
+        + cose_key
+    )
+    return {
+        "challenge_id": challenge["challenge_id"],
+        "credential_id": credential_id,
+        "agent_id": agent_id,
+        "rp_id": "localhost",
+        "origin": "https://localhost",
+        "public_key_sec1_hex": public_key.hex(),
+        "client_data_json": b64url(client_data),
+        "authenticator_data": b64url(authenticator_data),
+    }
+
+
 def main() -> int:
     service_secret = secrets.token_urlsafe(32)
     with tempfile.TemporaryDirectory(prefix="civitasos-webauthn-") as temporary:
@@ -96,15 +138,27 @@ def main() -> int:
         try:
             operator = registered_agent("webauthn-operator", service_secret)
             credential_id = b64url(secrets.token_bytes(24))
-            status, body = request(
-                "/api/v1/auth/webauthn/register",
+            status, registration_challenge = request(
+                "/api/v1/auth/webauthn/registration-challenge",
                 {
-                    "credential_id": credential_id,
                     "agent_id": str(operator.agent_id),
                     "rp_id": "localhost",
                     "origin": "https://localhost",
-                    "public_key_sec1_hex": public_key.hex(),
                 },
+                operator._jwt_token,  # noqa: SLF001
+            )
+            if status != 200:
+                raise RuntimeError(
+                    f"WebAuthn registration challenge failed: {status} {registration_challenge}"
+                )
+            status, body = request(
+                "/api/v1/auth/webauthn/register",
+                registration_payload(
+                    registration_challenge,
+                    credential_id,
+                    public_key,
+                    str(operator.agent_id),
+                ),
                 operator._jwt_token,  # noqa: SLF001
             )
             if status != 200 or body.get("registered") is not True:
@@ -127,6 +181,16 @@ def main() -> int:
             )
             if resource_status != 200:
                 raise RuntimeError("WebAuthn bearer token was rejected")
+            refresh_status, refreshed = request(
+                "/api/v1/auth/refresh", {}, token=token["token"]
+            )
+            if refresh_status != 200 or not refreshed.get("token"):
+                raise RuntimeError(f"WebAuthn token refresh failed: {refresh_status} {refreshed}")
+            refreshed_resource_status, _ = request(
+                "/api/v1/a2a/pool/tasks", token=refreshed["token"]
+            )
+            if refreshed_resource_status != 200:
+                raise RuntimeError("refreshed WebAuthn bearer token lost credential binding")
             replay_status, _ = request("/api/v1/auth/webauthn/token", token_request)
             if replay_status != 401:
                 raise RuntimeError("consumed WebAuthn challenge was replayable")
@@ -144,6 +208,24 @@ def main() -> int:
             if counter_replay_status != 401:
                 raise RuntimeError("WebAuthn sign counter replay was accepted")
 
+            revoke_status, revoke_body = request(
+                "/api/v1/auth/webauthn/revoke",
+                {"credential_id": credential_id},
+                operator._jwt_token,  # noqa: SLF001
+            )
+            if revoke_status != 200 or revoke_body.get("revoked") is not True:
+                raise RuntimeError(f"WebAuthn revocation failed: {revoke_status} {revoke_body}")
+            revoked_token_status, _ = request(
+                "/api/v1/a2a/pool/tasks", token=token["token"]
+            )
+            if revoked_token_status != 401:
+                raise RuntimeError("revoked WebAuthn bearer token remained valid")
+            revoked_refreshed_token_status, _ = request(
+                "/api/v1/a2a/pool/tasks", token=refreshed["token"]
+            )
+            if revoked_refreshed_token_status != 401:
+                raise RuntimeError("revoked refreshed WebAuthn token remained valid")
+
             print(
                 json.dumps(
                     {
@@ -153,6 +235,11 @@ def main() -> int:
                         "resource_status": resource_status,
                         "challenge_replay_status": replay_status,
                         "counter_replay_status": counter_replay_status,
+                        "revoked_token_status": revoked_token_status,
+                        "refreshed_resource_status": refreshed_resource_status,
+                        "revoked_refreshed_token_status": revoked_refreshed_token_status,
+                        "server_verified_registration": True,
+                        "immediate_token_revocation": True,
                         "production_claimed": False,
                     },
                     indent=2,
