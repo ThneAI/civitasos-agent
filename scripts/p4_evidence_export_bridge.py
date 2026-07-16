@@ -8,7 +8,9 @@ import json
 import os
 import stat
 import subprocess
+import time
 from pathlib import Path
+from typing import Callable, TypeVar
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -16,6 +18,7 @@ from urllib.request import Request, urlopen
 
 AGENT = Path(__file__).resolve().parents[1]
 DEFAULT_LEDGER_CLI = AGENT.parent / "civitasos-evidence-ledger" / ".venv" / "bin" / "civitasos-evidence-ledger"
+T = TypeVar("T")
 
 
 def read_service_token(path: Path) -> str:
@@ -108,6 +111,23 @@ def import_manifest(
     return receipt
 
 
+def retry_operation(
+    label: str,
+    operation: Callable[[], T],
+    max_attempts: int,
+    retry_delay_secs: float,
+) -> tuple[T, int]:
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return operation(), attempt
+        except Exception as error:  # the final error is retained with operation context
+            last_error = error
+            if attempt < max_attempts:
+                time.sleep(retry_delay_secs)
+    raise RuntimeError(f"{label} failed after {max_attempts} attempts: {last_error}") from last_error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend-url", required=True)
@@ -117,14 +137,25 @@ def main() -> int:
     parser.add_argument("--actor-id", required=True)
     parser.add_argument("--source-system", default="civitasos_backend")
     parser.add_argument("--staging-root", type=Path, required=True)
+    parser.add_argument("--max-attempts", type=int, default=3)
+    parser.add_argument("--retry-delay-secs", type=float, default=1.0)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.max_attempts < 1:
+        parser.error("--max-attempts must be at least 1")
+    if args.retry_delay_secs < 0:
+        parser.error("--retry-delay-secs must not be negative")
 
     token = read_service_token(args.service_token_file)
     base_url = args.backend_url.rstrip("/")
     query = urlencode({"pending_only": "true"})
-    response = request_json(
-        f"{base_url}/api/v1/a2a/operator/evidence-exports?{query}", token
+    response, list_attempts = retry_operation(
+        "list pending evidence exports",
+        lambda: request_json(
+            f"{base_url}/api/v1/a2a/operator/evidence-exports?{query}", token
+        ),
+        args.max_attempts,
+        args.retry_delay_secs,
     )
     records = response.get("data", {}).get("records", [])
     if not isinstance(records, list):
@@ -142,25 +173,34 @@ def main() -> int:
         manifest_path = args.staging_root / "manifests" / f"{manifest_hash}.json"
         receipt_path = args.staging_root / "receipts" / f"{manifest_hash}.json"
         write_private_json(manifest_path, manifest)
-        receipt = import_manifest(
-            args.ledger_cli,
-            args.ledger_run_root,
-            args.actor_id,
-            args.source_system,
-            manifest_path,
-            receipt_path,
-        )
-        if receipt.get("manifest_hash") != manifest_hash:
-            raise RuntimeError(f"ledger receipt manifest hash mismatch for task {task_id}")
-        acknowledgement = request_json(
-            f"{base_url}/api/v1/a2a/operator/evidence-exports/{task_id}/acknowledge",
-            token,
-            {
-                "manifest_hash": manifest_hash,
-                "ledger_event_id": receipt["ledger_event_id"],
-                "ledger_event_sha256": receipt["ledger_event_sha256"],
-                "source_manifest_ref": receipt["source_manifest_ref"],
-            },
+        def import_and_acknowledge() -> tuple[dict, dict]:
+            receipt = import_manifest(
+                args.ledger_cli,
+                args.ledger_run_root,
+                args.actor_id,
+                args.source_system,
+                manifest_path,
+                receipt_path,
+            )
+            if receipt.get("manifest_hash") != manifest_hash:
+                raise RuntimeError(f"ledger receipt manifest hash mismatch for task {task_id}")
+            acknowledgement = request_json(
+                f"{base_url}/api/v1/a2a/operator/evidence-exports/{task_id}/acknowledge",
+                token,
+                {
+                    "manifest_hash": manifest_hash,
+                    "ledger_event_id": receipt["ledger_event_id"],
+                    "ledger_event_sha256": receipt["ledger_event_sha256"],
+                    "source_manifest_ref": receipt["source_manifest_ref"],
+                },
+            )
+            return receipt, acknowledgement
+
+        (receipt, acknowledgement), attempts = retry_operation(
+            f"import and acknowledge evidence export for task {task_id}",
+            import_and_acknowledge,
+            args.max_attempts,
+            args.retry_delay_secs,
         )
         processed.append(
             {
@@ -168,6 +208,7 @@ def main() -> int:
                 "manifest_hash": manifest_hash,
                 "ledger_event_id": receipt["ledger_event_id"],
                 "acknowledged": acknowledgement.get("data", {}).get("status") == "acknowledged",
+                "attempts": attempts,
             }
         )
 
@@ -177,6 +218,10 @@ def main() -> int:
         "pending_record_count": len(records),
         "processed_count": len(processed),
         "processed": processed,
+        "list_attempts": list_attempts,
+        "total_attempts": list_attempts + sum(item["attempts"] for item in processed),
+        "retry_count": (list_attempts - 1)
+        + sum(item["attempts"] - 1 for item in processed),
         "automatic_ledger_append": False,
         "externally_verified": False,
         "production_evidence": False,

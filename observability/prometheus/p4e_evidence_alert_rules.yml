@@ -1,0 +1,43 @@
+groups:
+  - name: civitasos_evidence_operations
+    rules:
+      - alert: CivitasOSEvidenceExportLagging
+        expr: civitasos_evidence_export_lagging > 0
+        for: 2m
+        labels:
+          severity: warning
+          owner: evidence-operator
+        annotations:
+          summary: CivitasOS Evidence exports exceeded the lag threshold
+          description: >-
+            {{ $value }} Evidence export(s) on {{ $labels.instance }} require
+            operator import, acknowledgement, or recovery.
+          runbook: doc/guide/EVIDENCE_EXPORT_OPERATIONS_RUNBOOK.md
+
+      - alert: CivitasOSEvidenceExportBacklogCritical
+        expr: >-
+          civitasos_evidence_export_pending > 0
+          and civitasos_evidence_export_healthy == 0
+        for: 15m
+        labels:
+          severity: critical
+          owner: evidence-operator
+        annotations:
+          summary: CivitasOS Evidence export backlog remains unhealthy
+          description: >-
+            Evidence exports on {{ $labels.instance }} have remained beyond the
+            configured lag threshold for at least 15 minutes.
+          runbook: doc/guide/EVIDENCE_EXPORT_OPERATIONS_RUNBOOK.md
+
+      - alert: CivitasOSEvidenceMetricsMissing
+        expr: absent(civitasos_evidence_export_healthy)
+        for: 5m
+        labels:
+          severity: critical
+          owner: platform-operator
+        annotations:
+          summary: CivitasOS Evidence health metrics are missing
+          description: >-
+            The authenticated Prometheus scrape no longer exposes the Evidence
+            health projection for {{ $labels.instance }}.
+          runbook: doc/guide/EVIDENCE_EXPORT_OPERATIONS_RUNBOOK.md

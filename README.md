@@ -71,6 +71,10 @@ Manifest；Ledger import 和 backend acknowledgement 均保留 operator 边界�
 
 service token 必须包含 `evidence:read,evidence:write` scopes。自动排队不等于
 自动写 Ledger，import receipt 也不会提升 external/production evidence 状态。
+Bridge 默认对 list/import/ack 执行最多 3 次有限重试；可用
+`--max-attempts` 和 `--retry-delay-secs` 收窄策略，报告会记录 attempts 和
+retry count。Prometheus scrape 使用独立 `metrics:read` scope，P4-E Evidence
+告警规则位于 `observability/prometheus/p4e_evidence_alert_rules.yml`。
 
 P4-A/P4-B 统一门禁：
 
