@@ -630,6 +630,50 @@ def identity_token(
     return agent_id, jwt
 
 
+def wait_for_settled_receipt(
+    node: PreviewNode,
+    frontend_port: int,
+    task_id: str,
+    token: str,
+    *,
+    timeout_seconds: float = 15.0,
+    poll_seconds: float = 0.25,
+) -> tuple[dict[str, Any], int, float]:
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    attempts = 0
+    status = 0
+    receipt: dict[str, Any] = {}
+    while True:
+        attempts += 1
+        status, response = api_request(
+            node,
+            frontend_port,
+            f"/api/v1/a2a/facts/tasks/{task_id}/receipt",
+            token=token,
+        )
+        receipt = response.get("data", {})
+        if (
+            status == 200
+            and receipt.get("complete") is True
+            and receipt.get("lifecycle", {}).get("settled") is True
+        ):
+            return receipt, attempts, time.monotonic() - started
+        if time.monotonic() >= deadline:
+            detail = {
+                "http_status": status,
+                "fact_count": receipt.get("fact_count"),
+                "missing_event_types": receipt.get("missing_event_types"),
+                "consistency_status": receipt.get("consistency_status"),
+                "lifecycle": receipt.get("lifecycle"),
+            }
+            raise RuntimeError(
+                f"{node.node_id} task receipt did not settle within "
+                f"{timeout_seconds:.1f}s: {detail}"
+            )
+        time.sleep(poll_seconds)
+
+
 def candidate_task_smoke(
     nodes: list[PreviewNode],
     materials: Path,
@@ -708,22 +752,12 @@ def candidate_task_smoke(
         )
         if status != 200:
             raise RuntimeError(f"{node.node_id} task delivery failed: {body}")
-        time.sleep(2)
-        status, receipt_response = api_request(
+        receipt, receipt_attempts, receipt_wait_seconds = wait_for_settled_receipt(
             node,
             frontend_port,
-            f"/api/v1/a2a/facts/tasks/{task_id}/receipt",
-            token=requester_token,
+            task_id,
+            requester_token,
         )
-        receipt = receipt_response.get("data", {})
-        if (
-            status != 200
-            or not receipt.get("complete")
-            or not receipt.get("lifecycle", {}).get("settled")
-        ):
-            raise RuntimeError(
-                f"{node.node_id} task receipt incomplete: {receipt_response}"
-            )
         metrics_status, metrics = api_text_request(
             node,
             frontend_port,
@@ -744,6 +778,8 @@ def candidate_task_smoke(
             "fact_count": receipt.get("fact_count"),
             "receipt_hash": receipt.get("receipt_hash"),
             "settled": True,
+            "receipt_attempts": receipt_attempts,
+            "receipt_wait_seconds": round(receipt_wait_seconds, 3),
             "evidence_metrics_exposed": True,
         })
     report = {

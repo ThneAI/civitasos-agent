@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 
+import scripts.p4ef_multivm_tls_drill as drill
 from scripts.p4ef_multivm_tls_drill import (
     authorize,
     prepare_materials,
     validate_authorization,
+    wait_for_settled_receipt,
 )
 
 
@@ -103,3 +105,38 @@ def test_authorization_rejects_missing_ack_and_material_tampering(tmp_path: Path
         handle.write("tampered\n")
     with pytest.raises(SystemExit, match="material hash mismatch"):
         validate_authorization(authorization, args)
+
+
+def test_wait_for_settled_receipt_handles_projection_lag(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = [
+        {
+            "data": {
+                "complete": False,
+                "fact_count": 4,
+                "missing_event_types": ["settlement.completed"],
+                "lifecycle": {"settled": False},
+            }
+        },
+        {
+            "data": {
+                "complete": True,
+                "fact_count": 5,
+                "missing_event_types": [],
+                "lifecycle": {"settled": True},
+                "receipt_hash": "settled-hash",
+            }
+        },
+    ]
+
+    def fake_api_request(*_args, **_kwargs):
+        return 200, responses.pop(0)
+
+    monkeypatch.setattr(drill, "api_request", fake_api_request)
+    node = argparse.Namespace(node_id="vm1")
+    receipt, attempts, _elapsed = wait_for_settled_receipt(
+        node, 18443, "task-1", "token", timeout_seconds=1, poll_seconds=0
+    )
+
+    assert attempts == 2
+    assert receipt["fact_count"] == 5
+    assert receipt["receipt_hash"] == "settled-hash"
