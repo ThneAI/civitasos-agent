@@ -92,6 +92,16 @@ P4-E production auth 配置 fail-closed 与临时 TLS 启动 smoke：
 该 smoke 仅使用 loopback 和临时自签证书，不打开公网入口、不读取生产数据，
 也不证明生产证书 custody。
 
+P4-EA 至 P4-EE 本地聚合门禁：
+
+```bash
+.venv/bin/python scripts/p4e_release_gate.py \
+  --output /private/audit/p4e-local-release-gate.json
+```
+
+门禁通过只允许进入 private TLS multi-VM candidate；不授权公网、生产数据、
+实体认证器/HSM provenance 或 software identity fallback。
+
 ## 目录结构
 
 ```

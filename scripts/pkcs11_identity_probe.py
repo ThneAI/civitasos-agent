@@ -24,7 +24,12 @@ DEFAULT_MODULE = os.environ.get(
 def read_pin(pin_file: Path | None) -> str:
     if pin_file is None:
         return getpass.getpass("PKCS#11 user PIN: ")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     descriptor = os.open(pin_file, flags)
     try:
         metadata = os.fstat(descriptor)
@@ -58,7 +63,7 @@ def main() -> int:
     parser.add_argument("--module", default=DEFAULT_MODULE)
     parser.add_argument("--token-label", required=True)
     parser.add_argument("--key-label", required=True)
-    parser.add_argument("--key-id", help="CKA_ID as hex")
+    parser.add_argument("--key-id", required=True, help="CKA_ID as hex")
     parser.add_argument("--expected-public-key", help="expected raw Ed25519 public key hex")
     parser.add_argument("--pin-file", type=Path)
     parser.add_argument("--output", type=Path)
@@ -83,12 +88,14 @@ def main() -> int:
                 "token_label": args.token_label,
                 "key_label": args.key_label,
                 "key_id": args.key_id.lower() if args.key_id else None,
+                "key_reference": signer.key_reference,
                 "public_key_hex": signer.public_key_hex,
                 "public_key_sha256": hashlib.sha256(
                     bytes.fromhex(signer.public_key_hex)
                 ).hexdigest(),
                 "signature_verified": True,
                 "seed_exported": False,
+                "private_key_exportable": signer.private_key_exportable,
                 "physical_hsm_claimed": False,
                 "production_authorized": False,
             }
