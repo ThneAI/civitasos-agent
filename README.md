@@ -56,6 +56,28 @@ PIN 文件读取；PIN 不应放入命令参数：
   --output /private/audit/pkcs11-probe.json
 ```
 
+P4 Evidence export bridge 只处理 backend durable outbox 中已完成的
+Manifest；Ledger import 和 backend acknowledgement 均保留 operator 边界：
+
+```bash
+.venv/bin/python scripts/p4_evidence_export_bridge.py \
+  --backend-url https://private-beta.example \
+  --service-token-file /private/secrets/evidence-operator.jwt \
+  --ledger-run-root /private/evidence/run \
+  --actor-id evidence-operator-1 \
+  --staging-root /private/evidence/staging \
+  --output /private/evidence/export-bridge-report.json
+```
+
+service token 必须包含 `evidence:read,evidence:write` scopes。自动排队不等于
+自动写 Ledger，import receipt 也不会提升 external/production evidence 状态。
+
+P4-A/P4-B 统一门禁：
+
+```bash
+.venv/bin/python scripts/p4_release_gate.py
+```
+
 ## 目录结构
 
 ```
