@@ -87,15 +87,17 @@ const main = async () => {
       const keyPair = crypto.generateKeyPairSync('ed25519');
       const seedHex = keyPair.privateKey.export({ format: 'der', type: 'pkcs8' }).subarray(-32).toString('hex');
       const publicKeyHex = keyPair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+      const identitySuffix = crypto.randomBytes(6).toString('hex');
       const quickstart = await requestJson(target, 'POST', '/api/v1/a2a/quickstart', {
         public_key: publicKeyHex,
-        alias: `p4ef-browser-${target.node_id}`,
+        alias: `p4ef-browser-${target.node_id}-${identitySuffix}`,
         name: `P4-EF Browser ${target.node_id}`,
         endpoint: '',
       }, serviceToken);
       const agentId = quickstart.body.agent?.did || quickstart.body.data?.agent?.did;
       if (![200, 201].includes(quickstart.status) || !agentId) {
-        throw new Error(`${target.node_id} DID quickstart failed`);
+        const detail = quickstart.body.error || quickstart.body.hint || 'missing agent DID';
+        throw new Error(`${target.node_id} DID quickstart failed (${quickstart.status}): ${detail}`);
       }
       const identityPath = path.join(tempRoot, `${target.node_id}-identity.json`);
       fs.writeFileSync(identityPath, JSON.stringify({
