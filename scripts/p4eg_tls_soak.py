@@ -215,7 +215,7 @@ def validate_authorization(
         raise SystemExit(f"P4-EG authorization validation failed: {failed}")
 
 
-def wait_for_nodes(nodes: list[Any], timeout: int = 900) -> None:
+def wait_for_nodes(nodes: list[Any], timeout: int = 86400) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if all(
