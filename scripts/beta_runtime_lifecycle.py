@@ -154,7 +154,7 @@ def _start_backend(config: RuntimeConfig, env: dict[str, str]) -> None:
             "CIVITASOS_SERVICE_TOKEN_SCOPES",
             env.get("L1_PILOT_001_SERVICE_SCOPES", "pool:post,pool:read,pool:claim,pool:write,audit:read"),
         ),
-        "CIVITASOS_AUTH_MODE": "production",
+        "CIVITASOS_AUTH_MODE": "private_beta",
         "CIVITASOS_DEMO_LOGIN_ENABLED": "false",
         "CIVITASOS_DEMO_AUTO_REGISTER": "false",
         "CIVITASOS_A2A_SEED_TASKS": "false",

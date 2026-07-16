@@ -39,7 +39,7 @@ def main() -> int:
             "CIVITASOS_STORAGE_DATA_DIR": str(Path(state_dir) / "storage"),
             "CIVITASOS_JWT_SECRET": secrets.token_urlsafe(32),
             "CIVITASOS_JWT_ENFORCE": "true",
-            "CIVITASOS_AUTH_MODE": "production",
+            "CIVITASOS_AUTH_MODE": "private_beta",
             "CIVITASOS_DEMO_LOGIN_ENABLED": "false",
             "CIVITASOS_INSTITUTIONAL_IDENTITY_ENABLED": "false",
             "CIVITASOS_SERVICE_TOKEN_SECRET": service_secret,
