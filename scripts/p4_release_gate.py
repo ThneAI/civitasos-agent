@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run P4 PKCS#11 operability and durable Evidence export gates."""
+"""Run P4 identity, Evidence export, browser workflow, and receipt gates."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ WORKSPACE = AGENT.parent
 BACKEND = WORKSPACE / "civitasos-backend"
 SDK = WORKSPACE / "civitasos-sdk" / "python"
 LEDGER = WORKSPACE / "civitasos-evidence-ledger"
+FRONTEND = WORKSPACE / "civitasos-frontend"
 
 
 def run_gate(name: str, command: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict:
@@ -82,6 +83,24 @@ def main() -> int:
             AGENT,
             None,
         ),
+        (
+            "backend_webauthn_lifecycle",
+            ["cargo", "test", "webauthn", "--lib"],
+            BACKEND,
+            None,
+        ),
+        (
+            "frontend_identity_receipt_suite",
+            ["npm", "test", "--", "--runInBand", "--watchAll=false"],
+            FRONTEND,
+            {"CI": "true"},
+        ),
+        (
+            "frontend_production_build",
+            ["npm", "run", "build"],
+            FRONTEND,
+            None,
+        ),
     ]
     started = time.monotonic()
     results = []
@@ -94,9 +113,9 @@ def main() -> int:
 
     passed = len(results) == len(definitions) and all(result["passed"] for result in results)
     report = {
-        "schema_version": "civitasos-p4-release-gate:v1",
+        "schema_version": "civitasos-p4-release-gate:v2",
         "passed": passed,
-        "decision": "go_p4ab_private_beta_operations" if passed else "no_go",
+        "decision": "go_p4abc_private_beta_operations" if passed else "no_go",
         "duration_seconds": round(time.monotonic() - started, 3),
         "gates": results,
         "boundaries": {
@@ -106,6 +125,8 @@ def main() -> int:
             "production_evidence_claimed": False,
             "public_ingress_authorized": False,
             "production_runtime_authorized": False,
+            "webauthn_attestation_verified": False,
+            "webauthn_existing_jwt_immediately_revoked": False,
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
