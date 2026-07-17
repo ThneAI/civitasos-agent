@@ -18,7 +18,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from nacl.signing import SigningKey
 
@@ -581,28 +581,32 @@ def identity_token(
     frontend_port: int,
     service_token: str,
     alias: str,
+    *,
+    signing_key: SigningKey | None = None,
+    agent_id: str | None = None,
 ) -> tuple[str, str]:
-    signing_key = SigningKey.generate()
-    status, quickstart = api_request(
-        node,
-        frontend_port,
-        "/api/v1/a2a/quickstart",
-        {
-            "public_key": signing_key.verify_key.encode().hex(),
-            "alias": alias,
-            "name": alias,
-            "endpoint": "",
-        },
-        service_token,
-    )
-    agent_id = (
-        quickstart.get("agent", {}).get("did")
-        or quickstart.get("data", {}).get("agent", {}).get("did")
-    )
-    if status not in (200, 201) or not agent_id:
-        raise RuntimeError(
-            f"{node.node_id} quickstart failed: {status} {quickstart}"
+    key = signing_key or SigningKey.generate()
+    if agent_id is None:
+        status, quickstart = api_request(
+            node,
+            frontend_port,
+            "/api/v1/a2a/quickstart",
+            {
+                "public_key": key.verify_key.encode().hex(),
+                "alias": alias,
+                "name": alias,
+                "endpoint": "",
+            },
+            service_token,
         )
+        agent_id = (
+            quickstart.get("agent", {}).get("did")
+            or quickstart.get("data", {}).get("agent", {}).get("did")
+        )
+        if status not in (200, 201) or not agent_id:
+            raise RuntimeError(
+                f"{node.node_id} quickstart failed: {status} {quickstart}"
+            )
     status, challenge = api_request(
         node,
         frontend_port,
@@ -612,7 +616,7 @@ def identity_token(
     data = challenge.get("data", {})
     if status != 200:
         raise RuntimeError(f"{node.node_id} auth challenge failed")
-    signature = signing_key.sign(bytes.fromhex(data["message"])).signature.hex()
+    signature = key.sign(bytes.fromhex(data["message"])).signature.hex()
     status, token = api_request(
         node,
         frontend_port,
@@ -679,6 +683,11 @@ def candidate_task_smoke(
     materials: Path,
     frontend_port: int,
     output: Path,
+    *,
+    identity_provider: Callable[
+        [PreviewNode, int, str, str], tuple[str, str]
+    ]
+    | None = None,
 ) -> dict[str, Any]:
     observations = []
     for node in nodes:
@@ -701,13 +710,21 @@ def candidate_task_smoke(
         service_token = service.get("data", {}).get("token")
         if status != 200 or not service_token:
             raise RuntimeError(f"{node.node_id} service token failed")
-        suffix = uuid.uuid4().hex[:10]
-        requester_id, requester_token = identity_token(
-            node, frontend_port, service_token, f"p4ef-requester-{suffix}"
-        )
-        worker_id, worker_token = identity_token(
-            node, frontend_port, service_token, f"p4ef-worker-{suffix}"
-        )
+        if identity_provider is None:
+            suffix = uuid.uuid4().hex[:10]
+            requester_id, requester_token = identity_token(
+                node, frontend_port, service_token, f"p4ef-requester-{suffix}"
+            )
+            worker_id, worker_token = identity_token(
+                node, frontend_port, service_token, f"p4ef-worker-{suffix}"
+            )
+        else:
+            requester_id, requester_token = identity_provider(
+                node, frontend_port, service_token, "requester"
+            )
+            worker_id, worker_token = identity_provider(
+                node, frontend_port, service_token, "worker"
+            )
         status, posted = api_request(
             node,
             frontend_port,
@@ -775,6 +792,8 @@ def candidate_task_smoke(
         observations.append({
             "node_id": node.node_id,
             "task_id": task_id,
+            "requester_id": requester_id,
+            "worker_id": worker_id,
             "fact_count": receipt.get("fact_count"),
             "receipt_hash": receipt.get("receipt_hash"),
             "settled": True,
@@ -790,6 +809,9 @@ def candidate_task_smoke(
         ),
         "node_count": len(observations),
         "observations": observations,
+        "identity_mode": (
+            "ephemeral" if identity_provider is None else "stage_persistent"
+        ),
         "demo_auth_used": False,
         "production_evidence_claimed": False,
     }

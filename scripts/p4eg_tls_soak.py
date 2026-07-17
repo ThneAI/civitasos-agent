@@ -8,12 +8,15 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tarfile
 import time
 from pathlib import Path
 from typing import Any
+
+from nacl.signing import SigningKey
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -26,6 +29,7 @@ from p4ef_multivm_tls_drill import (
     api_request,
     candidate_task_smoke,
     deploy_node,
+    identity_token,
     remote_stop,
     sha256,
     tls_smoke,
@@ -47,6 +51,11 @@ AUTH_SCHEMA = "civitasos-p4eg-soak-authorization:v1"
 STATE_SCHEMA = "civitasos-p4eg-soak-state:v1"
 ROUND_SCHEMA = "civitasos-p4eg-soak-round:v1"
 SUMMARY_SCHEMA = "civitasos-p4eg-soak-summary:v1"
+IDENTITY_SCHEMA = "civitasos-p4eg-soak-identity:v1"
+RUNNER_SOURCE_FILES = (
+    Path(__file__).resolve(),
+    (SCRIPT_DIR / "p4ef_multivm_tls_drill.py").resolve(),
+)
 
 
 def now() -> int:
@@ -57,6 +66,16 @@ def journal_payload_sha256(value: dict[str, Any]) -> str:
     payload = {key: item for key, item in value.items() if key != "journal_payload_sha256"}
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def source_digest(paths: tuple[Path, ...]) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(paths, key=lambda item: item.name):
+        digest.update(path.name.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def append_jsonl(path: Path, value: dict[str, Any]) -> None:
@@ -86,6 +105,113 @@ def load_rounds(path: Path) -> list[dict[str, Any]]:
             raise RuntimeError(f"round evidence hash mismatch at line {line_number}")
         rounds.append(record)
     return rounds
+
+
+class PersistentSoakIdentityStore:
+    """Keep one requester and worker identity per node for a soak stage."""
+
+    def __init__(self, run_root: Path, authorization_id: str) -> None:
+        self.authorization_id = authorization_id
+        self.root = run_root / "private" / "identities"
+        self.root.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.root, 0o700)
+
+    def token_for(
+        self,
+        node: Any,
+        frontend_port: int,
+        service_token: str,
+        role: str,
+    ) -> tuple[str, str]:
+        if role not in {"requester", "worker"}:
+            raise RuntimeError(f"unsupported soak identity role: {role}")
+        path = self.root / f"{node.node_id}-{role}.json"
+        record = self._load_or_create(path, node.node_id, role)
+        signing_key = SigningKey(bytes.fromhex(record["signing_seed_hex"]))
+        agent_id, token = identity_token(
+            node,
+            frontend_port,
+            service_token,
+            record["alias"],
+            signing_key=signing_key,
+            agent_id=record.get("agent_id"),
+        )
+        if record.get("agent_id") is None:
+            record["agent_id"] = agent_id
+            record["registered_at"] = now()
+            write_json(path, record)
+        elif record["agent_id"] != agent_id:
+            raise RuntimeError(
+                f"{node.node_id} {role} identity changed during soak"
+            )
+        return agent_id, token
+
+    def inventory(self) -> list[dict[str, Any]]:
+        records = []
+        for path in sorted(self.root.glob("*.json")):
+            record = self._read_private_record(path)
+            records.append(
+                {
+                    "node_id": record["node_id"],
+                    "role": record["role"],
+                    "agent_id": record.get("agent_id"),
+                    "registered": record.get("agent_id") is not None,
+                }
+            )
+        return records
+
+    def _load_or_create(
+        self,
+        path: Path,
+        node_id: str,
+        role: str,
+    ) -> dict[str, Any]:
+        if path.exists() or path.is_symlink():
+            record = self._read_private_record(path)
+            expected = {
+                "schema_version": IDENTITY_SCHEMA,
+                "authorization_id": self.authorization_id,
+                "node_id": node_id,
+                "role": role,
+            }
+            if any(record.get(key) != value for key, value in expected.items()):
+                raise RuntimeError(f"soak identity binding mismatch: {path}")
+            try:
+                seed = bytes.fromhex(record["signing_seed_hex"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise RuntimeError(f"invalid soak identity seed: {path}") from error
+            if len(seed) != 32:
+                raise RuntimeError(f"invalid soak identity seed length: {path}")
+            return record
+
+        key = SigningKey.generate()
+        identity_suffix = hashlib.sha256(
+            f"{self.authorization_id}:{node_id}:{role}".encode()
+        ).hexdigest()[:12]
+        record = {
+            "schema_version": IDENTITY_SCHEMA,
+            "authorization_id": self.authorization_id,
+            "node_id": node_id,
+            "role": role,
+            "alias": f"p4eg-{role}-{node_id}-{identity_suffix}",
+            "public_key_hex": key.verify_key.encode().hex(),
+            "signing_seed_hex": key.encode().hex(),
+            "agent_id": None,
+            "created_at": now(),
+            "registered_at": None,
+            "test_only_exportable_seed": True,
+        }
+        write_json(path, record)
+        return record
+
+    @staticmethod
+    def _read_private_record(path: Path) -> dict[str, Any]:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+            raise RuntimeError(f"soak identity must be a regular file: {path}")
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise RuntimeError(f"soak identity permissions are too broad: {path}")
+        return json.loads(path.read_text())
 
 
 def validate_previous_summary(path: Path | None, hours: int) -> str | None:
@@ -143,6 +269,7 @@ def authorize(args: argparse.Namespace) -> int:
         "candidate_sha256": hashes[0],
         "frontend_sha256": hashes[1],
         "material_manifest_sha256": hashes[2],
+        "runner_source_sha256": source_digest(RUNNER_SOURCE_FILES),
         "material_file_sha256": {
             name: metadata["sha256"]
             for name, metadata in manifest["files"].items()
@@ -194,6 +321,8 @@ def validate_authorization(
             name: metadata["sha256"]
             for name, metadata in manifest["files"].items()
         },
+        "runner_source": auth.get("runner_source_sha256")
+        == source_digest(RUNNER_SOURCE_FILES),
         "previous": auth.get("previous_summary_sha256") == previous_sha,
         "hours": auth.get("tier_hours") == args.hours,
         "duration": auth.get("requested_duration_seconds")
@@ -439,6 +568,7 @@ def run_round(
     materials: Path,
     args: argparse.Namespace,
     round_number: int,
+    identity_store: PersistentSoakIdentityStore,
 ) -> dict[str, Any]:
     restarted = False
     if round_number > 1 and round_number % args.restart_every_rounds == 0:
@@ -462,7 +592,11 @@ def run_round(
     artifact_root.mkdir(parents=True, exist_ok=True)
     task_path = artifact_root / f"tasks-{round_number}.json"
     task = candidate_task_smoke(
-        nodes, materials, args.frontend_port, task_path
+        nodes,
+        materials,
+        args.frontend_port,
+        task_path,
+        identity_provider=identity_store.token_for,
     )
     evidence = recover_evidence(
         run_root,
@@ -555,6 +689,9 @@ def execute(args: argparse.Namespace) -> int:
         raise SystemExit("another P4-EG runner already owns this run root") from error
 
     nodes = [parse_node(raw) for raw in (args.node or DEFAULT_NODES)]
+    identity_store = PersistentSoakIdentityStore(
+        run_root, auth["authorization_id"]
+    )
     candidate = Path(args.candidate_bin).resolve()
     frontend = Path(args.frontend_build_dir).resolve()
     materials = Path(args.materials_dir).resolve()
@@ -636,6 +773,7 @@ def execute(args: argparse.Namespace) -> int:
                 materials,
                 args,
                 round_number,
+                identity_store,
             )
             state["elapsed_seconds"] += time.monotonic() - round_started
             record["active_elapsed_seconds"] = round(
@@ -700,6 +838,7 @@ def execute(args: argparse.Namespace) -> int:
     )
     state["status"] = "passed" if passed else "failed"
     checkpoint_state(state_path, state)
+    identity_inventory = identity_store.inventory()
     summary = {
         "schema_version": SUMMARY_SCHEMA,
         "passed": passed,
@@ -718,6 +857,8 @@ def execute(args: argparse.Namespace) -> int:
             sha256(rounds_path) if rounds_path.exists() else None
         ),
         "resume_count": state["resume_count"],
+        "identity_inventory": identity_inventory,
+        "persistent_task_identity_count": len(identity_inventory),
         "failure": failure,
         "cleanup": cleanup,
         "candidate_sha256": auth["candidate_sha256"],

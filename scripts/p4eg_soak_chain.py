@@ -19,11 +19,16 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from p4ef_multivm_tls_drill import sha256, tree_digest, validate_materials, write_json
-from p4eg_tls_soak import SUMMARY_SCHEMA, validate_previous_summary
+from p4eg_tls_soak import SUMMARY_SCHEMA, source_digest, validate_previous_summary
 
 CHAIN_AUTH_SCHEMA = "civitasos-p4eg-soak-chain-authorization:v1"
 CHAIN_SUMMARY_SCHEMA = "civitasos-p4eg-soak-chain-summary:v1"
 STAGES = (1, 8, 24)
+RUNNER_SOURCE_FILES = (
+    Path(__file__).resolve(),
+    (SCRIPT_DIR / "p4eg_tls_soak.py").resolve(),
+    (SCRIPT_DIR / "p4ef_multivm_tls_drill.py").resolve(),
+)
 
 
 def now() -> int:
@@ -44,6 +49,7 @@ def authorize(args: argparse.Namespace) -> int:
         "candidate_sha256": sha256(candidate),
         "frontend_sha256": tree_digest(frontend),
         "material_manifest_sha256": sha256(materials / "manifest.json"),
+        "runner_source_sha256": source_digest(RUNNER_SOURCE_FILES),
     }
     identifier = hashlib.sha256(
         ":".join([*hashes.values(), str(issued_at), args.operator_id]).encode()
@@ -84,6 +90,8 @@ def validate_chain_authorization(auth: dict[str, Any], args: argparse.Namespace)
         "candidate": auth.get("candidate_sha256") == sha256(candidate),
         "frontend": auth.get("frontend_sha256") == tree_digest(frontend),
         "materials": auth.get("material_manifest_sha256") == sha256(materials / "manifest.json"),
+        "runner_source": auth.get("runner_source_sha256")
+        == source_digest(RUNNER_SOURCE_FILES),
         "remote_root": auth.get("remote_root") == args.remote_root,
         "ports": auth.get("backend_port") == args.backend_port
         and auth.get("frontend_port") == args.frontend_port,
@@ -145,6 +153,7 @@ def execute(args: argparse.Namespace) -> int:
     runner = SCRIPT_DIR / "p4eg_tls_soak.py"
     try:
         for hours in STAGES:
+            validate_chain_authorization(auth, args)
             stage_root = chain_root / f"stage-{hours}h"
             summary_path = stage_root / "summary.json"
             existing = read_passed_stage(summary_path, hours)
