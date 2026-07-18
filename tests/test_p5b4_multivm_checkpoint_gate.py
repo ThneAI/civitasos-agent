@@ -16,6 +16,7 @@ from scripts.p5b4_multivm_checkpoint_gate import (
     run_preflight,
     validate_plan,
 )
+from scripts.p5b4_multivm_materials import MATERIALS_SCHEMA
 
 
 REVISION_A = "a" * 40
@@ -29,6 +30,46 @@ NODES = [
 
 def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def fake_materials(tmp_path: Path) -> Path:
+    root = tmp_path / "materials"
+    root.mkdir(mode=0o700)
+    names = {
+        "ca.crt",
+        "ca.key",
+        "controller.crt",
+        "controller.key",
+        "jwt.secret",
+        "service.secret",
+        "cluster.secret",
+        "identity.seed",
+        *(f"{node}.{suffix}" for node in ("vm1", "vm2", "vm3") for suffix in ("crt", "key", "seed")),
+    }
+    files = {}
+    for name in names:
+        path = root / name
+        path.write_text(name)
+        path.chmod(0o600)
+        files[name] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "mode": "0600"}
+    payload = {
+        "schema_version": MATERIALS_SCHEMA,
+        "created_at": 1,
+        "expires_after_seconds": 172800,
+        "nodes": {"vm1": "192.168.56.4", "vm2": "192.168.56.5", "vm3": "192.168.56.6"},
+        "trusted_peer_keys": {},
+        "files": files,
+        "private_material_exported_to_vm": True,
+        "isolated_gate_only": True,
+        "production_identity": False,
+        "production_evidence": False,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    payload["materials_id"] = f"p5b4-materials:{hashlib.sha256(encoded).hexdigest()[:24]}"
+    manifest = root / "manifest.json"
+    write_json(manifest, payload)
+    manifest.chmod(0o600)
+    return manifest
 
 
 def assets(tmp_path: Path) -> dict[str, Path]:
@@ -66,6 +107,10 @@ def assets(tmp_path: Path) -> dict[str, Path]:
         "scripts/p5b3f_checkpoint_real_gate.py",
         "scripts/p5b3f_checkpoint_real_worker.py",
         "scripts/p5b4_multivm_checkpoint_gate.py",
+        "scripts/p5b4_multivm_checkpoint_executor.py",
+        "scripts/p5b4_remote_checkpoint_worker.py",
+        "scripts/p5b4_multivm_materials.py",
+        "scripts/p5b4_multivm_phases.py",
     ):
         path = agent / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,7 +123,13 @@ def assets(tmp_path: Path) -> dict[str, Path]:
         path = runtime / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(relative)
-    return {"backend": backend, "summary": summary, "agent": agent, "runtime": runtime}
+    return {
+        "backend": backend,
+        "summary": summary,
+        "agent": agent,
+        "runtime": runtime,
+        "materials": fake_materials(tmp_path),
+    }
 
 
 def plan(tmp_path: Path) -> tuple[Path, dict]:
@@ -88,6 +139,7 @@ def plan(tmp_path: Path) -> tuple[Path, dict]:
         output=output,
         b3f_summary_path=item["summary"],
         backend_bin=item["backend"],
+        materials_manifest=item["materials"],
         agent_repo=item["agent"],
         runtime_repo=item["runtime"],
         agent_revision=REVISION_A,
@@ -122,6 +174,7 @@ def test_plan_binds_prerequisite_candidate_nodes_and_nonclaims(tmp_path: Path) -
 
     validate_plan(payload)
     assert payload["authoritative_node"] == "vm1"
+    assert payload["remote_root"].startswith("/home/cal/.local/state/")
     assert [node["node_id"] for node in payload["nodes"]] == ["vm1", "vm2", "vm3"]
     assert len(payload["fault_matrix"]) == 6
     assert payload["acceptance"]["real_agent_runner_started"] is True
@@ -137,6 +190,7 @@ def test_plan_rejects_p4_resources_and_invalid_b3f_boundary(tmp_path: Path) -> N
         output=tmp_path / "plan.json",
         b3f_summary_path=item["summary"],
         backend_bin=item["backend"],
+        materials_manifest=item["materials"],
         agent_repo=item["agent"],
         runtime_repo=item["runtime"],
         agent_revision=REVISION_A,
@@ -249,6 +303,7 @@ def test_authorization_is_single_use_bound_and_refuses_active_soak(tmp_path: Pat
     )
     assert authorization["single_use"] is True
     assert authorization["consumed"] is False
+    assert authorization["claim_path"] == str(output.with_suffix(".claim.json"))
     assert authorization["remote_execution_allowed"] is True
     assert authorization["public_ingress_allowed"] is False
     assert authorization["vm_contact_performed"] is False

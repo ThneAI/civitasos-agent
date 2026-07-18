@@ -21,6 +21,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from beta5_real_multivm_preview_prepare import PreviewNode, parse_node  # noqa: E402
+from p5b4_multivm_materials import validate_materials  # noqa: E402
 
 
 PLAN_SCHEMA = "civitasos-p5b4-multivm-checkpoint-plan:v1"
@@ -36,7 +37,7 @@ DEFAULT_NODES = (
 EXPECTED_NODE_IDS = ("vm1", "vm2", "vm3")
 P4_PORTS = {18443, 18444}
 DEFAULT_BACKEND_PORT = 19454
-DEFAULT_REMOTE_ROOT = "/tmp/civitasos-p5b4-checkpoint"
+DEFAULT_REMOTE_ROOT = "/home/cal/.local/state/civitasos-p5b4-checkpoint"
 DEFAULT_PARTITION_COMMENT = "civitasos-p5b4-partition"
 REQUIRED_LOCAL_TOOLS = ("ssh", "scp", "openssl")
 REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -98,6 +99,10 @@ AGENT_SOURCE_FILES = (
     "scripts/p5b3f_checkpoint_real_gate.py",
     "scripts/p5b3f_checkpoint_real_worker.py",
     "scripts/p5b4_multivm_checkpoint_gate.py",
+    "scripts/p5b4_multivm_checkpoint_executor.py",
+    "scripts/p5b4_remote_checkpoint_worker.py",
+    "scripts/p5b4_multivm_materials.py",
+    "scripts/p5b4_multivm_phases.py",
 )
 RUNTIME_SOURCE_FILES = (
     "civitasos_runtime/runner.py",
@@ -239,6 +244,7 @@ def prepare_plan(
     output: Path,
     b3f_summary_path: Path,
     backend_bin: Path,
+    materials_manifest: Path,
     agent_repo: Path,
     runtime_repo: Path,
     agent_revision: str,
@@ -252,14 +258,26 @@ def prepare_plan(
 ) -> dict[str, Any]:
     summary_path = b3f_summary_path.expanduser().resolve()
     binary = backend_bin.expanduser().resolve()
+    material_manifest_path = materials_manifest.expanduser().resolve()
     agent_root = agent_repo.expanduser().resolve()
     runtime_root = runtime_repo.expanduser().resolve()
-    if not summary_path.is_file() or not binary.is_file() or not os.access(binary, os.X_OK):
-        raise ValueError("P5-B4 requires an existing B3f summary and executable Backend")
+    if (
+        not summary_path.is_file()
+        or not binary.is_file()
+        or not os.access(binary, os.X_OK)
+        or not material_manifest_path.is_file()
+    ):
+        raise ValueError(
+            "P5-B4 requires a B3f summary, executable Backend and materials manifest"
+        )
     _validate_revision("agent", agent_revision)
     _validate_revision("runtime", runtime_revision)
     validate_nodes(nodes, authoritative_node)
-    validate_isolation(remote_root, backend_port, [summary_path, binary, output])
+    validate_isolation(
+        remote_root,
+        backend_port,
+        [summary_path, binary, material_manifest_path, output],
+    )
     if not operator_id.strip():
         raise ValueError("P5-B4 operator id is required")
     if not re.fullmatch(r"[a-zA-Z0-9._:-]+", partition_comment):
@@ -268,6 +286,7 @@ def prepare_plan(
     backend_hash = sha256(binary)
     summary = load_json(summary_path)
     validate_b3f_summary(summary, backend_hash)
+    materials = validate_materials(material_manifest_path)
     payload: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA,
         "created_at": now(),
@@ -281,6 +300,11 @@ def prepare_plan(
         "candidate": {
             "backend_binary_path": str(binary),
             "backend_binary_sha256": backend_hash,
+            "materials_manifest_path": str(material_manifest_path),
+            "materials_manifest_sha256": sha256(material_manifest_path),
+            "material_file_sha256": {
+                name: record["sha256"] for name, record in materials["files"].items()
+            },
             "agent_repo": str(agent_root),
             "agent_revision": agent_revision,
             "agent_source_sha256": _source_hashes(agent_root, AGENT_SOURCE_FILES),
@@ -349,14 +373,24 @@ def validate_plan(plan: dict[str, Any]) -> None:
         candidate = plan["candidate"]
         prerequisite = plan["prerequisite"]
         binary = Path(candidate["backend_binary_path"])
+        materials_path = Path(candidate["materials_manifest_path"])
         summary_path = Path(prerequisite["b3f_summary_path"])
         validate_isolation(
-            str(plan["remote_root"]), int(plan["backend_port"]), [binary, summary_path]
+            str(plan["remote_root"]),
+            int(plan["backend_port"]),
+            [binary, summary_path, materials_path],
         )
         if sha256(binary) != candidate["backend_binary_sha256"]:
             failures.append("backend_binary_sha256")
         if sha256(summary_path) != prerequisite["b3f_summary_sha256"]:
             failures.append("b3f_summary_sha256")
+        if sha256(materials_path) != candidate["materials_manifest_sha256"]:
+            failures.append("materials_manifest_sha256")
+        materials = validate_materials(materials_path)
+        if candidate["material_file_sha256"] != {
+            name: record["sha256"] for name, record in materials["files"].items()
+        }:
+            failures.append("material_file_sha256")
         validate_b3f_summary(load_json(summary_path), candidate["backend_binary_sha256"])
         for root_key, hashes_key in (
             ("agent_repo", "agent_source_sha256"),
@@ -463,6 +497,7 @@ def run_preflight(
     checks = {
         "plan_integrity": True,
         "backend_asset_integrity": True,
+        "materials_integrity": True,
         "b3f_prerequisite_integrity": True,
         "agent_revision_matches": agent_revision == candidate["agent_revision"],
         "agent_worktree_clean": agent_clean,
@@ -615,6 +650,7 @@ def authorize(
         "expires_at": issued_at + ttl_seconds,
         "single_use": True,
         "consumed": False,
+        "claim_path": str(output.expanduser().resolve().with_suffix(".claim.json")),
         "operator_id": operator_id,
         "plan_id": plan["plan_id"],
         "plan_sha256": sha256(resolved_plan),
@@ -624,6 +660,8 @@ def authorize(
         "authoritative_node": plan["authoritative_node"],
         "remote_root": plan["remote_root"],
         "backend_port": plan["backend_port"],
+        "materials_manifest_sha256": plan["candidate"]["materials_manifest_sha256"],
+        "material_file_sha256": plan["candidate"]["material_file_sha256"],
         "operations": [phase["phase_id"] for phase in plan["phases"] if phase["ordinal"] > 1],
         "fault_cases": [case["case_id"] for case in plan["fault_matrix"]],
         "remote_execution_allowed": True,
@@ -653,6 +691,7 @@ def _prepare_command(args: argparse.Namespace) -> dict[str, Any]:
         output=Path(args.output),
         b3f_summary_path=Path(args.b3f_summary),
         backend_bin=Path(args.backend_bin),
+        materials_manifest=Path(args.materials_manifest),
         agent_repo=Path(args.agent_repo),
         runtime_repo=Path(args.runtime_repo),
         agent_revision=agent_revision,
@@ -700,6 +739,7 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument("--output", required=True)
     prepare.add_argument("--b3f-summary", required=True)
     prepare.add_argument("--backend-bin", required=True)
+    prepare.add_argument("--materials-manifest", required=True)
     prepare.add_argument("--agent-repo", required=True)
     prepare.add_argument("--runtime-repo", required=True)
     prepare.add_argument("--node", action="append", default=[])
