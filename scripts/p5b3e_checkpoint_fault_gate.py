@@ -79,6 +79,22 @@ def _command_digest(command: list[str]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _command_file_digests(command: list[str]) -> dict[str, str]:
+    return {
+        str(index): _file_digest(path)
+        for index, value in enumerate(command)
+        if (path := Path(value).expanduser()).is_file()
+    }
+
+
 def validate_local_run_root(run_root: Path) -> Path:
     resolved = run_root.expanduser().resolve()
     lowered = str(resolved).lower()
@@ -404,6 +420,8 @@ def execute_local_matrix(
             "started_at": int(started),
             "completed_at": int(time.time()),
             "worker_command_sha256": _command_digest(command),
+            "controller_source_sha256": _file_digest(Path(__file__)),
+            "worker_command_file_sha256": _command_file_digests(command),
             "kill_points": list(fault_points),
             "cases": cases,
             "rejection_cases": rejections,

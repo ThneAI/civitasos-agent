@@ -35,6 +35,12 @@ def test_local_matrix_sigkills_and_recovers_every_durable_boundary(tmp_path: Pat
     assert summary["network_used"] is False
     assert summary["real_tls_executed"] is False
     assert summary["p4_soak_resources_used"] is False
+    assert summary["controller_source_sha256"].startswith("sha256:")
+    assert set(summary["worker_command_file_sha256"]) == {"0", "1"}
+    assert all(
+        digest.startswith("sha256:")
+        for digest in summary["worker_command_file_sha256"].values()
+    )
     assert [case["rejection_case"] for case in summary["rejection_cases"]] == list(
         REJECTION_CASES
     )
