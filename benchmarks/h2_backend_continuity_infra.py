@@ -98,13 +98,14 @@ def authenticated_agent(
     agent = CivitasAgent(base_url, auto_discover=False)
     if identity_path is not None:
         agent.load_identity(str(identity_path))
+    token_subject = str(agent.agent_id) if agent.agent_id else login_agent_id
     token = _demo_login_token(
         backend_url=base_url,
-        agent_id=login_agent_id,
+        agent_id=token_subject,
         timeout_s=10.0,
     )
     if not token:
-        raise RuntimeError(f"demo-login did not return a token for {login_agent_id}")
+        raise RuntimeError(f"demo-login did not return a token for {token_subject}")
     agent._jwt_token = token  # noqa: SLF001 - controlled dev/test backend
     agent._jwt_expires_at = time.time() + 3600  # noqa: SLF001 - demo token session
     return agent
