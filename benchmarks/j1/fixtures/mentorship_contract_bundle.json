@@ -1,0 +1,116 @@
+{
+  "schema_version": "j1-mentorship-contract-bundle:v1",
+  "contract_id": "j1-contract:mentor-apprentice-v1",
+  "relation": {
+    "schema_version": "j1-mentorship-relation:v1",
+    "relation_id": "mentorship:fixture:alpha-beta",
+    "mentor_did": "did:civ:mentor-alpha",
+    "apprentice_did": "did:civ:apprentice-beta",
+    "capability_scope": [
+      "planning.review",
+      "verification.error-pattern"
+    ],
+    "lifecycle": {
+      "state": "proposed",
+      "activation_requires": [
+        "mentor_consent",
+        "apprentice_consent",
+        "valid_credentials"
+      ],
+      "unilateral_activation_allowed": false,
+      "automatic_matching_allowed": false
+    },
+    "memory_projection": {
+      "mode": "scoped_projection_only",
+      "allowed_record_kinds": [
+        "episodic_error_pattern",
+        "task_outcome"
+      ],
+      "raw_memory_access_allowed": false,
+      "hidden_chain_of_thought_access_allowed": false,
+      "apprentice_consent_required": true,
+      "revocation_enforced": true
+    }
+  },
+  "observation": {
+    "schema_version": "j1-mentor-observation:v1",
+    "observation_id": "mentor-observation:fixture:repeated-boundary-error",
+    "relation_id": "mentorship:fixture:alpha-beta",
+    "apprentice_did": "did:civ:apprentice-beta",
+    "pattern_id": "error-pattern:scope-boundary-repeat",
+    "occurrence_refs": [
+      {
+        "id": "task-receipt:fixture:001",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      {
+        "id": "task-receipt:fixture:002",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ],
+    "raw_memory_included": false
+  },
+  "advice": {
+    "schema_version": "j1-mentor-advice:v1",
+    "advice_id": "mentor-advice:fixture:boundary-check",
+    "relation_id": "mentorship:fixture:alpha-beta",
+    "observation_id": "mentor-observation:fixture:repeated-boundary-error",
+    "mentor_did": "did:civ:mentor-alpha",
+    "apprentice_did": "did:civ:apprentice-beta",
+    "recommendation": "Check the task scope and forbidden actions before proposing execution.",
+    "nonce": "fixture-advice-nonce-001",
+    "expires_at": "2026-07-20T00:00:00Z",
+    "boundary": {
+      "advisory_only": true,
+      "direct_execution_allowed": false,
+      "constitution_override_allowed": false,
+      "normative_mutation_allowed": false,
+      "identity_mutation_allowed": false,
+      "memory_mutation_allowed": false
+    }
+  },
+  "decision": {
+    "schema_version": "j1-advice-decision:v1",
+    "decision_id": "advice-decision:fixture:001",
+    "advice_id": "mentor-advice:fixture:boundary-check",
+    "decided_by": "did:civ:apprentice-beta",
+    "decision": "accepted",
+    "rationale": "The recommendation is within the active task scope and constitution.",
+    "mentor_decision_allowed": false
+  },
+  "outcome": {
+    "schema_version": "j1-advice-outcome:v1",
+    "outcome_id": "advice-outcome:fixture:001",
+    "advice_id": "mentor-advice:fixture:boundary-check",
+    "decision_id": "advice-decision:fixture:001",
+    "task_outcome_refs": [
+      {
+        "id": "task-outcome:fixture:003",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    ],
+    "error_recurred": false,
+    "attribution": {
+      "mode": "correlation_only",
+      "causal_claim_allowed": false
+    }
+  },
+  "execution_boundary": {
+    "contract_fixture_only": true,
+    "mentorship_activation_allowed": false,
+    "automatic_matching_allowed": false,
+    "fact_append_allowed": false,
+    "runtime_advice_injection_allowed": false,
+    "agent_or_model_execution_allowed": false,
+    "external_side_effect_allowed": false,
+    "production_transition_allowed": false,
+    "production_receipt_write_allowed": false
+  },
+  "non_claims": [
+    "contract_validation_does_not_activate_mentorship",
+    "mentor_advice_does_not_execute_apprentice_actions",
+    "advice_outcome_does_not_prove_causality",
+    "j1_contracts_do_not_claim_group_intelligence",
+    "j1_contracts_do_not_authorize_production"
+  ]
+}
