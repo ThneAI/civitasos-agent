@@ -1,0 +1,41 @@
+{
+  "schema_version": "j1-qualification-admission-request:v1",
+  "request_id": "j1d-qualification-admission-20260719-v1",
+  "status": "proposed",
+  "source_development_protocol_sha256": "23ca53e1ae7aae4405d598d9bc6f1c07608822a93e0943e12cf6bd8192a34b04",
+  "provider": {
+    "kind": "openai_compatible",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-pro",
+    "temperature": 0
+  },
+  "qualification_budget_ceiling": {
+    "max_pairs": 20,
+    "max_tasks_per_participant": 12,
+    "max_tokens_per_participant": 20000,
+    "max_cost_microunits_per_participant": 100000
+  },
+  "roster_contract": {
+    "real_identity_snapshots_required": true,
+    "minimum_completed_pairs": 20,
+    "exact_strata_required": true,
+    "operator_review_required": true,
+    "synthetic_participants_allowed": false
+  },
+  "authorization_contract": {
+    "single_use_required": true,
+    "maximum_ttl_seconds": 1800,
+    "explicit_cost_acknowledgement_required": true,
+    "consumption_receipt_required": true
+  },
+  "execution_boundary": {
+    "admission_validation_only": true,
+    "provider_api_call_allowed": false,
+    "agent_execution_allowed": false,
+    "backend_fact_append_allowed": false,
+    "runtime_advice_injection_allowed": false,
+    "ledger_append_allowed": false,
+    "effectiveness_claim_allowed": false,
+    "maturity_upgrade_allowed": false
+  }
+}
