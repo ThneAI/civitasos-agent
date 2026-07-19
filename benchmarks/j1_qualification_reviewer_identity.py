@@ -21,6 +21,37 @@ from benchmarks.j1.qualification_reviewer_identity import (
 from scripts.pkcs11_identity_probe import DEFAULT_MODULE, read_pin
 
 
+USER_PIN_RISK_FLAGS = {
+    "USER_PIN_COUNT_LOW",
+    "USER_PIN_FINAL_TRY",
+    "USER_PIN_LOCKED",
+}
+SO_PIN_RISK_FLAGS = {"SO_PIN_COUNT_LOW", "SO_PIN_FINAL_TRY", "SO_PIN_LOCKED"}
+
+
+def inspect_token_pin_state(*, module_path: str, token_label: str) -> dict[str, Any]:
+    module = Path(module_path).resolve()
+    library = pkcs11.lib(str(module))
+    token = library.get_token(token_label=token_label)
+    flags = {flag.name for flag in pkcs11.TokenFlag if flag in token.flags}
+    user_risks = sorted(flags & USER_PIN_RISK_FLAGS)
+    so_risks = sorted(flags & SO_PIN_RISK_FLAGS)
+    return {
+        "schema_version": "j1-soft-token-pin-state:v1",
+        "token_label": token.label,
+        "token_serial": _decode(token.serial),
+        "token_model": token.model,
+        "token_initialized": "TOKEN_INITIALIZED" in flags,
+        "user_pin_initialized": "USER_PIN_INITIALIZED" in flags,
+        "user_pin_risk_flags": user_risks,
+        "so_pin_risk_flags": so_risks,
+        "safe_to_attempt_user_login": not user_risks,
+        "safe_to_attempt_so_login": not so_risks,
+        "pin_read": False,
+        "login_attempted": False,
+    }
+
+
 def provision_reviewer_identity(
     *,
     module_path: str,
@@ -50,6 +81,14 @@ def provision_reviewer_identity(
     token = library.get_token(token_label=token_label)
     if token.model != "SoftHSM v2":
         raise ValueError(f"token is not SoftHSM v2: {token.model}")
+    pin_state = inspect_token_pin_state(
+        module_path=str(module), token_label=token_label
+    )
+    if not pin_state["safe_to_attempt_user_login"]:
+        raise ValueError(
+            "token user PIN retry risk; SO PIN reset required before login: "
+            f"{pin_state['user_pin_risk_flags']}"
+        )
     with token.open(user_pin=pin, rw=True) as session:
         if list(session.get_objects({pkcs11.Attribute.LABEL: key_label})):
             raise ValueError(f"PKCS#11 key label already exists: {key_label}")
@@ -161,22 +200,66 @@ def main() -> int:
     args = parser.parse_args()
     if not args.acknowledge_soft_token_limitations:
         parser.error("--acknowledge-soft-token-limitations is required")
+    try:
+        pin_state = inspect_token_pin_state(
+            module_path=args.module, token_label=args.token_label
+        )
+    except (OSError, pkcs11.PKCS11Error) as error:
+        print(
+            json.dumps(
+                {
+                    "schema_version": "j1-controlled-beta-reviewer-provision:v1",
+                    "passed": False,
+                    "state": "blocked_soft_token_inspection",
+                    "error_class": type(error).__name__,
+                    "pin_read": False,
+                    "login_attempted": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 1
+    if not pin_state["safe_to_attempt_user_login"]:
+        print(
+            json.dumps(
+                {
+                    "schema_version": "j1-controlled-beta-reviewer-provision:v1",
+                    "passed": False,
+                    "state": "blocked_user_pin_retry_risk_so_reset_required",
+                    "token_pin_state": pin_state,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 1
     pin = read_pin(args.pin_file)
     try:
-        report = provision_reviewer_identity(
-            module_path=args.module,
-            token_label=args.token_label,
-            key_label=args.key_label,
-            key_id_hex=args.key_id,
-            credential_version=args.credential_version,
-            pin=pin,
-            output_path=args.output,
-            limitations_acknowledged=args.acknowledge_soft_token_limitations,
-        )
+        try:
+            report = provision_reviewer_identity(
+                module_path=args.module,
+                token_label=args.token_label,
+                key_label=args.key_label,
+                key_id_hex=args.key_id,
+                credential_version=args.credential_version,
+                pin=pin,
+                output_path=args.output,
+                limitations_acknowledged=args.acknowledge_soft_token_limitations,
+            )
+        except pkcs11.exceptions.PinIncorrect:
+            report = {
+                "schema_version": "j1-controlled-beta-reviewer-provision:v1",
+                "passed": False,
+                "state": "blocked_user_pin_incorrect_stop_retrying",
+                "error_class": "PinIncorrect",
+                "pin_recorded": False,
+                "reviewer_key_created": False,
+            }
     finally:
         pin = ""
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
+    return 0 if report["passed"] else 1
 
 
 if __name__ == "__main__":
