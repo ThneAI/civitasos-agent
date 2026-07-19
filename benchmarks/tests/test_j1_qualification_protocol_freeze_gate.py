@@ -56,7 +56,7 @@ def _verifier(corpus: dict) -> dict:
         "schema_version": VERIFIER_SCHEMA,
         "status": "operator_reviewed",
         "verifier_id": "j1q-deterministic-verifier:v1",
-        "source_revision": "a" * 64,
+        "source_revision": "a" * 40,
         "deterministic": True,
         "model_judge_allowed": False,
         "operator_override_allowed": False,

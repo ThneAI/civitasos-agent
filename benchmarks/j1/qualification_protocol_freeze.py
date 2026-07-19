@@ -182,7 +182,7 @@ def _validate_verifier(
         failures,
     )
     _require(
-        _sha256(verifier.get("source_revision")),
+        _git_revision(verifier.get("source_revision")),
         "qualification_verifier_revision_invalid",
         failures,
     )
@@ -263,6 +263,11 @@ def _real_text(value: str) -> bool:
 def _sha256(value: Any) -> bool:
     text = _text(value)
     return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
+
+
+def _git_revision(value: Any) -> bool:
+    text = _text(value)
+    return len(text) == 40 and all(char in "0123456789abcdef" for char in text)
 
 
 def _text(value: Any) -> str:
