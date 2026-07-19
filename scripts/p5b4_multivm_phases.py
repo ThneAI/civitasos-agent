@@ -263,12 +263,14 @@ exit 1
         )
         return self._record_and_sync_fixture(result)
 
-    def _record_and_sync_fixture(self, result: dict[str, Any]) -> dict[str, Any]:
+    def _record_and_sync_fixture(
+        self, result: dict[str, Any], *, include_authoritative: bool = False
+    ) -> dict[str, Any]:
         fixture_path = self.state_root / "fixture.json"
         fixture_path.unlink(missing_ok=True)
         _private_json(fixture_path, result)
         for node in self.nodes:
-            if node.node_id == self.authoritative.node_id:
+            if not include_authoritative and node.node_id == self.authoritative.node_id:
                 continue
             self._remote(
                 node,
@@ -684,7 +686,9 @@ exit 82
         )
         if no_projection.get("passed") is not True:
             raise RuntimeError("P5-B4 credential rotation created an activation Receipt")
-        self._record_and_sync_fixture(accepted_fixture_payload)
+        self._record_and_sync_fixture(
+            accepted_fixture_payload, include_authoritative=True
+        )
         return {
             "passed": True,
             "partition_case": {

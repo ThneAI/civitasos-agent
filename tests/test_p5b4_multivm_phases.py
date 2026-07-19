@@ -31,6 +31,19 @@ class _CaptureRemote:
         return type("Result", (), {"stdout": '{"passed":true}', "stderr": ""})()
 
 
+class _RecordCopies(_NoRemote):
+    def __init__(self) -> None:
+        self.nodes: list[str] = []
+
+    def copy(self, node, source, destination):  # noqa: ANN001
+        del source, destination
+        self.nodes.append(node.node_id)
+
+    def run(self, node, script, *, timeout):  # noqa: ANN001
+        del node, script, timeout
+        return type("Result", (), {"stdout": "", "stderr": ""})()
+
+
 def _plan(tmp_path: Path) -> dict:
     materials = tmp_path / "materials" / "manifest.json"
     return {
@@ -96,3 +109,20 @@ def test_follower_projection_reads_cluster_token_without_argv_exposure(
         assert 'cat "$ROOT/cluster.secret"' in script
         assert '--header @"$ROOT/sync-header"' in script
         assert '$(cat "$ROOT/cluster.secret")' not in script
+
+
+def test_accepted_fixture_restore_can_sync_authoritative_and_followers(
+    tmp_path: Path,
+) -> None:
+    transport = _RecordCopies()
+    phases = BuiltInPhaseHandlers(
+        plan=_plan(tmp_path), transport=transport, state_root=tmp_path / "state"
+    )
+
+    result = phases._record_and_sync_fixture(
+        {"passed": True, "checkpoint_id": "checkpoint:accepted"},
+        include_authoritative=True,
+    )
+
+    assert result["passed"] is True
+    assert transport.nodes == ["vm1", "vm2", "vm3"]
