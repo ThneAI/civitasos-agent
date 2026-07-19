@@ -18,6 +18,19 @@ class _NoRemote:
         raise AssertionError("remote run was not expected")
 
 
+class _CaptureRemote:
+    def __init__(self) -> None:
+        self.scripts: list[str] = []
+
+    def copy(self, node, source, destination):  # noqa: ANN001
+        raise AssertionError("remote copy was not expected")
+
+    def run(self, node, script, *, timeout):  # noqa: ANN001
+        del node, timeout
+        self.scripts.append(script)
+        return type("Result", (), {"stdout": '{"passed":true}', "stderr": ""})()
+
+
 def _plan(tmp_path: Path) -> dict:
     materials = tmp_path / "materials" / "manifest.json"
     return {
@@ -65,3 +78,21 @@ def test_partition_apply_and_heal_scripts_are_exact(tmp_path: Path) -> None:
         assert "iptables-save" not in script
     assert "iptables -I INPUT" in apply
     assert "iptables -D INPUT" in heal
+
+
+def test_follower_projection_reads_cluster_token_without_argv_exposure(
+    tmp_path: Path,
+) -> None:
+    transport = _CaptureRemote()
+    phases = BuiltInPhaseHandlers(
+        plan=_plan(tmp_path), transport=transport, state_root=tmp_path / "state"
+    )
+
+    result = phases.establish_follower_projection({})
+
+    assert result["passed"] is True
+    assert len(transport.scripts) == 3
+    for script in transport.scripts:
+        assert 'cat "$ROOT/cluster.secret"' in script
+        assert '--header @"$ROOT/sync-header"' in script
+        assert '$(cat "$ROOT/cluster.secret")' not in script

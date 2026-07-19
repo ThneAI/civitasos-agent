@@ -375,9 +375,13 @@ exit 1
                 node,
                 f"""set -euo pipefail
 ROOT={root}
+{{ printf 'X-CivitasOS-Cluster-Token: '; cat "$ROOT/cluster.secret"; printf '\n'; }} \
+  >"$ROOT/sync-header"
+chmod 600 "$ROOT/sync-header"
 curl --silent --show-error --fail --noproxy '*' \
   --cacert "$ROOT/ca.crt" --cert "$ROOT/{node.node_id}.crt" \
   --key "$ROOT/{node.node_id}.key" \
+  --header @"$ROOT/sync-header" \
   "https://{node.node_ip}:{self.port}/api/v1/sync/state"
 """,
             )

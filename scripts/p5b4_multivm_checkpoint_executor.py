@@ -94,14 +94,21 @@ class SubprocessRemoteTransport:
         subprocess.run(command, check=True, capture_output=True, text=True, timeout=120)
 
     def run(self, node: PreviewNode, script: str, *, timeout: int) -> RemoteResult:
-        completed = subprocess.run(
-            [*self._ssh_prefix(), node.ssh_host, "bash -s"],
-            input=script,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        try:
+            completed = subprocess.run(
+                [*self._ssh_prefix(), node.ssh_host, "bash -s"],
+                input=script,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.CalledProcessError as error:
+            diagnostic = (error.stderr or error.stdout or "").strip()[-2000:]
+            raise RuntimeError(
+                f"P5-B4 remote command failed on {node.node_id}: "
+                f"exit={error.returncode} diagnostic={diagnostic!r}"
+            ) from error
         return RemoteResult(completed.stdout, completed.stderr)
 
 
