@@ -21,6 +21,9 @@ from benchmarks.j1.qualification_review_operations import (
     validate_review_decision,
     validate_review_request,
 )
+from benchmarks.j1.qualification_reviewer_identity import (
+    validate_reviewer_identity_profile,
+)
 from benchmarks.j1.qualification_review_receipt import (
     REQUIRED_CHECKS,
     review_signature_payload,
@@ -103,6 +106,62 @@ def prepare_signature_payload(
     return report
 
 
+def bind_reviewer_identity(
+    *,
+    request_path: Path,
+    reviewer_identity_profile_path: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    if output_path.exists():
+        raise ValueError(f"output already exists: {output_path}")
+    request, _ = _load_request_bundle(request_path)
+    profile, profile_bytes = _read_json(
+        reviewer_identity_profile_path, require_private=True
+    )
+    profile_failures = validate_reviewer_identity_profile(profile)
+    if profile_failures:
+        raise ValueError(f"reviewer identity profile invalid: {profile_failures}")
+    profile_sha256 = hashlib.sha256(profile_bytes).hexdigest()
+    decision = _decision_template(request)
+    profile_reviewer = profile["reviewer"]
+    decision["reviewer"] = {
+        "did": profile_reviewer["did"],
+        "public_key_hex": profile_reviewer["public_key_hex"],
+        "credential_version": profile_reviewer["credential_version"],
+        "signer_kind": profile_reviewer["signer_kind"],
+        "custody_provenance_sha256": profile_sha256,
+        "signer_attestation_sha256": profile_sha256,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.chmod(0o700)
+    write_private_json(output_path, decision)
+    report = {
+        "schema_version": REPORT_SCHEMA,
+        "operation": "bind_reviewer_identity",
+        "passed": True,
+        "state": "reviewer_identity_bound_operator_material_review_required",
+        "review_request_sha256": request["request_sha256"],
+        "reviewer_did": profile_reviewer["did"],
+        "reviewer_identity_profile": {
+            "path": str(reviewer_identity_profile_path.resolve()),
+            "sha256": profile_sha256,
+        },
+        "decision_template": _artifact(output_path),
+        "readiness": {
+            "reviewer_identity_bound": True,
+            "operator_review_id_complete": False,
+            "operator_decision_complete": False,
+            "reviewed_at_complete": False,
+            "independence_attested": False,
+            "review_checklist_complete": False,
+            "signature_payload_ready": False,
+        },
+        "execution_boundary": _operation_boundary(),
+    }
+    _write_report(output_path, report)
+    return report
+
+
 def run_review_preflight(
     *,
     request_path: Path,
@@ -112,6 +171,7 @@ def run_review_preflight(
     token_label: str | None = None,
     key_label: str | None = None,
     key_id: str | None = None,
+    reviewer_identity_profile_path: Path | None = None,
 ) -> dict[str, Any]:
     failures: list[str] = []
     diagnostics: list[str] = []
@@ -147,8 +207,18 @@ def run_review_preflight(
         key_label=key_label,
         key_id=key_id,
     )
+    identity_profile = _identity_profile_preflight(
+        profile_path=reviewer_identity_profile_path,
+        decision=decision,
+        signer_kind=signer_kind,
+        module_path=module_path,
+        token_label=token_label,
+        key_label=key_label,
+        key_id=key_id,
+    )
     if request_validated and decision and not decision_failures:
         failures.extend(signer_configuration["failure_reasons"])
+        failures.extend(identity_profile["failure_reasons"])
     failures = list(dict.fromkeys(failures))
     passed = not failures
     report = {
@@ -174,6 +244,7 @@ def run_review_preflight(
             else None
         ),
         "signer_preflight": signer_configuration,
+        "reviewer_identity_profile": identity_profile,
         "readiness": {
             "candidate_scope_verified": request_validated,
             "operator_decision_complete": request_validated
@@ -208,6 +279,7 @@ def sign_with_pkcs11(
     key_label: str,
     key_id: str,
     pin_file: Path | None,
+    reviewer_identity_profile_path: Path,
 ) -> dict[str, Any]:
     from civitasos import Pkcs11Ed25519Signer
     from scripts.pkcs11_identity_probe import read_pin
@@ -216,6 +288,19 @@ def sign_with_pkcs11(
     if decision.get("reviewer", {}).get("signer_kind") != "pkcs11_ed25519":
         raise ValueError(
             "PKCS#11 operation requires reviewer signer_kind pkcs11_ed25519"
+        )
+    identity_profile = _identity_profile_preflight(
+        profile_path=reviewer_identity_profile_path,
+        decision=decision,
+        signer_kind="pkcs11_ed25519",
+        module_path=module_path,
+        token_label=token_label,
+        key_label=key_label,
+        key_id=key_id,
+    )
+    if identity_profile["failure_reasons"]:
+        raise ValueError(
+            f"reviewer identity profile invalid: {identity_profile['failure_reasons']}"
         )
     pin = read_pin(pin_file)
     try:
@@ -247,6 +332,7 @@ def sign_with_pkcs11(
     report["token_label"] = token_label
     report["key_label"] = key_label
     report["key_id"] = key_id.lower()
+    report["reviewer_identity_profile"] = identity_profile["artifact"]
     _write_report(output_path, report)
     return report
 
@@ -507,6 +593,88 @@ def _signer_preflight(
     }
 
 
+def _identity_profile_preflight(
+    *,
+    profile_path: Path | None,
+    decision: dict[str, Any],
+    signer_kind: Any,
+    module_path: str,
+    token_label: str | None,
+    key_label: str | None,
+    key_id: str | None,
+) -> dict[str, Any]:
+    if signer_kind != "pkcs11_ed25519":
+        return {
+            "required": False,
+            "present": profile_path is not None,
+            "validated": None,
+            "failure_reasons": [],
+            "artifact": None,
+        }
+    if profile_path is None:
+        return {
+            "required": True,
+            "present": False,
+            "validated": False,
+            "failure_reasons": ["reviewer_identity_profile_required"],
+            "artifact": None,
+        }
+    failures: list[str] = []
+    try:
+        profile, profile_bytes = _read_json(profile_path, require_private=True)
+    except (OSError, ValueError) as error:
+        return {
+            "required": True,
+            "present": True,
+            "validated": False,
+            "failure_reasons": ["reviewer_identity_profile_unreadable"],
+            "diagnostic": str(error),
+            "artifact": None,
+        }
+    failures.extend(validate_reviewer_identity_profile(profile))
+    reviewer = decision.get("reviewer")
+    reviewer_value = reviewer if isinstance(reviewer, dict) else {}
+    profile_reviewer = profile.get("reviewer")
+    profile_reviewer_value = (
+        profile_reviewer if isinstance(profile_reviewer, dict) else {}
+    )
+    for field in ("did", "public_key_hex", "credential_version", "signer_kind"):
+        if reviewer_value.get(field) != profile_reviewer_value.get(field):
+            failures.append(f"reviewer_identity_profile_{field}_mismatch")
+    profile_sha256 = hashlib.sha256(profile_bytes).hexdigest()
+    for field in ("custody_provenance_sha256", "signer_attestation_sha256"):
+        if reviewer_value.get(field) != profile_sha256:
+            failures.append(f"reviewer_identity_profile_{field}_mismatch")
+    key = profile.get("pkcs11_key")
+    key_value = key if isinstance(key, dict) else {}
+    expected_key = {
+        "module_path": str(Path(module_path).resolve()),
+        "token_label": token_label,
+        "key_label": key_label,
+        "key_id_hex": str(key_id or "").lower(),
+    }
+    for field, expected in expected_key.items():
+        if key_value.get(field) != expected:
+            failures.append(f"reviewer_identity_profile_{field}_mismatch")
+    try:
+        module_sha256 = hashlib.sha256(Path(module_path).read_bytes()).hexdigest()
+    except OSError:
+        module_sha256 = None
+    if key_value.get("module_sha256") != module_sha256:
+        failures.append("reviewer_identity_profile_module_hash_mismatch")
+    failures = list(dict.fromkeys(failures))
+    return {
+        "required": True,
+        "present": True,
+        "validated": not failures,
+        "failure_reasons": failures,
+        "artifact": {
+            "path": str(profile_path.resolve()),
+            "sha256": profile_sha256,
+        },
+    }
+
+
 def _timestamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -528,6 +696,11 @@ def _build_parser() -> argparse.ArgumentParser:
     payload.add_argument("--decision", type=Path, required=True)
     payload.add_argument("--output", type=Path, required=True)
 
+    bind_reviewer = subparsers.add_parser("bind-reviewer")
+    bind_reviewer.add_argument("--request", type=Path, required=True)
+    bind_reviewer.add_argument("--reviewer-identity-profile", type=Path, required=True)
+    bind_reviewer.add_argument("--output", type=Path, required=True)
+
     preflight = subparsers.add_parser("preflight")
     preflight.add_argument("--request", type=Path, required=True)
     preflight.add_argument("--decision", type=Path, required=True)
@@ -536,6 +709,7 @@ def _build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--token-label")
     preflight.add_argument("--key-label")
     preflight.add_argument("--key-id", help="CKA_ID as hex")
+    preflight.add_argument("--reviewer-identity-profile", type=Path)
 
     pkcs11 = subparsers.add_parser("sign-pkcs11")
     pkcs11.add_argument("--request", type=Path, required=True)
@@ -546,6 +720,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pkcs11.add_argument("--key-label", required=True)
     pkcs11.add_argument("--key-id", required=True, help="CKA_ID as hex")
     pkcs11.add_argument("--pin-file", type=Path)
+    pkcs11.add_argument("--reviewer-identity-profile", type=Path, required=True)
 
     detached = subparsers.add_parser("assemble")
     detached.add_argument("--request", type=Path, required=True)
@@ -573,6 +748,12 @@ def main() -> int:
                 decision_path=args.decision,
                 output_path=args.output,
             )
+        elif args.command == "bind-reviewer":
+            report = bind_reviewer_identity(
+                request_path=args.request,
+                reviewer_identity_profile_path=args.reviewer_identity_profile,
+                output_path=args.output,
+            )
         elif args.command == "preflight":
             report = run_review_preflight(
                 request_path=args.request,
@@ -582,6 +763,7 @@ def main() -> int:
                 token_label=args.token_label,
                 key_label=args.key_label,
                 key_id=args.key_id,
+                reviewer_identity_profile_path=args.reviewer_identity_profile,
             )
         elif args.command == "sign-pkcs11":
             report = sign_with_pkcs11(
@@ -593,6 +775,7 @@ def main() -> int:
                 key_label=args.key_label,
                 key_id=args.key_id,
                 pin_file=args.pin_file,
+                reviewer_identity_profile_path=args.reviewer_identity_profile,
             )
         else:
             report = assemble_detached_signature(
