@@ -22,7 +22,6 @@ from benchmarks.i_gate_evidence import (
     artifact_ref,
     check,
     object_value,
-    objects_value,
     read_json_object,
     sha256_json,
     sha256_text,

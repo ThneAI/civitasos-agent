@@ -386,13 +386,13 @@ done
 
 
 def _operator_commands(run_root: Path) -> str:
-    return f'''#!/usr/bin/env bash
+    return '''#!/usr/bin/env bash
 set -euo pipefail
-RUN_ROOT="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
-AGENT_ROOT="${{CIVITASOS_AGENT_ROOT:-$(cd "$RUN_ROOT/../.." && pwd)}}"
-PYTHON="${{CIVITASOS_AGENT_PYTHON:-$AGENT_ROOT/.venv/bin/python}}"
-LOCAL_RECEIPT="${{BETA5_LOCAL_DEPLOY_RECEIPT:?set BETA5_LOCAL_DEPLOY_RECEIPT to beta5_local_controlled_deploy_receipt.json}}"
-OPERATOR_ID="${{BETA5_OPERATOR_ID:-local-operator-cc}}"
+RUN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGENT_ROOT="${CIVITASOS_AGENT_ROOT:-$(cd "$RUN_ROOT/../.." && pwd)}"
+PYTHON="${CIVITASOS_AGENT_PYTHON:-$AGENT_ROOT/.venv/bin/python}"
+LOCAL_RECEIPT="${BETA5_LOCAL_DEPLOY_RECEIPT:?set BETA5_LOCAL_DEPLOY_RECEIPT to beta5_local_controlled_deploy_receipt.json}"
+OPERATOR_ID="${BETA5_OPERATOR_ID:-local-operator-cc}"
 cd "$AGENT_ROOT"
 "$PYTHON" scripts/beta5_external_deploy_evidence_executor.py validate-environment-proof \
   --environment-proof "$RUN_ROOT/environment_proof.json" \

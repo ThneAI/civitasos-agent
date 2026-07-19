@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, sha256_file, sha256_json, write_json_object
+from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, sha256_json, write_json_object
 from benchmarks.post_h3_readiness_index import SCHEMA_VERSION as POST_H3_READINESS_INDEX_SCHEMA
 
 CHAIN_SCHEMA = "post-h3-minimal-production-task-intake-chain:v1"

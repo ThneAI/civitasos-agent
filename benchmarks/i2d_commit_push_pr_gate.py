@@ -13,7 +13,6 @@ import json
 import re
 import shutil
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +23,6 @@ from benchmarks.i_gate_evidence import (
     object_value,
     objects_value,
     read_json_object,
-    sha256_text,
     write_json_object,
 )
 

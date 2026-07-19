@@ -13,8 +13,7 @@ import argparse
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
+import urllib.request  # noqa: F401 - compatibility hook for HTTP client tests
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path

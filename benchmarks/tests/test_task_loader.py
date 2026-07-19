@@ -186,15 +186,15 @@ def test_ref_duplicate_rejected(tmp_path: Path) -> None:
     sub = tmp_path / "tasks" / "R01"
     sub.mkdir(parents=True)
     (sub / "happy_42.yaml").write_text(REF_TASK_BODY, encoding="utf-8")
-    body = f"""
+    body = """
 schema:
   version: "1.1"
 allowed_metric_codes: [m1_result_deviation_rate]
 taxonomy:
-  - {{id: R01, name: x, targets: R}}
+  - {id: R01, name: x, targets: R}
 tasks:
-  - {{$ref: tasks/R01/happy_42.yaml}}
-  - {{$ref: tasks/R01/happy_42.yaml}}
+  - {$ref: tasks/R01/happy_42.yaml}
+  - {$ref: tasks/R01/happy_42.yaml}
 """
     with pytest.raises(ManifestError, match="cycle / duplicate"):
         load_manifest(_write(tmp_path, body))

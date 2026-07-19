@@ -126,7 +126,6 @@ def run_execution(
             stage="authorization_chain_validation",
         )
 
-    auth = context["authorization"]
     spec = context["bounded_execution_spec"]
     execution_spec = object_value(spec.get("execution_spec"))
     global_consumption_path = authorization_consumption_path or _default_consumption_lease_path(context["authorization_path"])

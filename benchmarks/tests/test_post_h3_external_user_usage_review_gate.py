@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.post_h3_external_user_identity_consent_gate import run_gate as run_post_h3u
-from benchmarks.post_h3_external_user_usage_review_gate import AUTHORIZE_ONCE_DECISION, REQUEST_REVISION_DECISION, run_gate
+from benchmarks.post_h3_external_user_usage_review_gate import AUTHORIZE_ONCE_DECISION, run_gate
 from benchmarks.post_h3_limited_external_usage_scope_binding_gate import run_gate as run_post_h3v
 from benchmarks.post_h3_qr_execution_closeout_gate import run_gate as run_post_h3s
 from benchmarks.tests.post_h3_consent_test_fixtures import write_signed_consent_package

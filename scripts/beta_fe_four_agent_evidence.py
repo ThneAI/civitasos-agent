@@ -9,9 +9,17 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from beta_evidence import artifact_ref, read_json_object, write_json
+    from beta_evidence import (
+        artifact_ref as artifact_ref,
+        read_json_object,
+        write_json as write_json,
+    )
 except ModuleNotFoundError:
-    from scripts.beta_evidence import artifact_ref, read_json_object, write_json
+    from scripts.beta_evidence import (
+        artifact_ref as artifact_ref,
+        read_json_object,
+        write_json as write_json,
+    )
 
 
 REQUIRED_PARTICIPANTS = (

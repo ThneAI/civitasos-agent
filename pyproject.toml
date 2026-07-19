@@ -13,7 +13,23 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "ruff>=0.5",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# These executable scripts bootstrap local imports before loading project modules.
+"scripts/beta6_9_real_api_review_runner.py" = ["E402"]
+"scripts/beta_external_provider_env_preflight.py" = ["E402"]
+"scripts/beta_preview_chain_runner.py" = ["E402"]
+"scripts/beta_runtime_lifecycle.py" = ["E402"]
+"scripts/p4d_multivm_upgrade_drill.py" = ["E402"]
+"scripts/p4ef_multivm_tls_drill.py" = ["E402"]
+"scripts/p4eg_soak_chain.py" = ["E402"]
+"scripts/p4eg_tls_soak.py" = ["E402"]
+"scripts/p5b3f_checkpoint_real_gate.py" = ["E402"]
+"scripts/p5b3f_checkpoint_real_worker.py" = ["E402"]
+"scripts/private_beta_vm_preview_execution.py" = ["E402"]
+"tests/fixtures/p5b3e_synthetic_worker.py" = ["E402"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

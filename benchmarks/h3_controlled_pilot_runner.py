@@ -18,8 +18,8 @@ from benchmarks.h3_controlled_pilot_reconciliation import (
     reconcile_generations as _reconcile_generations,
 )
 from benchmarks.h3_controlled_pilot_receipts import (
-    CONSUMPTION_SCHEMA_VERSION,
-    POST_RUN_RECEIPT_SCHEMA_VERSION,
+    CONSUMPTION_SCHEMA_VERSION as CONSUMPTION_SCHEMA_VERSION,
+    POST_RUN_RECEIPT_SCHEMA_VERSION as POST_RUN_RECEIPT_SCHEMA_VERSION,
     claim_authorization as _claim_authorization,
     write_post_run_receipt,
 )
@@ -32,7 +32,7 @@ from benchmarks.h3_evidence import (
     write_json_object,
 )
 from benchmarks.h3_controlled_pilot_task import (
-    LEGACY_TASK_SCHEMA_VERSION,
+    LEGACY_TASK_SCHEMA_VERSION as LEGACY_TASK_SCHEMA_VERSION,
     SUPPORTED_PROPOSAL_TASK_KINDS,
     TASK_SCHEMA_VERSION,
     build_controlled_pilot_task,
@@ -107,7 +107,7 @@ def run_controlled_pilot(
     )
     started_at = datetime.now(timezone.utc)
     try:
-        consumption = _claim_authorization(
+        _claim_authorization(
             path=consumption_path,
             receipt=receipt,
             preflight_file=preflight_file,

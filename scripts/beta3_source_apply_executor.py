@@ -53,7 +53,7 @@ try:
     )
     from beta3_source_apply_authorization import validate_source_apply_authorization
     from beta3_source_apply_receipts import (
-        RECEIPT_SCHEMA,
+        RECEIPT_SCHEMA as RECEIPT_SCHEMA,
         validate_post_source_apply_receipt,
         write_post_apply_receipt,
     )
@@ -72,7 +72,7 @@ except ModuleNotFoundError:
         validate_source_apply_authorization,
     )
     from scripts.beta3_source_apply_receipts import (
-        RECEIPT_SCHEMA,
+        RECEIPT_SCHEMA as RECEIPT_SCHEMA,
         validate_post_source_apply_receipt,
         write_post_apply_receipt,
     )

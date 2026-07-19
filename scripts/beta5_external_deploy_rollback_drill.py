@@ -14,7 +14,6 @@ import hashlib
 import json
 import shlex
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any

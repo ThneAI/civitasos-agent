@@ -38,7 +38,6 @@ def compute(tasks: Iterable[TaskRun]) -> dict[str, float | None]:
             "h0_desired_slow_drift_ratio": None,
         }
 
-    denom = len(traced)
     return {
         "h0_expectation_trace_ratio": len(traced) / len(ticks) if ticks else None,
         "h0_hard_domain_trace_ratio": _ratio(

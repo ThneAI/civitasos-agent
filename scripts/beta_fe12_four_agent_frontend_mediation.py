@@ -21,14 +21,10 @@ from beta_fe_four_agent_evidence import (
     artifact_ref as _artifact_ref,
     boundary as _boundary,
     excerpt as _excerpt,
-    extract_verdict as _extract_verdict,
     failure_reasons as _failure_reasons,
     frontend_snapshot as _shared_frontend_snapshot,
-    git_text as _git,
     h3_boundary as _h3_boundary,
-    line_count as _line_count,
     participant_ids as _participant_ids,
-    read_json_object as _read_json,
     response_summaries as _response_summaries,
     write_json as _write_json,
 )
@@ -269,7 +265,7 @@ Relevant current `TaskPoolPanel.tsx` excerpt:
 
 
 def _brief_text() -> str:
-    return f"""# Beta-FE-12 Task Brief
+    return """# Beta-FE-12 Task Brief
 
 Goal: decide whether the next bounded frontend slice should extract pure helper logic from `TaskPoolPanel.tsx` into `taskPoolPresentation.ts` with focused tests.
 

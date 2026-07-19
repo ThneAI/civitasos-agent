@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from beta_evidence import artifact_ref_or_path, sha256_file, write_json
+    from beta_evidence import artifact_ref_or_path, sha256_file, write_json as write_json
 except ModuleNotFoundError:
-    from scripts.beta_evidence import artifact_ref_or_path, sha256_file, write_json
+    from scripts.beta_evidence import artifact_ref_or_path, sha256_file, write_json as write_json
 
 
 def boundary() -> dict[str, bool]:

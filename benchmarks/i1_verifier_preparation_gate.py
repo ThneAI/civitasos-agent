@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 from benchmarks.i1.corpus_materialization import (
     materialize_cases,
@@ -14,7 +15,7 @@ from benchmarks.i1.data import check, read_json
 from benchmarks.i1.identity_preparation import prepare_identities
 from benchmarks.i1.reporting import build_report
 from benchmarks.i1.validation import (
-    REQUIRED_CONTROL_TYPES,
+    REQUIRED_CONTROL_TYPES as REQUIRED_CONTROL_TYPES,
     validate_controls,
     validate_corpus,
     validate_roster,

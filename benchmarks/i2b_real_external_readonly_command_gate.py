@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import stat
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -396,7 +395,6 @@ def write_api_call_report(
     check(checks, failures, "max_tokens_bounded", 1 <= max_tokens <= 2000)
     check(checks, failures, "temperature_bounded", 0 <= temperature <= 0.3)
 
-    content = ""
     http_status: int | None = None
     prompt_sha256: str | None = None
     response_content_sha256: str | None = None
@@ -413,7 +411,6 @@ def write_api_call_report(
             api_response_override=api_response_override,
             provider_call=_call_openai_compatible,
         )
-        content = str(execution.get("content") or "")
         http_status = execution.get("http_status") if isinstance(execution.get("http_status"), int) else None
         parsed = object_value(execution.get("parsed"))
         failures.extend(str(item) for item in execution.get("failures", []))

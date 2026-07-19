@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from benchmarks.h1.calibration import evaluate_calibration, load_calibration_samples
-from benchmarks.h1.llm_judge import JudgeRequest, JudgeResult, LLMJudge
+from benchmarks.h1.llm_judge import JudgeRequest, JudgeResult
 
 
 class LabelJudge:

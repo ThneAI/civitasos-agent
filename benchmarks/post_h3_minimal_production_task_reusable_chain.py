@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, sha256_json, write_json_object
+from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, write_json_object
 from benchmarks.post_h3_minimal_production_task_authorization_gate import run_gate as run_authorization_gate
 from benchmarks.post_h3_minimal_production_task_execution_gate import run_gate as run_execution_gate
 from benchmarks.post_h3_minimal_production_task_intake_gate import DEFAULT_TASK_REQUEST, run_gate as run_intake_gate

@@ -10,16 +10,20 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from civitasos_contracts.artifacts import build_artifact_envelope
+    from civitasos_contracts.artifacts import (
+        build_artifact_envelope as build_artifact_envelope,
+    )
     from civitasos_contracts.provenance import (
-        build_git_release_provenance,
-        build_governance_evidence,
+        build_git_release_provenance as build_git_release_provenance,
+        build_governance_evidence as build_governance_evidence,
     )
 except ModuleNotFoundError:
-    from scripts.civitasos_contracts.artifacts import build_artifact_envelope
+    from scripts.civitasos_contracts.artifacts import (
+        build_artifact_envelope as build_artifact_envelope,
+    )
     from scripts.civitasos_contracts.provenance import (
-        build_git_release_provenance,
-        build_governance_evidence,
+        build_git_release_provenance as build_git_release_provenance,
+        build_governance_evidence as build_governance_evidence,
     )
 
 FE4_RECEIPT_SCHEMA = "beta-fe4-frontend-commit-receipt:v1"

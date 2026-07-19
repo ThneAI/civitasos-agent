@@ -66,7 +66,7 @@ async def main():
     tasks = [asyncio.create_task(run_agent(cfg)) for cfg in agents_config]
 
     print(f"\n{'='*50}")
-    print(f"  Multi-Agent 系统已启动")
+    print("  Multi-Agent 系统已启动")
     print(f"  {len(agents_config)} 个 Agent 并发运行")
     for cfg in agents_config:
         print(f"    - {cfg['name']:12s}  port={cfg['gateway_port']}  {cfg['capabilities']}")

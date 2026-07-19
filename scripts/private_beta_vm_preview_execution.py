@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -164,7 +163,7 @@ def run_gate(
         and _returncode(rollback) == 0
         and _returncode(rollback_health) == 0
     )
-    execution_receipt = _write_execution_receipt(
+    _write_execution_receipt(
         output_root=output_root,
         authorization_path=authorization_path,
         authorization=authorization,
@@ -175,7 +174,7 @@ def run_gate(
         passed=execution_passed,
         failures=failures,
     )
-    rollback_receipt = _write_rollback_receipt(
+    _write_rollback_receipt(
         output_root=output_root,
         authorization_path=authorization_path,
         rollback=rollback,

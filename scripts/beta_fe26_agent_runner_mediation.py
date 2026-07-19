@@ -49,7 +49,7 @@ except ModuleNotFoundError:
 
 try:
     from beta_fe26_contracts import (
-        FE2_PACKET_SCHEMA,
+        FE2_PACKET_SCHEMA as FE2_PACKET_SCHEMA,
         NON_CLAIMS,
         boundary as _boundary,
         delivery_output as _delivery_output,
@@ -65,7 +65,7 @@ try:
     )
 except ModuleNotFoundError:
     from scripts.beta_fe26_contracts import (
-        FE2_PACKET_SCHEMA,
+        FE2_PACKET_SCHEMA as FE2_PACKET_SCHEMA,
         NON_CLAIMS,
         boundary as _boundary,
         delivery_output as _delivery_output,
@@ -81,9 +81,17 @@ except ModuleNotFoundError:
     )
 
 try:
-    from beta_fe_ollama_native_reviewer import OllamaNativeReviewer, OllamaReviewResult, patch_review_as_text
+    from beta_fe_ollama_native_reviewer import (
+        OllamaNativeReviewer,
+        OllamaReviewResult as OllamaReviewResult,
+        patch_review_as_text,
+    )
 except ModuleNotFoundError:
-    from scripts.beta_fe_ollama_native_reviewer import OllamaNativeReviewer, OllamaReviewResult, patch_review_as_text
+    from scripts.beta_fe_ollama_native_reviewer import (
+        OllamaNativeReviewer,
+        OllamaReviewResult as OllamaReviewResult,
+        patch_review_as_text,
+    )
 
 SUMMARY_SCHEMA = "beta-fe26-agent-runner-mediation-summary:v1"
 TASK_RECEIPT_SCHEMA = "beta-fe26-agent-runner-task-receipt:v1"

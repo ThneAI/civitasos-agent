@@ -23,7 +23,7 @@ from benchmarks.h3_goal_emission_runtime_production_evidence_gate import (
     PRODUCTION_EVIDENCE_SCHEMA_VERSION,
     REQUIRED_PRODUCTION_EVIDENCE_KINDS,
 )
-from benchmarks.i_gate_evidence import artifact_ref, object_value, read_json_object, write_json_object
+from benchmarks.i_gate_evidence import artifact_ref, read_json_object, write_json_object
 from benchmarks.p0n_controlled_beta_entry_gate import CHAIN_SCHEMA as P0N_CHAIN_SCHEMA
 from benchmarks.p0o_first_controlled_beta_task_authorization_gate import CHAIN_SCHEMA as P0O_CHAIN_SCHEMA
 from benchmarks.p0p_first_controlled_beta_task_execution_gate import CHAIN_SCHEMA as P0P_CHAIN_SCHEMA

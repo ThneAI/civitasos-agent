@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import json
-import os
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 
 from benchmarks import benchmark_mode
 from civitasos_runtime import loop as runtime_loop

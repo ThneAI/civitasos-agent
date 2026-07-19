@@ -28,14 +28,11 @@ try:
         artifact_ref as _artifact_ref,
         boundary as _boundary,
         excerpt as _excerpt,
-        extract_verdict as _extract_verdict,
+        extract_verdict as _shared_extract_verdict,
         failure_reasons as _failure_reasons,
         frontend_snapshot as _shared_frontend_snapshot,
-        git_text as _git,
         h3_boundary as _h3_boundary,
-        line_count as _line_count,
         participant_ids as _participant_ids,
-        read_json_object as _read_json,
         response_summaries as _collect_response_summaries,
         write_json as _write_json,
     )
@@ -45,17 +42,16 @@ except ModuleNotFoundError:
         artifact_ref as _artifact_ref,
         boundary as _boundary,
         excerpt as _excerpt,
-        extract_verdict as _extract_verdict,
+        extract_verdict as _shared_extract_verdict,
         failure_reasons as _failure_reasons,
         frontend_snapshot as _shared_frontend_snapshot,
-        git_text as _git,
         h3_boundary as _h3_boundary,
-        line_count as _line_count,
         participant_ids as _participant_ids,
-        read_json_object as _read_json,
         response_summaries as _collect_response_summaries,
         write_json as _write_json,
     )
+
+_extract_verdict = _shared_extract_verdict
 
 PACKET_SCHEMA = "beta-fe2-frontend-patch-proposal-packet:v1"
 SUMMARY_SCHEMA = "beta-fe-four-agent-frontend-orchestration-summary:v1"

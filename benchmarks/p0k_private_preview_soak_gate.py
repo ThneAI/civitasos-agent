@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, sha256_file, write_json_object
+from benchmarks.i_gate_evidence import artifact_ref, check, object_value, read_json_object, write_json_object
 from benchmarks.p0j_multi_vm_private_preview_gate import (
     AUTHORIZATION_SCHEMA as P0J_AUTHORIZATION_SCHEMA,
     CHAIN_SCHEMA as P0J_CHAIN_SCHEMA,

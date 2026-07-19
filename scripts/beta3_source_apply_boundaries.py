@@ -10,9 +10,13 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from beta3_source_apply_rollback import source_apply_operator_followup
+    from beta3_source_apply_rollback import (
+        source_apply_operator_followup as source_apply_operator_followup,
+    )
 except ModuleNotFoundError:
-    from scripts.beta3_source_apply_rollback import source_apply_operator_followup
+    from scripts.beta3_source_apply_rollback import (
+        source_apply_operator_followup as source_apply_operator_followup,
+    )
 
 
 NON_CLAIMS = (
