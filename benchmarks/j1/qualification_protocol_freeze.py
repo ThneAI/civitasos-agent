@@ -133,6 +133,7 @@ def _validate_review_binding(
     reviewer = _object(receipt.get("reviewer"))
     expected_protocol_review = {
         "review_id": receipt.get("review_id"),
+        "review_request_sha256": receipt.get("review_request_sha256"),
         "reviewer_did": reviewer.get("did"),
         "review_receipt_sha256": receipt_hash,
     }
@@ -144,6 +145,7 @@ def _validate_review_binding(
     independence = _object(receipt.get("independence"))
     expected_artifact_review = {
         "review_id": receipt.get("review_id"),
+        "review_request_sha256": receipt.get("review_request_sha256"),
         "reviewer_did": reviewer.get("did"),
         "reviewer_credential_version": reviewer.get("credential_version"),
         "signer_kind": reviewer.get("signer_kind"),

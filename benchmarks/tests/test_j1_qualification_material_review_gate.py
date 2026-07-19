@@ -88,6 +88,7 @@ def _receipt(
     receipt = {
         "schema_version": REVIEW_RECEIPT_SCHEMA,
         "review_id": "j1q-material-review-20260719-alpha",
+        "review_request_sha256": "e" * 64,
         "reviewer": {
             "did": _did(public_key_hex),
             "public_key_hex": public_key_hex,

@@ -43,6 +43,7 @@ def promote_reviewed_materials(
     receipt = json.loads(review_receipt_bytes)
     review = {
         "review_id": receipt["review_id"],
+        "review_request_sha256": receipt["review_request_sha256"],
         "reviewer_did": receipt["reviewer"]["did"],
         "reviewer_credential_version": receipt["reviewer"]["credential_version"],
         "signer_kind": receipt["reviewer"]["signer_kind"],

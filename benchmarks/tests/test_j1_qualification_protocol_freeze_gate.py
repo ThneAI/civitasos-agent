@@ -95,6 +95,7 @@ def _review_receipt(
     receipt = {
         "schema_version": REVIEW_RECEIPT_SCHEMA,
         "review_id": "j1q-material-review-20260719-alpha",
+        "review_request_sha256": "e" * 64,
         "reviewer": {
             "did": _did(public_key_hex),
             "public_key_hex": public_key_hex,
@@ -165,6 +166,7 @@ def _protocol(
         "admission_request_sha256": canonical_sha256(request),
         "material_review": {
             "review_id": receipt["review_id"],
+            "review_request_sha256": receipt["review_request_sha256"],
             "reviewer_did": receipt["reviewer"]["did"],
             "review_receipt_sha256": _bytes_hash(receipt_bytes),
         },

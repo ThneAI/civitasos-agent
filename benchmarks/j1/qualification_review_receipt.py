@@ -39,6 +39,7 @@ BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 RECEIPT_FIELDS = {
     "schema_version",
     "review_id",
+    "review_request_sha256",
     "reviewer",
     "decision",
     "reviewed_at",
@@ -79,6 +80,28 @@ def review_signature_payload(receipt: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def build_review_scope(
+    *,
+    corpus: dict[str, Any],
+    verifier: dict[str, Any],
+    corpus_bytes: bytes,
+    verifier_bytes: bytes,
+    verifier_source_bytes: bytes,
+) -> dict[str, Any]:
+    return {
+        "corpus_artifact_sha256": hashlib.sha256(corpus_bytes).hexdigest(),
+        "corpus_id": corpus.get("corpus_id"),
+        "corpus_tasks_sha256": corpus.get("tasks_sha256"),
+        "verifier_artifact_sha256": hashlib.sha256(verifier_bytes).hexdigest(),
+        "verifier_id": verifier.get("verifier_id"),
+        "verifier_implementation_sha256": hashlib.sha256(
+            verifier_source_bytes
+        ).hexdigest(),
+        "verifier_manifest_sha256": verifier.get("manifest_sha256"),
+        "verifier_source_revision": verifier.get("source_revision"),
+    }
+
+
 def validate_review_receipt(
     receipt: Any,
     *,
@@ -103,15 +126,35 @@ def validate_review_receipt(
 
 
 def validate_signed_review_receipt(receipt: Any) -> list[str]:
+    value = receipt if isinstance(receipt, dict) else {}
+    failures: list[str] = []
+    _require(set(value) == RECEIPT_FIELDS, "review_receipt_fields_invalid", failures)
+    body = {key: item for key, item in value.items() if key != "signature"}
+    failures.extend(validate_review_receipt_body(body))
+    _validate_signature(value, failures)
+    return list(dict.fromkeys(failures))
+
+
+def validate_review_receipt_body(receipt: Any) -> list[str]:
+    """Validate every receipt field except the detached signature."""
     failures: list[str] = []
     value = receipt if isinstance(receipt, dict) else {}
-    _require(set(value) == RECEIPT_FIELDS, "review_receipt_fields_invalid", failures)
+    _require(
+        set(value) == RECEIPT_FIELDS - {"signature"},
+        "review_receipt_body_fields_invalid",
+        failures,
+    )
     _require(
         value.get("schema_version") == REVIEW_RECEIPT_SCHEMA,
         "review_receipt_schema_invalid",
         failures,
     )
     _require(_real_text(value.get("review_id")), "review_id_invalid", failures)
+    _require(
+        _sha256(value.get("review_request_sha256")),
+        "review_request_hash_invalid",
+        failures,
+    )
     _require(
         value.get("decision") in ALLOWED_DECISIONS, "review_decision_invalid", failures
     )
@@ -139,7 +182,6 @@ def validate_signed_review_receipt(receipt: Any) -> list[str]:
     )
     for field in FALSE_BOUNDARIES:
         _require(boundary.get(field) is False, f"{field}_must_be_false", failures)
-    _validate_signature(value, failures)
     return list(dict.fromkeys(failures))
 
 
@@ -224,18 +266,13 @@ def _validate_scope_binding(
     verifier_source_bytes: bytes,
     failures: list[str],
 ) -> None:
-    expected = {
-        "corpus_artifact_sha256": hashlib.sha256(corpus_bytes).hexdigest(),
-        "corpus_id": corpus.get("corpus_id"),
-        "corpus_tasks_sha256": corpus.get("tasks_sha256"),
-        "verifier_artifact_sha256": hashlib.sha256(verifier_bytes).hexdigest(),
-        "verifier_id": verifier.get("verifier_id"),
-        "verifier_implementation_sha256": hashlib.sha256(
-            verifier_source_bytes
-        ).hexdigest(),
-        "verifier_manifest_sha256": verifier.get("manifest_sha256"),
-        "verifier_source_revision": verifier.get("source_revision"),
-    }
+    expected = build_review_scope(
+        corpus=corpus,
+        verifier=verifier,
+        corpus_bytes=corpus_bytes,
+        verifier_bytes=verifier_bytes,
+        verifier_source_bytes=verifier_source_bytes,
+    )
     _require(scope == expected, "review_scope_mismatch", failures)
 
 
