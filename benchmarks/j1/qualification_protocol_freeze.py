@@ -7,6 +7,7 @@ from typing import Any
 
 from .controlled_comparison import REQUIRED_SCENARIOS, canonical_sha256
 from .qualification_roster import validate_qualification_protocol
+from .qualification_review_receipt import validate_signed_review_receipt
 
 
 CORPUS_SCHEMA = "j1-qualification-task-corpus:v1"
@@ -21,6 +22,8 @@ def validate_freeze(
     *,
     corpus_bytes: bytes,
     verifier_bytes: bytes,
+    review_receipt: dict[str, Any],
+    review_receipt_bytes: bytes,
 ) -> list[str]:
     request_hash = canonical_sha256(admission_request)
     failures = validate_qualification_protocol(
@@ -28,6 +31,14 @@ def validate_freeze(
     )
     _validate_corpus(corpus, failures)
     _validate_verifier(verifier, corpus, failures)
+    _validate_review_binding(
+        protocol,
+        corpus,
+        verifier,
+        review_receipt,
+        review_receipt_bytes=review_receipt_bytes,
+        failures=failures,
+    )
     protocol_corpus = _object(protocol.get("task_corpus"))
     stack = _object(protocol.get("frozen_stack"))
     request_provider = _object(admission_request.get("provider"))
@@ -101,6 +112,91 @@ def validate_freeze(
     ):
         _require(boundary.get(field) is False, f"{field}_must_be_false", failures)
     return list(dict.fromkeys(failures))
+
+
+def _validate_review_binding(
+    protocol: dict[str, Any],
+    corpus: dict[str, Any],
+    verifier: dict[str, Any],
+    receipt: dict[str, Any],
+    *,
+    review_receipt_bytes: bytes,
+    failures: list[str],
+) -> None:
+    failures.extend(validate_signed_review_receipt(receipt))
+    _require(
+        receipt.get("decision") == "approve_qualification_materials",
+        "qualification_material_review_not_approved",
+        failures,
+    )
+    receipt_hash = hashlib.sha256(review_receipt_bytes).hexdigest()
+    reviewer = _object(receipt.get("reviewer"))
+    expected_protocol_review = {
+        "review_id": receipt.get("review_id"),
+        "reviewer_did": reviewer.get("did"),
+        "review_receipt_sha256": receipt_hash,
+    }
+    _require(
+        _object(protocol.get("material_review")) == expected_protocol_review,
+        "protocol_material_review_binding_mismatch",
+        failures,
+    )
+    independence = _object(receipt.get("independence"))
+    expected_artifact_review = {
+        "review_id": receipt.get("review_id"),
+        "reviewer_did": reviewer.get("did"),
+        "reviewer_credential_version": reviewer.get("credential_version"),
+        "signer_kind": reviewer.get("signer_kind"),
+        "custody_provenance_sha256": reviewer.get("custody_provenance_sha256"),
+        "signer_attestation_sha256": reviewer.get("signer_attestation_sha256"),
+        "decision": receipt.get("decision"),
+        "reviewed_at": receipt.get("reviewed_at"),
+        "conflicts_disclosed": independence.get("conflicts_disclosed"),
+        "independent_from_authoring": independence.get("independent_from_authoring"),
+        "review_receipt_sha256": receipt_hash,
+        "review_scope": receipt.get("review_scope"),
+    }
+    _require(
+        _object(corpus.get("operator_review")) == expected_artifact_review,
+        "qualification_corpus_review_binding_mismatch",
+        failures,
+    )
+    _require(
+        _object(verifier.get("operator_review")) == expected_artifact_review,
+        "qualification_verifier_review_binding_mismatch",
+        failures,
+    )
+    scope = _object(receipt.get("review_scope"))
+    _require(
+        scope.get("corpus_id") == corpus.get("corpus_id"),
+        "reviewed_corpus_id_mismatch",
+        failures,
+    )
+    _require(
+        scope.get("corpus_tasks_sha256") == corpus.get("tasks_sha256"),
+        "reviewed_corpus_tasks_hash_mismatch",
+        failures,
+    )
+    _require(
+        scope.get("verifier_id") == verifier.get("verifier_id"),
+        "reviewed_verifier_id_mismatch",
+        failures,
+    )
+    _require(
+        scope.get("verifier_source_revision") == verifier.get("source_revision"),
+        "reviewed_verifier_revision_mismatch",
+        failures,
+    )
+    implementations = {
+        item.get("implementation_sha256")
+        for item in verifier.get("cases", [])
+        if isinstance(item, dict)
+    }
+    _require(
+        implementations == {scope.get("verifier_implementation_sha256")},
+        "reviewed_verifier_implementation_mismatch",
+        failures,
+    )
 
 
 def _validate_corpus(corpus: dict[str, Any], failures: list[str]) -> None:

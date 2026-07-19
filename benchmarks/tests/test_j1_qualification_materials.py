@@ -86,6 +86,8 @@ def test_materials_are_private_and_require_independent_review(tmp_path: Path) ->
         {},
         corpus_bytes=corpus_path.read_bytes(),
         verifier_bytes=verifier_path.read_bytes(),
+        review_receipt={},
+        review_receipt_bytes=b"",
     )
     assert "qualification_corpus_status_invalid" in failures
     assert "qualification_verifier_status_invalid" in failures

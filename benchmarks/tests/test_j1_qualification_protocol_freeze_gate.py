@@ -1,19 +1,31 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
+from nacl.signing import SigningKey
+
 from benchmarks.j1.controlled_comparison import canonical_sha256
+from benchmarks.j1.qualification_material_review import promote_reviewed_materials
 from benchmarks.j1.qualification_protocol_freeze import (
     CORPUS_SCHEMA,
     VERIFIER_SCHEMA,
     validate_freeze,
+)
+from benchmarks.j1.qualification_review_receipt import (
+    FALSE_BOUNDARIES,
+    REQUIRED_CHECKS,
+    REVIEW_RECEIPT_SCHEMA,
+    review_signature_payload,
 )
 from benchmarks.j1.qualification_roster import QUALIFICATION_PROTOCOL_SCHEMA
 from benchmarks.j1_qualification_admission_gate import DEFAULT_REQUEST
 from benchmarks.j1_qualification_protocol_freeze_gate import GATE_SCHEMA, run_gate
 
 
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+IMPLEMENTATION_SHA256 = "b" * 64
 SCENARIOS = (
     "repeated_error",
     "harmful_advice",
@@ -30,7 +42,7 @@ def _request() -> dict:
     return json.loads(DEFAULT_REQUEST.read_text(encoding="utf-8"))
 
 
-def _corpus() -> dict:
+def _candidate_corpus() -> dict:
     tasks = [
         {
             "task_id": f"j1q-private-task-{index:02d}",
@@ -42,7 +54,7 @@ def _corpus() -> dict:
     ]
     return {
         "schema_version": CORPUS_SCHEMA,
-        "status": "operator_reviewed",
+        "status": "review_required",
         "corpus_id": "j1q-private-corpus:v1",
         "synthetic": False,
         "confidential": True,
@@ -51,10 +63,10 @@ def _corpus() -> dict:
     }
 
 
-def _verifier(corpus: dict) -> dict:
+def _candidate_verifier(corpus: dict) -> dict:
     value = {
         "schema_version": VERIFIER_SCHEMA,
-        "status": "operator_reviewed",
+        "status": "review_required",
         "verifier_id": "j1q-deterministic-verifier:v1",
         "source_revision": "a" * 40,
         "deterministic": True,
@@ -63,15 +75,61 @@ def _verifier(corpus: dict) -> dict:
         "cases": [
             {
                 "case_id": task["verifier_case"],
-                "implementation_sha256": canonical_sha256(
-                    ["verifier-implementation", task["verifier_case"]]
-                ),
+                "implementation_sha256": IMPLEMENTATION_SHA256,
             }
             for task in corpus["tasks"]
         ],
     }
     value["manifest_sha256"] = canonical_sha256(value)
     return value
+
+
+def _review_receipt(
+    corpus: dict,
+    corpus_bytes: bytes,
+    verifier: dict,
+    verifier_bytes: bytes,
+) -> dict:
+    signing_key = SigningKey.generate()
+    public_key_hex = signing_key.verify_key.encode().hex()
+    receipt = {
+        "schema_version": REVIEW_RECEIPT_SCHEMA,
+        "review_id": "j1q-material-review-20260719-alpha",
+        "reviewer": {
+            "did": _did(public_key_hex),
+            "public_key_hex": public_key_hex,
+            "credential_version": 1,
+            "signer_kind": "pkcs11_ed25519",
+            "custody_provenance_sha256": "c" * 64,
+            "signer_attestation_sha256": "d" * 64,
+        },
+        "decision": "approve_qualification_materials",
+        "reviewed_at": "2026-07-19T21:00:00+08:00",
+        "independence": {
+            "independent_from_authoring": True,
+            "conflicts_disclosed": True,
+            "ai_assisted_authoring_disclosed": True,
+        },
+        "review_scope": {
+            "corpus_artifact_sha256": _bytes_hash(corpus_bytes),
+            "corpus_id": corpus["corpus_id"],
+            "corpus_tasks_sha256": corpus["tasks_sha256"],
+            "verifier_artifact_sha256": _bytes_hash(verifier_bytes),
+            "verifier_id": verifier["verifier_id"],
+            "verifier_implementation_sha256": IMPLEMENTATION_SHA256,
+            "verifier_manifest_sha256": verifier["manifest_sha256"],
+            "verifier_source_revision": verifier["source_revision"],
+        },
+        "checklist": {name: True for name in sorted(REQUIRED_CHECKS)},
+        "execution_boundary": {name: False for name in sorted(FALSE_BOUNDARIES)},
+    }
+    payload = review_signature_payload(receipt)
+    receipt["signature"] = {
+        "algorithm": "ed25519",
+        "signed_payload_sha256": _bytes_hash(payload),
+        "signature_hex": signing_key.sign(payload).signature.hex(),
+    }
+    return receipt
 
 
 def _metrics() -> dict:
@@ -90,7 +148,12 @@ def _metrics() -> dict:
 
 
 def _protocol(
-    corpus: dict, corpus_bytes: bytes, verifier: dict, verifier_bytes: bytes
+    corpus: dict,
+    corpus_bytes: bytes,
+    verifier: dict,
+    verifier_bytes: bytes,
+    receipt: dict,
+    receipt_bytes: bytes,
 ) -> dict:
     request = _request()
     return {
@@ -100,6 +163,11 @@ def _protocol(
         "status": "frozen",
         "frozen_at": "2026-07-19T21:00:00+08:00",
         "admission_request_sha256": canonical_sha256(request),
+        "material_review": {
+            "review_id": receipt["review_id"],
+            "reviewer_did": receipt["reviewer"]["did"],
+            "review_receipt_sha256": _bytes_hash(receipt_bytes),
+        },
         "task_corpus": {
             "corpus_id": corpus["corpus_id"],
             "tasks_sha256": corpus["tasks_sha256"],
@@ -148,48 +216,79 @@ def _bytes(value: dict) -> bytes:
 
 
 def _bytes_hash(value: bytes) -> str:
-    import hashlib
-
     return hashlib.sha256(value).hexdigest()
 
 
 def _write(path: Path, raw: bytes) -> Path:
     path.write_bytes(raw)
+    path.chmod(0o600)
     return path
 
 
-def _artifacts() -> tuple[dict, bytes, dict, bytes, dict]:
-    corpus = _corpus()
+def _artifacts() -> dict:
+    candidate_corpus = _candidate_corpus()
+    candidate_corpus_bytes = _bytes(candidate_corpus)
+    candidate_verifier = _candidate_verifier(candidate_corpus)
+    candidate_verifier_bytes = _bytes(candidate_verifier)
+    receipt = _review_receipt(
+        candidate_corpus,
+        candidate_corpus_bytes,
+        candidate_verifier,
+        candidate_verifier_bytes,
+    )
+    receipt_bytes = _bytes(receipt)
+    corpus, verifier = promote_reviewed_materials(
+        corpus=candidate_corpus,
+        verifier=candidate_verifier,
+        review_receipt_bytes=receipt_bytes,
+    )
     corpus_bytes = _bytes(corpus)
-    verifier = _verifier(corpus)
     verifier_bytes = _bytes(verifier)
-    protocol = _protocol(corpus, corpus_bytes, verifier, verifier_bytes)
-    return corpus, corpus_bytes, verifier, verifier_bytes, protocol
+    protocol = _protocol(
+        corpus,
+        corpus_bytes,
+        verifier,
+        verifier_bytes,
+        receipt,
+        receipt_bytes,
+    )
+    return {
+        "corpus": corpus,
+        "corpus_bytes": corpus_bytes,
+        "verifier": verifier,
+        "verifier_bytes": verifier_bytes,
+        "receipt": receipt,
+        "receipt_bytes": receipt_bytes,
+        "protocol": protocol,
+    }
 
 
-def test_artifact_bound_qualification_protocol_is_valid() -> None:
-    corpus, corpus_bytes, verifier, verifier_bytes, protocol = _artifacts()
-
-    assert (
-        validate_freeze(
-            protocol,
-            corpus,
-            verifier,
-            _request(),
-            corpus_bytes=corpus_bytes,
-            verifier_bytes=verifier_bytes,
-        )
-        == []
+def _validate(artifacts: dict) -> list[str]:
+    return validate_freeze(
+        artifacts["protocol"],
+        artifacts["corpus"],
+        artifacts["verifier"],
+        _request(),
+        corpus_bytes=artifacts["corpus_bytes"],
+        verifier_bytes=artifacts["verifier_bytes"],
+        review_receipt=artifacts["receipt"],
+        review_receipt_bytes=artifacts["receipt_bytes"],
     )
 
 
-def test_freeze_gate_passes_without_authorizing_execution(tmp_path: Path) -> None:
-    corpus, corpus_bytes, verifier, verifier_bytes, protocol = _artifacts()
+def test_artifact_bound_qualification_protocol_is_valid() -> None:
+    assert _validate(_artifacts()) == []
 
+
+def test_freeze_gate_passes_without_authorizing_execution(tmp_path: Path) -> None:
+    artifacts = _artifacts()
     report = run_gate(
-        protocol_path=_write(tmp_path / "protocol.json", _bytes(protocol)),
-        corpus_path=_write(tmp_path / "corpus.json", corpus_bytes),
-        verifier_path=_write(tmp_path / "verifier.json", verifier_bytes),
+        protocol_path=_write(tmp_path / "protocol.json", _bytes(artifacts["protocol"])),
+        corpus_path=_write(tmp_path / "corpus.json", artifacts["corpus_bytes"]),
+        verifier_path=_write(tmp_path / "verifier.json", artifacts["verifier_bytes"]),
+        review_receipt_path=_write(
+            tmp_path / "review-receipt.json", artifacts["receipt_bytes"]
+        ),
         output_path=tmp_path / "report.json",
     )
 
@@ -201,57 +300,70 @@ def test_freeze_gate_passes_without_authorizing_execution(tmp_path: Path) -> Non
 
 
 def test_freeze_rejects_artifact_drift_and_threshold_change() -> None:
-    corpus, corpus_bytes, verifier, verifier_bytes, protocol = _artifacts()
-    protocol["task_corpus"]["artifact_sha256"] = "0" * 64
-    protocol["metric_definitions_sha256"] = "0" * 64
+    artifacts = _artifacts()
+    artifacts["protocol"]["task_corpus"]["artifact_sha256"] = "0" * 64
+    artifacts["protocol"]["metric_definitions_sha256"] = "0" * 64
 
-    failures = validate_freeze(
-        protocol,
-        corpus,
-        verifier,
-        _request(),
-        corpus_bytes=corpus_bytes,
-        verifier_bytes=verifier_bytes,
-    )
+    failures = _validate(artifacts)
 
     assert "protocol_corpus_artifact_hash_mismatch" in failures
     assert "protocol_metric_definitions_mismatch" in failures
 
 
-def test_freeze_rejects_synthetic_corpus_and_verifier_override() -> None:
-    corpus, corpus_bytes, verifier, verifier_bytes, protocol = _artifacts()
-    corpus["synthetic"] = True
-    verifier["operator_override_allowed"] = True
+def test_freeze_rejects_forged_review_status_without_receipt_binding() -> None:
+    artifacts = _artifacts()
+    artifacts["protocol"]["material_review"]["review_receipt_sha256"] = "0" * 64
+    artifacts["corpus"]["operator_review"]["review_receipt_sha256"] = "0" * 64
 
-    failures = validate_freeze(
-        protocol,
-        corpus,
-        verifier,
-        _request(),
-        corpus_bytes=corpus_bytes,
-        verifier_bytes=verifier_bytes,
-    )
+    failures = _validate(artifacts)
+
+    assert "protocol_material_review_binding_mismatch" in failures
+    assert "qualification_corpus_review_binding_mismatch" in failures
+
+
+def test_freeze_rejects_synthetic_corpus_and_verifier_override() -> None:
+    artifacts = _artifacts()
+    artifacts["corpus"]["synthetic"] = True
+    artifacts["verifier"]["operator_override_allowed"] = True
+
+    failures = _validate(artifacts)
 
     assert "qualification_corpus_must_be_real" in failures
     assert "qualification_verifier_override_forbidden" in failures
 
 
 def test_freeze_rejects_execution_preauthorization() -> None:
-    corpus, corpus_bytes, verifier, verifier_bytes, protocol = _artifacts()
-    protocol["execution_boundary"]["execution_authorized"] = True
-    protocol["execution_boundary"]["model_invocation_allowed"] = True
+    artifacts = _artifacts()
+    artifacts["protocol"]["execution_boundary"]["execution_authorized"] = True
+    artifacts["protocol"]["execution_boundary"]["model_invocation_allowed"] = True
 
-    failures = validate_freeze(
-        protocol,
-        corpus,
-        verifier,
-        _request(),
-        corpus_bytes=corpus_bytes,
-        verifier_bytes=verifier_bytes,
-    )
+    failures = _validate(artifacts)
 
     assert "qualification_execution_must_be_false" in failures
     assert "model_invocation_allowed_must_be_false" in failures
+
+
+def test_freeze_gate_rejects_open_review_receipt_permissions(tmp_path: Path) -> None:
+    artifacts = _artifacts()
+    review_receipt_path = _write(
+        tmp_path / "review-receipt.json", artifacts["receipt_bytes"]
+    )
+    review_receipt_path.chmod(0o644)
+
+    report = run_gate(
+        protocol_path=_write(tmp_path / "protocol.json", _bytes(artifacts["protocol"])),
+        corpus_path=_write(tmp_path / "corpus.json", artifacts["corpus_bytes"]),
+        verifier_path=_write(tmp_path / "verifier.json", artifacts["verifier_bytes"]),
+        review_receipt_path=review_receipt_path,
+        output_path=tmp_path / "report.json",
+    )
+
+    assert report["passed"] is False
+    assert (
+        "qualification_material_review_receipt_permissions_too_open"
+        in report["failure_reasons"]
+    )
+    assert report["readiness"]["controlled_experiment_execution_ready"] is False
 
 
 def test_operational_gate_fails_closed_when_private_artifacts_are_missing(
@@ -261,6 +373,7 @@ def test_operational_gate_fails_closed_when_private_artifacts_are_missing(
         protocol_path=tmp_path / "protocol-required.json",
         corpus_path=tmp_path / "corpus-required.json",
         verifier_path=tmp_path / "verifier-required.json",
+        review_receipt_path=tmp_path / "review-receipt-required.json",
         output_path=tmp_path / "report.json",
     )
 
@@ -269,5 +382,15 @@ def test_operational_gate_fails_closed_when_private_artifacts_are_missing(
         "qualification_protocol_unreadable",
         "qualification_corpus_unreadable",
         "qualification_verifier_unreadable",
+        "qualification_material_review_receipt_unreadable",
     ]
     assert report["readiness"]["controlled_experiment_execution_ready"] is False
+
+
+def _did(public_key_hex: str) -> str:
+    number = int.from_bytes(b"\xed\x01" + bytes.fromhex(public_key_hex), "big")
+    encoded = ""
+    while number:
+        number, remainder = divmod(number, 58)
+        encoded = BASE58_ALPHABET[remainder] + encoded
+    return f"did:civ:testnet:z{encoded}"

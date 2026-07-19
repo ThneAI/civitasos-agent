@@ -20,14 +20,22 @@ GATE_SCHEMA = "j1-qualification-protocol-freeze-gate:v1"
 
 
 def run_gate(
-    *, protocol_path: Path, corpus_path: Path, verifier_path: Path, output_path: Path
+    *,
+    protocol_path: Path,
+    corpus_path: Path,
+    verifier_path: Path,
+    review_receipt_path: Path,
+    output_path: Path,
 ) -> dict[str, Any]:
     failures: list[str] = []
     protocol, protocol_bytes = _read(protocol_path, "qualification_protocol", failures)
     corpus, corpus_bytes = _read(corpus_path, "qualification_corpus", failures)
     verifier, verifier_bytes = _read(verifier_path, "qualification_verifier", failures)
+    review_receipt, review_receipt_bytes = _read(
+        review_receipt_path, "qualification_material_review_receipt", failures
+    )
     request = read_json_object(DEFAULT_REQUEST)
-    if protocol and corpus and verifier:
+    if protocol and corpus and verifier and review_receipt:
         failures.extend(
             validate_freeze(
                 protocol,
@@ -36,6 +44,8 @@ def run_gate(
                 request,
                 corpus_bytes=corpus_bytes,
                 verifier_bytes=verifier_bytes,
+                review_receipt=review_receipt,
+                review_receipt_bytes=review_receipt_bytes,
             )
         )
     passed = not failures
@@ -49,6 +59,9 @@ def run_gate(
         else None,
         "corpus_artifact_sha256": _sha256(corpus_bytes) if corpus_bytes else None,
         "verifier_artifact_sha256": _sha256(verifier_bytes) if verifier_bytes else None,
+        "material_review_receipt_sha256": (
+            _sha256(review_receipt_bytes) if review_receipt_bytes else None
+        ),
         "source_content_recorded": False,
         "readiness": {
             "state": "j1d_qualification_protocol_frozen_roster_required"
@@ -78,6 +91,8 @@ def _read(path: Path, label: str, failures: list[str]) -> tuple[dict[str, Any], 
         value = json.loads(raw)
         if not isinstance(value, dict):
             raise ValueError
+        if path.stat().st_mode & 0o077:
+            failures.append(f"{label}_permissions_too_open")
         return value, raw
     except (OSError, ValueError, json.JSONDecodeError):
         failures.append(f"{label}_unreadable")
@@ -95,12 +110,14 @@ def main() -> int:
     parser.add_argument("--protocol", type=Path, required=True)
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--verifier", type=Path, required=True)
+    parser.add_argument("--review-receipt", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     report = run_gate(
         protocol_path=args.protocol,
         corpus_path=args.corpus,
         verifier_path=args.verifier,
+        review_receipt_path=args.review_receipt,
         output_path=args.output,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
