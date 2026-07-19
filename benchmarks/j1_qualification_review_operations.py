@@ -103,6 +103,101 @@ def prepare_signature_payload(
     return report
 
 
+def run_review_preflight(
+    *,
+    request_path: Path,
+    decision_path: Path,
+    output_path: Path,
+    module_path: str = DEFAULT_MODULE,
+    token_label: str | None = None,
+    key_label: str | None = None,
+    key_id: str | None = None,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    diagnostics: list[str] = []
+    request: dict[str, Any] = {}
+    decision: dict[str, Any] = {}
+    request_validated = False
+    try:
+        request, _ = _load_request_bundle(request_path)
+        request_validated = True
+    except (OSError, ValueError, KeyError) as error:
+        failures.append("review_request_bundle_invalid")
+        diagnostics.append(str(error))
+    try:
+        decision, _ = _read_json(decision_path, require_private=True)
+    except (OSError, ValueError) as error:
+        failures.append("review_decision_unreadable")
+        diagnostics.append(str(error))
+    decision_failures = (
+        validate_review_decision(decision, request=request)
+        if request_validated and decision
+        else []
+    )
+    failures.extend(decision_failures)
+    signer_kind = (
+        decision.get("reviewer", {}).get("signer_kind")
+        if isinstance(decision.get("reviewer"), dict)
+        else None
+    )
+    signer_configuration = _signer_preflight(
+        signer_kind=signer_kind,
+        module_path=module_path,
+        token_label=token_label,
+        key_label=key_label,
+        key_id=key_id,
+    )
+    if request_validated and decision and not decision_failures:
+        failures.extend(signer_configuration["failure_reasons"])
+    failures = list(dict.fromkeys(failures))
+    passed = not failures
+    report = {
+        "schema_version": REPORT_SCHEMA,
+        "operation": "preflight",
+        "passed": passed,
+        "failure_reasons": failures,
+        "diagnostics": diagnostics,
+        "state": (
+            "review_handoff_preflight_passed_signer_action_required"
+            if passed
+            else "blocked_independent_operator_review_handoff"
+        ),
+        "review_request_sha256": request.get("request_sha256"),
+        "request_validated": request_validated,
+        "decision_validated": request_validated
+        and bool(decision)
+        and not decision_failures,
+        "decision": decision.get("decision"),
+        "reviewer_did": (
+            decision.get("reviewer", {}).get("did")
+            if isinstance(decision.get("reviewer"), dict)
+            else None
+        ),
+        "signer_preflight": signer_configuration,
+        "readiness": {
+            "candidate_scope_verified": request_validated,
+            "operator_decision_complete": request_validated
+            and bool(decision)
+            and not decision_failures,
+            "signature_payload_ready": passed,
+            "hardware_identity_probe_required": passed
+            and signer_kind == "pkcs11_ed25519",
+            "external_signature_required": passed
+            and signer_kind == "non_exportable_ed25519_callback",
+            "signed_receipt_present": False,
+            "material_review_gate_ready": False,
+        },
+        "execution_boundary": {
+            **_operation_boundary(),
+            "hardware_contact_performed": False,
+            "pin_read": False,
+            "signature_performed": False,
+        },
+    }
+    write_private_json(output_path, report)
+    return report
+
+
 def sign_with_pkcs11(
     *,
     request_path: Path,
@@ -194,8 +289,15 @@ def assemble_detached_signature(
 def _load_review_bundle(
     request_path: Path, decision_path: Path
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    request, _ = _read_json(request_path, require_private=True)
     decision, _ = _read_json(decision_path, require_private=True)
+    request, bundle = _load_request_bundle(request_path)
+    return request, decision, bundle
+
+
+def _load_request_bundle(
+    request_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    request, _ = _read_json(request_path, require_private=True)
     artifacts = request.get("candidate_artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("review request candidate_artifacts is invalid")
@@ -218,14 +320,10 @@ def _load_review_bundle(
     failures = validate_review_request(request, **validation_inputs)
     if failures:
         raise ValueError(f"review request invalid: {failures}")
-    return (
-        request,
-        decision,
-        {
-            "request_validated": True,
-            "validation_inputs": validation_inputs,
-        },
-    )
+    return request, {
+        "request_validated": True,
+        "validation_inputs": validation_inputs,
+    }
 
 
 def _decision_template(request: dict[str, Any]) -> dict[str, Any]:
@@ -350,6 +448,65 @@ def _operation_boundary() -> dict[str, bool]:
     }
 
 
+def _signer_preflight(
+    *,
+    signer_kind: Any,
+    module_path: str,
+    token_label: str | None,
+    key_label: str | None,
+    key_id: str | None,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    module = Path(module_path)
+    module_ready: bool | None = None
+    key_id_valid: bool | None = None
+    token_label_configured: bool | None = None
+    key_label_configured: bool | None = None
+    module_path_value: str | None = None
+    if signer_kind == "pkcs11_ed25519":
+        module_path_value = module_path
+        try:
+            metadata = module.stat()
+            module_ready = stat.S_ISREG(metadata.st_mode) and os.access(module, os.R_OK)
+        except OSError:
+            module_ready = False
+        if not module_ready:
+            failures.append("pkcs11_module_unreadable")
+        token_label_configured = bool(str(token_label or "").strip())
+        if not token_label_configured:
+            failures.append("pkcs11_token_label_missing")
+        key_label_configured = bool(str(key_label or "").strip())
+        if not key_label_configured:
+            failures.append("pkcs11_key_label_missing")
+        key_id_text = str(key_id or "").strip().lower()
+        key_id_valid = (
+            bool(key_id_text)
+            and len(key_id_text) % 2 == 0
+            and all(char in "0123456789abcdef" for char in key_id_text)
+        )
+        if not key_id_valid:
+            failures.append("pkcs11_key_id_invalid")
+    elif signer_kind == "non_exportable_ed25519_callback":
+        pass
+    else:
+        failures.append("reviewer_signer_kind_invalid")
+    return {
+        "signer_kind": signer_kind,
+        "configuration_complete": not failures,
+        "failure_reasons": failures,
+        "pkcs11_module_path": (
+            str(module.resolve()) if module_ready else module_path_value
+        ),
+        "pkcs11_module_readable": module_ready,
+        "pkcs11_token_label_configured": token_label_configured,
+        "pkcs11_key_label_configured": key_label_configured,
+        "pkcs11_key_id_valid": key_id_valid,
+        "hardware_contact_performed": False,
+        "pin_read": False,
+        "signature_performed": False,
+    }
+
+
 def _timestamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -370,6 +527,15 @@ def _build_parser() -> argparse.ArgumentParser:
     payload.add_argument("--request", type=Path, required=True)
     payload.add_argument("--decision", type=Path, required=True)
     payload.add_argument("--output", type=Path, required=True)
+
+    preflight = subparsers.add_parser("preflight")
+    preflight.add_argument("--request", type=Path, required=True)
+    preflight.add_argument("--decision", type=Path, required=True)
+    preflight.add_argument("--output", type=Path, required=True)
+    preflight.add_argument("--module", default=DEFAULT_MODULE)
+    preflight.add_argument("--token-label")
+    preflight.add_argument("--key-label")
+    preflight.add_argument("--key-id", help="CKA_ID as hex")
 
     pkcs11 = subparsers.add_parser("sign-pkcs11")
     pkcs11.add_argument("--request", type=Path, required=True)
@@ -407,6 +573,16 @@ def main() -> int:
                 decision_path=args.decision,
                 output_path=args.output,
             )
+        elif args.command == "preflight":
+            report = run_review_preflight(
+                request_path=args.request,
+                decision_path=args.decision,
+                output_path=args.output,
+                module_path=args.module,
+                token_label=args.token_label,
+                key_label=args.key_label,
+                key_id=args.key_id,
+            )
         elif args.command == "sign-pkcs11":
             report = sign_with_pkcs11(
                 request_path=args.request,
@@ -442,7 +618,7 @@ def main() -> int:
         )
         return 1
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
+    return 0 if report["passed"] else 1
 
 
 if __name__ == "__main__":

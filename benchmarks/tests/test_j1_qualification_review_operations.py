@@ -20,6 +20,7 @@ from benchmarks.j1_qualification_review_operations import (
     assemble_detached_signature,
     prepare_request,
     prepare_signature_payload,
+    run_review_preflight,
 )
 
 
@@ -325,6 +326,105 @@ def test_open_decision_permissions_fail_closed(tmp_path: Path) -> None:
             decision_path=decision_path,
             output_path=tmp_path / "payload.bin",
         )
+
+
+def test_preflight_reports_incomplete_operator_template(tmp_path: Path) -> None:
+    _, _, _, request_path = _prepare(tmp_path)
+    output_path = tmp_path / "review-handoff-preflight.json"
+
+    report = run_review_preflight(
+        request_path=request_path,
+        decision_path=request_path.parent / "review-decision.template.json",
+        output_path=output_path,
+    )
+
+    assert report["passed"] is False
+    assert report["state"] == "blocked_independent_operator_review_handoff"
+    assert report["request_validated"] is True
+    assert report["decision_validated"] is False
+    assert "review_id_invalid" in report["failure_reasons"]
+    assert "reviewed_at_invalid" in report["failure_reasons"]
+    assert "reviewer_signer_kind_invalid" in report["failure_reasons"]
+    assert "review_checklist_incomplete" in report["failure_reasons"]
+    assert report["execution_boundary"]["hardware_contact_performed"] is False
+    assert report["execution_boundary"]["pin_read"] is False
+    assert report["execution_boundary"]["signature_performed"] is False
+    assert output_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_pkcs11_preflight_passes_only_with_complete_structural_config(
+    tmp_path: Path,
+) -> None:
+    _, _, _, request_path = _prepare(tmp_path)
+    decision_path = tmp_path / "review-decision.json"
+    write_private_json(decision_path, _decision(request_path, SigningKey.generate()))
+    module_path = tmp_path / "pkcs11-module.so"
+    module_path.write_bytes(b"module-placeholder")
+
+    report = run_review_preflight(
+        request_path=request_path,
+        decision_path=decision_path,
+        output_path=tmp_path / "preflight.json",
+        module_path=str(module_path),
+        token_label="reviewer-token",
+        key_label="reviewer-key",
+        key_id="01",
+    )
+
+    assert report["passed"] is True
+    assert report["decision_validated"] is True
+    assert report["signer_preflight"]["configuration_complete"] is True
+    assert report["readiness"]["signature_payload_ready"] is True
+    assert report["readiness"]["hardware_identity_probe_required"] is True
+    assert report["readiness"]["signed_receipt_present"] is False
+
+
+def test_pkcs11_preflight_rejects_missing_signer_configuration(
+    tmp_path: Path,
+) -> None:
+    _, _, _, request_path = _prepare(tmp_path)
+    decision_path = tmp_path / "review-decision.json"
+    write_private_json(decision_path, _decision(request_path, SigningKey.generate()))
+
+    report = run_review_preflight(
+        request_path=request_path,
+        decision_path=decision_path,
+        output_path=tmp_path / "preflight.json",
+        module_path=str(tmp_path / "missing-pkcs11-module.so"),
+    )
+
+    assert report["passed"] is False
+    assert report["failure_reasons"] == [
+        "pkcs11_module_unreadable",
+        "pkcs11_token_label_missing",
+        "pkcs11_key_label_missing",
+        "pkcs11_key_id_invalid",
+    ]
+    assert report["readiness"]["signature_payload_ready"] is False
+    assert report["execution_boundary"]["hardware_contact_performed"] is False
+
+
+def test_callback_preflight_requires_no_pkcs11_configuration(tmp_path: Path) -> None:
+    _, _, _, request_path = _prepare(tmp_path)
+    decision_path = tmp_path / "review-decision.json"
+    write_private_json(
+        decision_path,
+        _decision(
+            request_path,
+            SigningKey.generate(),
+            signer_kind="non_exportable_ed25519_callback",
+        ),
+    )
+
+    report = run_review_preflight(
+        request_path=request_path,
+        decision_path=decision_path,
+        output_path=tmp_path / "preflight.json",
+    )
+
+    assert report["passed"] is True
+    assert report["readiness"]["external_signature_required"] is True
+    assert report["readiness"]["hardware_identity_probe_required"] is False
 
 
 def _did(public_key_hex: str) -> str:

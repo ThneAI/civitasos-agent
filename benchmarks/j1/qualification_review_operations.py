@@ -346,10 +346,9 @@ def validate_review_decision(decision: Any, *, request: dict[str, Any]) -> list[
         "review_decision_value_invalid",
         failures,
     )
-    if not failures:
-        failures.extend(
-            validate_review_receipt_body(build_review_receipt_body(request, value))
-        )
+    failures.extend(
+        validate_review_receipt_body(build_review_receipt_body(request, value))
+    )
     return list(dict.fromkeys(failures))
 
 

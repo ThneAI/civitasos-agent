@@ -359,7 +359,16 @@ def _git_revision(value: Any) -> bool:
 def _real_text(value: Any) -> bool:
     text = _text(value).lower()
     return bool(text) and not any(
-        token in text for token in ("synthetic", "fixture", "test", "demo", "devnet")
+        token in text
+        for token in (
+            "synthetic",
+            "fixture",
+            "test",
+            "demo",
+            "devnet",
+            "required",
+            "placeholder",
+        )
     )
 
 
