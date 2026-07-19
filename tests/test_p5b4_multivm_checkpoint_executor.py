@@ -271,7 +271,7 @@ class _FakeTransport:
         return RemoteResult(stdout=f"clean:{node.node_id}")
 
 
-def test_phase_failure_still_cleans_every_node_and_records_terminal_failure(
+def test_phase_failure_still_cleans_every_node_and_records_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
     plan, _authorization, journal = _prepare(tmp_path, monkeypatch)
@@ -298,6 +298,50 @@ def test_phase_failure_still_cleans_every_node_and_records_terminal_failure(
     assert events[-1] == "execution_failed"
     assert all(str(DEFAULT_BACKEND_PORT) in script for _node, script in transport.runs)
     assert all(DEFAULT_REMOTE_ROOT in script for _node, script in transport.runs)
+
+
+def test_failed_execution_cleans_and_retries_same_claimed_journal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    plan, _authorization, journal = _prepare(tmp_path, monkeypatch)
+    first_transport = _FakeTransport()
+    first_gate = GateExecutor(
+        plan=plan,
+        transport=first_transport,
+        journal=journal,
+        phase_handlers={
+            "local_preflight": lambda _phase: {"passed": True},
+            "deploy_isolated_candidate": lambda _phase: (_ for _ in ()).throw(
+                RuntimeError("injected first-attempt failure")
+            ),
+        },
+    )
+    with pytest.raises(RuntimeError, match="first-attempt failure"):
+        first_gate.execute()
+
+    retry_transport = _FakeTransport()
+    case_evidence = [{"case_id": case["case_id"]} for case in plan["fault_matrix"]]
+    retry_handlers = {
+        phase["phase_id"]: (
+            lambda _phase: {"passed": True, "cases": case_evidence}
+        )
+        for phase in plan["phases"]
+        if phase["phase_id"] != "cleanup_and_verify"
+    }
+    result = GateExecutor(
+        plan=plan,
+        transport=retry_transport,
+        journal=journal,
+        phase_handlers=retry_handlers,
+    ).execute()
+
+    events = [entry["event"] for entry in journal.entries]
+    assert result["passed"] is True
+    assert events.count("authorization_consumed") == 1
+    assert events.count("execution_failed") == 1
+    assert events.count("execution_recovery_reset") == 1
+    assert events[-1] == "execution_passed"
+    assert len(retry_transport.runs) == 6
 
 
 def test_cleanup_failure_prevents_passing_summary(tmp_path: Path, monkeypatch) -> None:

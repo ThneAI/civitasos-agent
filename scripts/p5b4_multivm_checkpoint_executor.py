@@ -182,7 +182,9 @@ class ExecutionJournal:
 
     @property
     def terminal(self) -> bool:
-        return any(entry["event"] in {"execution_passed", "execution_failed"} for entry in self.entries)
+        # A failed attempt remains immutable evidence, but the same claimed
+        # execution may retry after cleanup. Only a passed Gate is terminal.
+        return any(entry["event"] == "execution_passed" for entry in self.entries)
 
 
 def _validate_authorization(
@@ -412,7 +414,7 @@ class GateExecutor:
 
     def execute(self) -> dict[str, Any]:
         if self.journal.terminal:
-            raise ValueError("P5-B4 execution journal is already terminal")
+            raise ValueError("P5-B4 execution journal already contains a passing Gate")
         if len(self.journal.entries) > 1:
             recovery_cleanup = self.cleanup()
             self.journal.append(
