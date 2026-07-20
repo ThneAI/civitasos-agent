@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
+
+from nacl.signing import SigningKey
 
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_roster import (
@@ -11,8 +14,35 @@ from benchmarks.j1.qualification_roster import (
     validate_qualification_protocol,
     validate_roster,
 )
+from benchmarks.j1.qualification_reviewer_identity import (
+    build_reviewer_identity_profile,
+)
+from benchmarks.j1.qualification_roster_review import (
+    build_reviewed_roster,
+    build_roster_review_receipt,
+)
 from benchmarks.j1_qualification_admission_gate import DEFAULT_REQUEST
 from benchmarks.j1_qualification_roster_gate import GATE_SCHEMA, run_gate
+
+
+CREATED_AT = "2026-07-19T20:05:00+08:00"
+REVIEW_IMPLEMENTATION = {
+    "agent_revision": "a" * 40,
+    "contract_source_sha256": "b" * 64,
+    "operation_source_sha256": "c" * 64,
+}
+
+
+class _Signer:
+    def __init__(self, key: SigningKey) -> None:
+        self.key = key
+
+    @property
+    def public_key_hex(self) -> str:
+        return self.key.verify_key.encode().hex()
+
+    def sign(self, message: bytes) -> bytes:
+        return self.key.sign(message).signature
 
 
 def _request_hash() -> str:
@@ -108,6 +138,81 @@ def _write(path: Path, value: dict) -> Path:
     return path
 
 
+def _reviewer(key: SigningKey) -> dict:
+    challenge = b"r" * 32
+    return build_reviewer_identity_profile(
+        created_at=CREATED_AT,
+        public_key_hex=key.verify_key.encode().hex(),
+        credential_version=1,
+        module_path="/usr/lib/softhsm/libsofthsm2.so",
+        module_bytes=b"module",
+        token_label="dev-token",
+        token_serial="serial",
+        token_model="SoftHSM v2",
+        token_manufacturer="SoftHSM project",
+        key_label="reviewer-key",
+        key_id_hex="4a31",
+        key_reference="pkcs11:reviewer-key",
+        challenge=challenge,
+        signature=key.sign(challenge).signature,
+        private_key_sensitive=True,
+        private_key_extractable=False,
+    )
+
+
+def _draft(protocol: dict) -> dict:
+    draft = _roster(protocol)
+    draft.pop("operator_review")
+    draft["status"] = "review_required"
+    draft["roster_sha256"] = canonical_sha256(
+        {key: value for key, value in draft.items() if key != "roster_sha256"}
+    )
+    return draft
+
+
+def _review_bundle(tmp_path: Path, protocol: dict) -> dict[str, Path]:
+    source = _draft(protocol)
+    source_path = _write(tmp_path / "source-roster.json", source)
+    reviewer_key = SigningKey.generate()
+    reviewer = _reviewer(reviewer_key)
+    reviewer_path = _write(tmp_path / "reviewer.json", reviewer)
+    receipt = build_roster_review_receipt(
+        review_id="j1q-roster-review-20260721-r1",
+        reviewed_at=CREATED_AT,
+        authorization_id="j1q-roster-owner-approval-20260721-r1",
+        authorization_statement_sha256="d" * 64,
+        candidate_roster=source,
+        candidate_artifact_sha256=hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        source_evidence={
+            "reviewed_pairing_sha256": "1" * 64,
+            "baseline_consent_manifest_sha256": "2" * 64,
+            "manifest_artifact_sha256": "3" * 64,
+            "intake_report_artifact_sha256": "4" * 64,
+            "evidence_artifact_count": 220,
+            "cognitive_baseline_count": 20,
+            "participant_consent_count": 40,
+            "participant_packet_count": 40,
+        },
+        reviewer_profile=reviewer,
+        reviewer_profile_sha256=hashlib.sha256(reviewer_path.read_bytes()).hexdigest(),
+        review_implementation=REVIEW_IMPLEMENTATION,
+        signer=_Signer(reviewer_key),
+    )
+    receipt_path = _write(tmp_path / "review-receipt.json", receipt)
+    reviewed = build_reviewed_roster(
+        candidate_roster=source,
+        receipt=receipt,
+        receipt_sha256=hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+    )
+    return {
+        "roster_path": _write(tmp_path / "roster.json", reviewed),
+        "source_roster_path": source_path,
+        "review_receipt_path": receipt_path,
+        "reviewer_profile_path": reviewer_path,
+        "qualification_protocol_path": _write(tmp_path / "protocol.json", protocol),
+    }
+
+
 def test_qualification_protocol_and_reviewed_roster_are_valid() -> None:
     protocol = _protocol()
     roster = _roster(protocol)
@@ -141,8 +246,7 @@ def test_roster_gate_binds_reviewed_public_only_roster(tmp_path: Path) -> None:
     output = tmp_path / "report.json"
 
     report = run_gate(
-        roster_path=_write(tmp_path / "roster.json", _roster(protocol)),
-        qualification_protocol_path=_write(tmp_path / "protocol.json", protocol),
+        **_review_bundle(tmp_path, protocol),
         output_path=output,
     )
 
@@ -150,6 +254,7 @@ def test_roster_gate_binds_reviewed_public_only_roster(tmp_path: Path) -> None:
     assert report["passed"] is True
     assert report["participant_count"] == 40
     assert report["readiness"]["real_participant_roster_bound"] is True
+    assert report["readiness"]["signed_roster_review_verified"] is True
     assert report["readiness"]["qualification_protocol_frozen"] is True
     assert report["readiness"]["controlled_experiment_execution_ready"] is False
     assert report["execution_boundary"]["identity_generation_allowed"] is False
@@ -218,12 +323,18 @@ def test_gate_fails_closed_when_real_roster_and_protocol_are_absent(
 ) -> None:
     report = run_gate(
         roster_path=tmp_path / "real-roster-required.json",
+        source_roster_path=tmp_path / "source-roster-required.json",
+        review_receipt_path=tmp_path / "review-receipt-required.json",
+        reviewer_profile_path=tmp_path / "reviewer-profile-required.json",
         qualification_protocol_path=tmp_path / "qualification-protocol-required.json",
         output_path=tmp_path / "report.json",
     )
 
     assert report["passed"] is False
     assert "qualification_roster_unreadable" in report["failure_reasons"]
+    assert "source_roster_unreadable" in report["failure_reasons"]
+    assert "roster_review_receipt_unreadable" in report["failure_reasons"]
+    assert "reviewer_identity_profile_unreadable" in report["failure_reasons"]
     assert "qualification_protocol_unreadable" in report["failure_reasons"]
     assert report["readiness"]["controlled_experiment_execution_ready"] is False
 
@@ -233,6 +344,9 @@ def test_gate_preserves_valid_protocol_readiness_when_roster_is_absent(
 ) -> None:
     report = run_gate(
         roster_path=tmp_path / "real-roster-required.json",
+        source_roster_path=tmp_path / "source-roster-required.json",
+        review_receipt_path=tmp_path / "review-receipt-required.json",
+        reviewer_profile_path=tmp_path / "reviewer-profile-required.json",
         qualification_protocol_path=_write(
             tmp_path / "qualification-protocol.json", _protocol()
         ),
@@ -240,10 +354,28 @@ def test_gate_preserves_valid_protocol_readiness_when_roster_is_absent(
     )
 
     assert report["passed"] is False
-    assert report["failure_reasons"] == ["qualification_roster_unreadable"]
+    assert "qualification_roster_unreadable" in report["failure_reasons"]
+    assert "source_roster_unreadable" in report["failure_reasons"]
     assert report["readiness"]["qualification_protocol_frozen"] is True
     assert report["readiness"]["real_participant_roster_bound"] is False
     assert report["readiness"]["controlled_experiment_execution_ready"] is False
+
+
+def test_gate_rejects_tampered_signed_review(tmp_path: Path) -> None:
+    paths = _review_bundle(tmp_path, _protocol())
+    receipt = json.loads(paths["review_receipt_path"].read_text(encoding="utf-8"))
+    receipt["execution_boundary"]["model_invocation_allowed"] = True
+    _write(paths["review_receipt_path"], receipt)
+
+    report = run_gate(**paths, output_path=tmp_path / "report.json")
+
+    assert report["passed"] is False
+    assert (
+        "roster_review_model_invocation_allowed_must_be_false"
+        in report["failure_reasons"]
+    )
+    assert "roster_review_signature_payload_hash_mismatch" in report["failure_reasons"]
+    assert report["readiness"]["real_participant_roster_bound"] is False
 
 
 def test_protocol_rejects_synthetic_corpus_and_preauthorization() -> None:

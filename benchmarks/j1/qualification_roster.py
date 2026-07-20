@@ -14,6 +14,16 @@ QUALIFICATION_PROTOCOL_SCHEMA = "j1-qualification-protocol:v1"
 ALLOWED_SIGNERS = {"pkcs11", "webauthn", "non_exportable_callback"}
 FORBIDDEN_ID_TOKENS = {"synthetic", "fixture", "test", "demo", "devnet"}
 SECRET_KEY_TOKENS = {"seed", "private_key", "api_key", "token", "passphrase", "pin"}
+ROSTER_DRAFT_FIELDS = {
+    "schema_version",
+    "roster_id",
+    "status",
+    "admission_request_sha256",
+    "qualification_protocol_sha256",
+    "participants",
+    "roster_sha256",
+}
+REVIEWED_ROSTER_FIELDS = ROSTER_DRAFT_FIELDS | {"operator_review"}
 
 
 def contains_secret_field(value: Any) -> bool:
@@ -29,6 +39,7 @@ def validate_roster(
 ) -> list[str]:
     failures: list[str] = []
     roster = value if isinstance(value, dict) else {}
+    _require(set(roster) == REVIEWED_ROSTER_FIELDS, "roster_fields_invalid", failures)
     _require(
         roster.get("schema_version") == ROSTER_SCHEMA, "roster_schema_invalid", failures
     )
@@ -50,6 +61,48 @@ def validate_roster(
     if _contains_secret_key(roster):
         failures.append("roster_contains_secret_field")
 
+    failures.extend(
+        validate_roster_participants(roster.get("participants"), expected_stack)
+    )
+    declared_hash = roster.get("roster_sha256")
+    body = {key: item for key, item in roster.items() if key != "roster_sha256"}
+    _require(declared_hash == canonical_sha256(body), "roster_hash_mismatch", failures)
+    return list(dict.fromkeys(failures))
+
+
+def validate_roster_draft(
+    value: Any,
+    *,
+    admission_request_sha256: str,
+    qualification_protocol_sha256: str,
+    expected_stack: dict[str, str],
+) -> list[str]:
+    failures: list[str] = []
+    roster = value if isinstance(value, dict) else {}
+    _require(
+        set(roster) == ROSTER_DRAFT_FIELDS, "roster_draft_fields_invalid", failures
+    )
+    _require(
+        roster.get("schema_version") == ROSTER_SCHEMA, "roster_schema_invalid", failures
+    )
+    _require(_text(roster.get("roster_id")), "roster_id_missing", failures)
+    _require(
+        roster.get("status") == "review_required",
+        "roster_draft_status_invalid",
+        failures,
+    )
+    _require(
+        roster.get("admission_request_sha256") == admission_request_sha256,
+        "roster_admission_request_hash_mismatch",
+        failures,
+    )
+    _require(
+        roster.get("qualification_protocol_sha256") == qualification_protocol_sha256,
+        "roster_qualification_protocol_hash_mismatch",
+        failures,
+    )
+    if _contains_secret_key(roster):
+        failures.append("roster_contains_secret_field")
     failures.extend(
         validate_roster_participants(roster.get("participants"), expected_stack)
     )
@@ -184,7 +237,7 @@ def validate_qualification_protocol(
 
 def _validate_review(review: dict[str, Any], failures: list[str]) -> None:
     reviewer = _text(review.get("reviewer_did"))
-    _require(_real_did(reviewer), "operator_reviewer_did_invalid", failures)
+    _require(reviewer.startswith("did:civ:"), "operator_reviewer_did_invalid", failures)
     _require(
         review.get("decision") == "approve_roster_binding",
         "operator_review_decision_invalid",
