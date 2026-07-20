@@ -16,6 +16,10 @@ FORBIDDEN_ID_TOKENS = {"synthetic", "fixture", "test", "demo", "devnet"}
 SECRET_KEY_TOKENS = {"seed", "private_key", "api_key", "token", "passphrase", "pin"}
 
 
+def contains_secret_field(value: Any) -> bool:
+    return _contains_secret_key(value)
+
+
 def validate_roster(
     value: Any,
     *,
@@ -46,7 +50,20 @@ def validate_roster(
     if _contains_secret_key(roster):
         failures.append("roster_contains_secret_field")
 
-    entries = roster.get("participants")
+    failures.extend(
+        validate_roster_participants(roster.get("participants"), expected_stack)
+    )
+    declared_hash = roster.get("roster_sha256")
+    body = {key: item for key, item in roster.items() if key != "roster_sha256"}
+    _require(declared_hash == canonical_sha256(body), "roster_hash_mismatch", failures)
+    return list(dict.fromkeys(failures))
+
+
+def validate_roster_participants(
+    value: Any, expected_stack: dict[str, str]
+) -> list[str]:
+    failures: list[str] = []
+    entries = value
     if not isinstance(entries, list) or len(entries) != 40:
         failures.append("roster_must_contain_40_participants")
         entries = entries if isinstance(entries, list) else []
@@ -57,7 +74,7 @@ def validate_roster(
     pairs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for index, entry_value in enumerate(entries):
         entry = entry_value if isinstance(entry_value, dict) else {}
-        _validate_entry(entry, index, expected_stack, failures)
+        failures.extend(validate_roster_entry(entry, expected_stack, index=index))
         participant_id = _text(entry.get("participant_id"))
         execution_did = _text(entry.get("execution_did"))
         pair_id = _text(entry.get("pair_id"))
@@ -76,9 +93,17 @@ def validate_roster(
             continue
         baselines = {item.get("cognitive_baseline_sha256") for item in pair}
         _require(len(baselines) == 1, "pair_cognitive_baseline_mismatch", failures)
-    declared_hash = roster.get("roster_sha256")
-    body = {key: item for key, item in roster.items() if key != "roster_sha256"}
-    _require(declared_hash == canonical_sha256(body), "roster_hash_mismatch", failures)
+    return list(dict.fromkeys(failures))
+
+
+def validate_roster_entry(
+    value: Any, expected_stack: dict[str, str], *, index: int = 0
+) -> list[str]:
+    failures: list[str] = []
+    entry = value if isinstance(value, dict) else {}
+    _validate_entry(entry, index, expected_stack, failures)
+    if _contains_secret_key(entry):
+        failures.append(f"participant_{index}_contains_secret_field")
     return list(dict.fromkeys(failures))
 
 
