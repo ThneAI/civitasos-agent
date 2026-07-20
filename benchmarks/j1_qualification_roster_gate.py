@@ -38,12 +38,13 @@ def run_gate(
         protocol = {}
         failures.append("qualification_protocol_unreadable")
     request_hash = canonical_sha256(request)
+    protocol_failures: list[str] = []
     if protocol:
-        failures.extend(
-            validate_qualification_protocol(
-                protocol, admission_request_sha256=request_hash
-            )
+        protocol_failures = validate_qualification_protocol(
+            protocol, admission_request_sha256=request_hash
         )
+        failures.extend(protocol_failures)
+    protocol_frozen = bool(protocol) and not protocol_failures
     stack = protocol.get("frozen_stack", {})
     corpus = protocol.get("task_corpus", {})
     expected_stack = {
@@ -83,7 +84,7 @@ def run_gate(
                 else "blocked_j1d_qualification_roster_binding"
             ),
             "real_participant_roster_bound": passed,
-            "qualification_protocol_frozen": passed,
+            "qualification_protocol_frozen": protocol_frozen,
             "single_use_authorization_issued": False,
             "controlled_experiment_execution_ready": False,
         },

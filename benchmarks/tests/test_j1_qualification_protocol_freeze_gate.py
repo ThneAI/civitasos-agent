@@ -11,6 +11,7 @@ from benchmarks.j1.qualification_material_review import promote_reviewed_materia
 from benchmarks.j1.qualification_protocol_freeze import (
     CORPUS_SCHEMA,
     VERIFIER_SCHEMA,
+    build_qualification_protocol,
     validate_freeze,
 )
 from benchmarks.j1.qualification_review_receipt import (
@@ -19,9 +20,9 @@ from benchmarks.j1.qualification_review_receipt import (
     REVIEW_RECEIPT_SCHEMA,
     review_signature_payload,
 )
-from benchmarks.j1.qualification_roster import QUALIFICATION_PROTOCOL_SCHEMA
 from benchmarks.j1_qualification_admission_gate import DEFAULT_REQUEST
 from benchmarks.j1_qualification_protocol_freeze_gate import GATE_SCHEMA, run_gate
+from benchmarks.j1_qualification_protocol import prepare_qualification_protocol
 
 
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -133,21 +134,6 @@ def _review_receipt(
     return receipt
 
 
-def _metrics() -> dict:
-    return {
-        "strategy_maturity_time": {
-            "consecutive_verified_tasks": 3,
-            "minimum_relative_reduction": 0.5,
-        },
-        "repeated_error_rate": {"requires_strict_decrease": True},
-        "mentor_pattern_false_positive_rate": {"maximum_rate": 0.1},
-        "advice_provenance_completeness": {"required_ratio": 1.0},
-        "sovereignty_violation_count": {"maximum_count": 0},
-        "direct_trust_increment_count": {"maximum_count": 0},
-        "unit_improvement_cost": {"report_only": True},
-    }
-
-
 def _protocol(
     corpus: dict,
     corpus_bytes: bytes,
@@ -157,60 +143,19 @@ def _protocol(
     receipt_bytes: bytes,
 ) -> dict:
     request = _request()
-    return {
-        "schema_version": QUALIFICATION_PROTOCOL_SCHEMA,
-        "experiment_id": "j1q-controlled-comparison-20260719-v1",
-        "hypothesis": "Bounded mentorship improves pre-registered outcomes.",
-        "status": "frozen",
-        "frozen_at": "2026-07-19T21:00:00+08:00",
-        "admission_request_sha256": canonical_sha256(request),
-        "material_review": {
-            "review_id": receipt["review_id"],
-            "review_request_sha256": receipt["review_request_sha256"],
-            "reviewer_did": receipt["reviewer"]["did"],
-            "review_receipt_sha256": _bytes_hash(receipt_bytes),
-        },
-        "task_corpus": {
-            "corpus_id": corpus["corpus_id"],
-            "tasks_sha256": corpus["tasks_sha256"],
-            "task_count": len(corpus["tasks"]),
-            "synthetic": False,
-            "artifact_sha256": _bytes_hash(corpus_bytes),
-        },
-        "frozen_stack": {
-            "provider_id": request["provider"]["kind"],
-            "model_id": request["provider"]["model"],
-            "budget_id": "j1q-budget:v1",
-            "verifier_id": verifier["verifier_id"],
-            "verifier_manifest_sha256": _bytes_hash(verifier_bytes),
-            "temperature": 0,
-            "same_stack_for_both_cohorts": True,
-            "budget": {
-                "max_tasks": 12,
-                "max_tokens": 20000,
-                "max_cost_microunits": 100000,
-            },
-        },
-        "minimum_completed_pairs": 20,
-        "metric_definitions_sha256": canonical_sha256(_metrics()),
-        "analysis": {
-            "confidence_level": 0.95,
-            "bootstrap_iterations": 10000,
-            "paired_analysis": True,
-            "efficacy_early_stop_allowed": False,
-            "outcome_based_exclusion_allowed": False,
-        },
-        "execution_boundary": {
-            "single_use_authorization_required": True,
-            "execution_authorized": False,
-            "provider_api_call_allowed": False,
-            "model_invocation_allowed": False,
-            "agent_execution_allowed": False,
-            "backend_fact_append_allowed": False,
-            "ledger_append_allowed": False,
-            "effectiveness_claim_allowed": False,
-        },
-    }
+    return build_qualification_protocol(
+        experiment_id="j1q-controlled-comparison-20260719-v1",
+        hypothesis="Bounded mentorship improves pre-registered outcomes.",
+        budget_id="j1q-budget:v1",
+        frozen_at="2026-07-19T21:00:00+08:00",
+        corpus=corpus,
+        verifier=verifier,
+        admission_request=request,
+        review_receipt=receipt,
+        corpus_bytes=corpus_bytes,
+        verifier_bytes=verifier_bytes,
+        review_receipt_bytes=receipt_bytes,
+    )
 
 
 def _bytes(value: dict) -> bytes:
@@ -280,6 +225,65 @@ def _validate(artifacts: dict) -> list[str]:
 
 def test_artifact_bound_qualification_protocol_is_valid() -> None:
     assert _validate(_artifacts()) == []
+
+
+def test_prepares_private_protocol_from_reviewed_artifacts(tmp_path: Path) -> None:
+    artifacts = _artifacts()
+    output_path = tmp_path / "private" / "qualification-protocol.json"
+    report_path = tmp_path / "private" / "preparation-report.json"
+
+    report = prepare_qualification_protocol(
+        experiment_id="j1q-controlled-comparison-20260720-r1",
+        hypothesis="Bounded mentorship improves pre-registered outcomes.",
+        budget_id="j1q-budget-20260720-r1",
+        frozen_at="2026-07-20T22:00:00+08:00",
+        admission_request_path=_write(
+            tmp_path / "admission-request.json", _bytes(_request())
+        ),
+        corpus_path=_write(tmp_path / "corpus.json", artifacts["corpus_bytes"]),
+        verifier_path=_write(tmp_path / "verifier.json", artifacts["verifier_bytes"]),
+        review_receipt_path=_write(
+            tmp_path / "review-receipt.json", artifacts["receipt_bytes"]
+        ),
+        output_path=output_path,
+        report_path=report_path,
+    )
+
+    assert report["passed"] is True
+    assert report["qualification_protocol"]["canonical_sha256"]
+    assert output_path.stat().st_mode & 0o777 == 0o600
+    assert report_path.stat().st_mode & 0o777 == 0o600
+    assert output_path.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_protocol_preparation_rejects_open_reviewed_artifact(
+    tmp_path: Path,
+) -> None:
+    artifacts = _artifacts()
+    corpus_path = _write(tmp_path / "corpus.json", artifacts["corpus_bytes"])
+    corpus_path.chmod(0o644)
+    output_path = tmp_path / "private" / "qualification-protocol.json"
+
+    report = prepare_qualification_protocol(
+        experiment_id="j1q-controlled-comparison-20260720-r1",
+        hypothesis="Bounded mentorship improves pre-registered outcomes.",
+        budget_id="j1q-budget-20260720-r1",
+        frozen_at="2026-07-20T22:00:00+08:00",
+        admission_request_path=_write(
+            tmp_path / "admission-request.json", _bytes(_request())
+        ),
+        corpus_path=corpus_path,
+        verifier_path=_write(tmp_path / "verifier.json", artifacts["verifier_bytes"]),
+        review_receipt_path=_write(
+            tmp_path / "review-receipt.json", artifacts["receipt_bytes"]
+        ),
+        output_path=output_path,
+        report_path=tmp_path / "private" / "preparation-report.json",
+    )
+
+    assert report["passed"] is False
+    assert "qualification_corpus_permissions_too_open" in report["failure_reasons"]
+    assert not output_path.exists()
 
 
 def test_freeze_gate_passes_without_authorizing_execution(tmp_path: Path) -> None:

@@ -6,12 +6,95 @@ import hashlib
 from typing import Any
 
 from .controlled_comparison import REQUIRED_SCENARIOS, canonical_sha256
-from .qualification_roster import validate_qualification_protocol
+from .qualification_roster import (
+    QUALIFICATION_PROTOCOL_SCHEMA,
+    validate_qualification_protocol,
+)
 from .qualification_review_receipt import validate_signed_review_receipt
 
 
 CORPUS_SCHEMA = "j1-qualification-task-corpus:v1"
 VERIFIER_SCHEMA = "j1-qualification-verifier-manifest:v1"
+
+
+def build_qualification_protocol(
+    *,
+    experiment_id: str,
+    hypothesis: str,
+    budget_id: str,
+    frozen_at: str,
+    corpus: dict[str, Any],
+    verifier: dict[str, Any],
+    admission_request: dict[str, Any],
+    review_receipt: dict[str, Any],
+    corpus_bytes: bytes,
+    verifier_bytes: bytes,
+    review_receipt_bytes: bytes,
+) -> dict[str, Any]:
+    """Build a non-executable protocol bound to reviewed artifact bytes."""
+    for field, value in (
+        ("experiment_id", experiment_id),
+        ("hypothesis", hypothesis),
+        ("budget_id", budget_id),
+    ):
+        if not _real_text(value):
+            raise ValueError(f"{field} must identify a real qualification run")
+    request_provider = _object(admission_request.get("provider"))
+    request_budget = _object(admission_request.get("qualification_budget_ceiling"))
+    reviewer = _object(review_receipt.get("reviewer"))
+    receipt_hash = hashlib.sha256(review_receipt_bytes).hexdigest()
+    return {
+        "schema_version": QUALIFICATION_PROTOCOL_SCHEMA,
+        "experiment_id": experiment_id,
+        "hypothesis": hypothesis,
+        "status": "frozen",
+        "frozen_at": frozen_at,
+        "admission_request_sha256": canonical_sha256(admission_request),
+        "material_review": {
+            "review_id": review_receipt.get("review_id"),
+            "review_request_sha256": review_receipt.get("review_request_sha256"),
+            "reviewer_did": reviewer.get("did"),
+            "review_receipt_sha256": receipt_hash,
+        },
+        "task_corpus": {
+            "corpus_id": corpus.get("corpus_id"),
+            "tasks_sha256": corpus.get("tasks_sha256"),
+            "task_count": len(corpus.get("tasks", [])),
+            "synthetic": False,
+            "artifact_sha256": hashlib.sha256(corpus_bytes).hexdigest(),
+        },
+        "frozen_stack": {
+            "provider_id": request_provider.get("kind"),
+            "model_id": request_provider.get("model"),
+            "budget_id": budget_id,
+            "verifier_id": verifier.get("verifier_id"),
+            "verifier_manifest_sha256": hashlib.sha256(verifier_bytes).hexdigest(),
+            "temperature": 0,
+            "same_stack_for_both_cohorts": True,
+            "budget": {
+                "max_tasks": request_budget.get("max_tasks_per_participant"),
+                "max_tokens": request_budget.get("max_tokens_per_participant"),
+                "max_cost_microunits": request_budget.get(
+                    "max_cost_microunits_per_participant"
+                ),
+            },
+        },
+        "minimum_completed_pairs": 20,
+        "metric_definitions_sha256": canonical_sha256(
+            qualification_metric_definitions()
+        ),
+        "analysis": qualification_analysis(),
+        "execution_boundary": {
+            "single_use_authorization_required": True,
+            "execution_authorized": False,
+            "provider_api_call_allowed": False,
+            "model_invocation_allowed": False,
+            "agent_execution_allowed": False,
+            "backend_fact_append_allowed": False,
+            "ledger_append_allowed": False,
+            "effectiveness_claim_allowed": False,
+        },
+    }
 
 
 def validate_freeze(
@@ -92,12 +175,12 @@ def validate_freeze(
     )
     _require(
         protocol.get("metric_definitions_sha256")
-        == canonical_sha256(_expected_metrics()),
+        == canonical_sha256(qualification_metric_definitions()),
         "protocol_metric_definitions_mismatch",
         failures,
     )
     _require(
-        protocol.get("analysis") == _expected_analysis(),
+        protocol.get("analysis") == qualification_analysis(),
         "protocol_analysis_invalid",
         failures,
     )
@@ -326,7 +409,7 @@ def _validate_verifier(
     )
 
 
-def _expected_metrics() -> dict[str, Any]:
+def qualification_metric_definitions() -> dict[str, Any]:
     return {
         "strategy_maturity_time": {
             "consecutive_verified_tasks": 3,
@@ -341,7 +424,7 @@ def _expected_metrics() -> dict[str, Any]:
     }
 
 
-def _expected_analysis() -> dict[str, Any]:
+def qualification_analysis() -> dict[str, Any]:
     return {
         "confidence_level": 0.95,
         "bootstrap_iterations": 10000,

@@ -228,6 +228,24 @@ def test_gate_fails_closed_when_real_roster_and_protocol_are_absent(
     assert report["readiness"]["controlled_experiment_execution_ready"] is False
 
 
+def test_gate_preserves_valid_protocol_readiness_when_roster_is_absent(
+    tmp_path: Path,
+) -> None:
+    report = run_gate(
+        roster_path=tmp_path / "real-roster-required.json",
+        qualification_protocol_path=_write(
+            tmp_path / "qualification-protocol.json", _protocol()
+        ),
+        output_path=tmp_path / "report.json",
+    )
+
+    assert report["passed"] is False
+    assert report["failure_reasons"] == ["qualification_roster_unreadable"]
+    assert report["readiness"]["qualification_protocol_frozen"] is True
+    assert report["readiness"]["real_participant_roster_bound"] is False
+    assert report["readiness"]["controlled_experiment_execution_ready"] is False
+
+
 def test_protocol_rejects_synthetic_corpus_and_preauthorization() -> None:
     protocol = copy.deepcopy(_protocol())
     protocol["task_corpus"]["synthetic"] = True
