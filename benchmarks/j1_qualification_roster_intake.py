@@ -18,8 +18,10 @@ from benchmarks.j1.qualification_participant_evidence import (
     EVIDENCE_SCHEMAS,
     roster_entry_from_packet,
     validate_evidence_artifact,
+    validate_packet_evidence_bindings,
     validate_participant_packet,
 )
+from benchmarks.j1.qualification_pairing_review import validate_reviewed_pairing
 from benchmarks.j1.qualification_roster import (
     ROSTER_SCHEMA,
     validate_qualification_protocol,
@@ -37,6 +39,7 @@ def prepare_roster_draft(
     roster_id: str,
     qualification_protocol_path: Path,
     protocol_freeze_report_path: Path,
+    reviewed_pairing_path: Path,
     evidence_root: Path,
     output_path: Path,
     report_path: Path,
@@ -51,6 +54,9 @@ def prepare_roster_draft(
     freeze_report = _read_private_object(
         protocol_freeze_report_path, "qualification_protocol_freeze_report", failures
     )
+    reviewed_pairing = _read_private_object(
+        reviewed_pairing_path, "reviewed_pairing", failures
+    )
     request = read_json_object(DEFAULT_REQUEST)
     request_hash = canonical_sha256(request)
     protocol_hash = canonical_sha256(protocol) if protocol else ""
@@ -61,10 +67,18 @@ def prepare_roster_draft(
             )
         )
     _validate_freeze_report(freeze_report, protocol_hash, failures)
+    pairing_failures = validate_reviewed_pairing(reviewed_pairing)
+    failures.extend(f"reviewed_pairing:{failure}" for failure in pairing_failures)
+    reviewed_pairing_sha256 = str(
+        reviewed_pairing.get("reviewed_pairing_sha256", "")
+    )
+    if reviewed_pairing.get("qualification_protocol_sha256") != protocol_hash:
+        failures.append("reviewed_pairing_protocol_hash_mismatch")
     packet_paths = _packet_paths(evidence_root, failures)
     stack = _expected_stack(protocol)
     entries: list[dict[str, Any]] = []
     packet_reports: list[dict[str, Any]] = []
+    participant_profile_hashes: set[str] = set()
     for index, packet_path in enumerate(packet_paths):
         packet, packet_bytes = _read_private(
             packet_path, f"participant_packet_{index}", failures
@@ -75,21 +89,32 @@ def prepare_roster_draft(
             qualification_protocol_sha256=protocol_hash,
         )
         evidence_hashes: dict[str, str] = {}
+        artifacts: dict[str, dict[str, Any]] = {}
         for kind in EVIDENCE_SCHEMAS:
             artifact, artifact_hash, artifact_failures = _load_evidence(
                 evidence_root=evidence_root,
                 packet=packet,
                 kind=kind,
                 protocol_hash=protocol_hash,
+                reviewed_pairing_sha256=reviewed_pairing_sha256,
             )
-            del artifact
+            artifacts[kind] = artifact
             evidence_hashes[kind] = artifact_hash
             packet_failures.extend(artifact_failures)
+        packet_failures.extend(
+            validate_packet_evidence_bindings(artifacts, packet=packet)
+        )
+        packet_failures.extend(
+            _reviewed_assignment_failures(packet, artifacts, reviewed_pairing)
+        )
         packet_failures = list(dict.fromkeys(packet_failures))
         failures.extend(
             f"participant_packet_{index}:{failure}" for failure in packet_failures
         )
         if packet and not packet_failures:
+            participant_profile_hashes.add(
+                str(artifacts["consent_receipt"]["participant_profile_sha256"])
+            )
             entries.append(
                 roster_entry_from_packet(packet, evidence_hashes=evidence_hashes)
             )
@@ -109,6 +134,9 @@ def prepare_roster_draft(
     participant_failures = validate_roster_participants(entries, stack)
     failures.extend(participant_failures)
     failures.extend(_baseline_uniqueness_failures(entries))
+    expected_profiles = set(reviewed_pairing.get("participant_profile_sha256", []))
+    if participant_profile_hashes != expected_profiles:
+        failures.append("participant_profile_set_reviewed_pairing_mismatch")
     failures = list(dict.fromkeys(failures))
     protocol_frozen = bool(protocol_hash) and not any(
         failure.startswith("qualification_protocol") for failure in failures
@@ -143,6 +171,11 @@ def prepare_roster_draft(
             "path": str(qualification_protocol_path.resolve()),
             "canonical_sha256": protocol_hash or None,
             "freeze_validated": protocol_frozen,
+        },
+        "reviewed_pairing": {
+            "path": str(reviewed_pairing_path.resolve()),
+            "reviewed_pairing_sha256": reviewed_pairing_sha256 or None,
+            "validated": not pairing_failures,
         },
         "evidence_root": str(evidence_root.resolve()),
         "packet_inventory": packet_reports,
@@ -222,6 +255,7 @@ def _load_evidence(
     packet: dict[str, Any],
     kind: str,
     protocol_hash: str,
+    reviewed_pairing_sha256: str,
 ) -> tuple[dict[str, Any], str, list[str]]:
     failures: list[str] = []
     evidence = packet.get("evidence")
@@ -245,9 +279,43 @@ def _load_evidence(
             artifact,
             packet=packet,
             qualification_protocol_sha256=protocol_hash,
+            reviewed_pairing_sha256=reviewed_pairing_sha256,
         )
     )
     return artifact, artifact_hash, list(dict.fromkeys(failures))
+
+
+def _reviewed_assignment_failures(
+    packet: dict[str, Any],
+    artifacts: dict[str, dict[str, Any]],
+    reviewed_pairing: dict[str, Any],
+) -> list[str]:
+    failures: list[str] = []
+    pair = next(
+        (
+            item
+            for item in reviewed_pairing.get("pairs", [])
+            if isinstance(item, dict) and item.get("pair_id") == packet.get("pair_id")
+        ),
+        {},
+    )
+    participant_id = packet.get("participant_id")
+    execution_did = packet.get("execution_did")
+    if participant_id not in pair.get("participant_ids", []):
+        failures.append("participant_packet_not_in_reviewed_pair")
+    if execution_did not in pair.get("execution_dids", []):
+        failures.append("participant_did_not_in_reviewed_pair")
+    consent = artifacts.get("consent_receipt", {})
+    baseline = artifacts.get("cognitive_baseline", {})
+    if consent.get("reviewed_pairing_sha256") != reviewed_pairing.get(
+        "reviewed_pairing_sha256"
+    ):
+        failures.append("participant_consent_reviewed_pairing_mismatch")
+    if baseline.get("reviewer", {}).get("did") != reviewed_pairing.get(
+        "operator_review", {}
+    ).get("reviewer_did"):
+        failures.append("participant_baseline_reviewer_pairing_mismatch")
+    return failures
 
 
 def _baseline_uniqueness_failures(entries: list[dict[str, Any]]) -> list[str]:
@@ -321,6 +389,7 @@ def main() -> int:
     parser.add_argument("--roster-id", required=True)
     parser.add_argument("--qualification-protocol", type=Path, required=True)
     parser.add_argument("--protocol-freeze-report", type=Path, required=True)
+    parser.add_argument("--reviewed-pairing", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
@@ -330,6 +399,7 @@ def main() -> int:
             roster_id=args.roster_id,
             qualification_protocol_path=args.qualification_protocol,
             protocol_freeze_report_path=args.protocol_freeze_report,
+            reviewed_pairing_path=args.reviewed_pairing,
             evidence_root=args.evidence_root,
             output_path=args.output,
             report_path=args.report,

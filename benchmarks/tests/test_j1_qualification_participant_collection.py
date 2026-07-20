@@ -18,10 +18,13 @@ from benchmarks.j1_qualification_participant_collection import (
     prepare_collection_package,
 )
 from benchmarks.j1_qualification_protocol_freeze_gate import GATE_SCHEMA
-from benchmarks.tests.test_j1_qualification_roster_intake import _protocol
+from benchmarks.tests.test_j1_qualification_roster_intake import (
+    _protocol,
+    _reviewed_pairing,
+)
 
 
-def _inputs(tmp_path: Path) -> tuple[Path, Path, dict]:
+def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, dict]:
     protocol = _protocol()
     protocol_path = tmp_path / "qualification-protocol.json"
     write_private_json(protocol_path, protocol)
@@ -35,11 +38,13 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, dict]:
             "readiness": {"qualification_protocol_frozen": True},
         },
     )
-    return protocol_path, freeze_path, protocol
+    pairing_path = tmp_path / "reviewed-pairing.json"
+    write_private_json(pairing_path, _reviewed_pairing(canonical_sha256(protocol)))
+    return protocol_path, freeze_path, pairing_path, protocol
 
 
 def _prepare(tmp_path: Path) -> tuple[dict, Path, Path]:
-    protocol_path, freeze_path, _ = _inputs(tmp_path)
+    protocol_path, freeze_path, pairing_path, _ = _inputs(tmp_path)
     output_root = tmp_path / "collection"
     evidence_root = tmp_path / "participant-evidence"
     manifest = prepare_collection_package(
@@ -47,6 +52,7 @@ def _prepare(tmp_path: Path) -> tuple[dict, Path, Path]:
         prepared_at="2026-07-21T00:10:00+08:00",
         qualification_protocol_path=protocol_path,
         protocol_freeze_report_path=freeze_path,
+        reviewed_pairing_path=pairing_path,
         evidence_root=evidence_root,
         roster_id="j1q-roster-20260721-r1",
         roster_output_path=tmp_path / "private" / "qualification-roster.json",
@@ -128,7 +134,7 @@ def test_intake_runner_is_repeatable_and_keeps_roster_absent(tmp_path: Path) -> 
 
 
 def test_rejects_freeze_hash_mismatch_without_writing_package(tmp_path: Path) -> None:
-    protocol_path, freeze_path, _ = _inputs(tmp_path)
+    protocol_path, freeze_path, pairing_path, _ = _inputs(tmp_path)
     freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
     freeze["qualification_protocol_sha256"] = "0" * 64
     write_private_json(freeze_path, freeze)
@@ -139,6 +145,7 @@ def test_rejects_freeze_hash_mismatch_without_writing_package(tmp_path: Path) ->
         prepared_at="2026-07-21T00:10:00+08:00",
         qualification_protocol_path=protocol_path,
         protocol_freeze_report_path=freeze_path,
+        reviewed_pairing_path=pairing_path,
         evidence_root=tmp_path / "participant-evidence",
         roster_id="j1q-roster-20260721-r1",
         roster_output_path=tmp_path / "private" / "qualification-roster.json",
@@ -154,7 +161,7 @@ def test_rejects_freeze_hash_mismatch_without_writing_package(tmp_path: Path) ->
 def test_refuses_existing_output_and_evidence_overlap(tmp_path: Path) -> None:
     manifest, output_root, _ = _prepare(tmp_path)
     assert manifest["manifest_sha256"]
-    protocol_path, freeze_path, _ = _inputs(tmp_path / "second")
+    protocol_path, freeze_path, pairing_path, _ = _inputs(tmp_path / "second")
 
     with pytest.raises(ValueError, match="output already exists"):
         prepare_collection_package(
@@ -162,6 +169,7 @@ def test_refuses_existing_output_and_evidence_overlap(tmp_path: Path) -> None:
             prepared_at="2026-07-21T00:20:00+08:00",
             qualification_protocol_path=protocol_path,
             protocol_freeze_report_path=freeze_path,
+            reviewed_pairing_path=pairing_path,
             evidence_root=tmp_path / "participant-evidence-2",
             roster_id="j1q-roster-20260721-r2",
             roster_output_path=tmp_path / "private" / "qualification-roster-2.json",
@@ -174,6 +182,7 @@ def test_refuses_existing_output_and_evidence_overlap(tmp_path: Path) -> None:
         prepared_at="2026-07-21T00:30:00+08:00",
         qualification_protocol_path=protocol_path,
         protocol_freeze_report_path=freeze_path,
+        reviewed_pairing_path=pairing_path,
         evidence_root=tmp_path / "evidence",
         roster_id="j1q-roster-20260721-r3",
         roster_output_path=tmp_path / "private" / "qualification-roster-3.json",

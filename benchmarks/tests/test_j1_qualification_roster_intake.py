@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
+from nacl.signing import SigningKey
+
 from benchmarks.j1.controlled_comparison import canonical_sha256, write_private_json
+from benchmarks.j1.qualification_baseline_consent import (
+    build_cognitive_baseline,
+    build_participant_consent,
+    reviewer_did,
+)
+from benchmarks.j1.qualification_participant_provisioning import (
+    participant_did,
+    participant_id,
+)
 from benchmarks.j1.qualification_participant_evidence import PACKET_SCHEMA
 from benchmarks.j1.qualification_roster import QUALIFICATION_PROTOCOL_SCHEMA
 from benchmarks.j1_qualification_admission_gate import DEFAULT_REQUEST
@@ -67,10 +79,99 @@ def _common(protocol_hash: str, attestation: str) -> dict:
     }
 
 
-def _prepare_evidence(root: Path, protocol: dict) -> None:
+class _Signer:
+    def __init__(self, key: SigningKey) -> None:
+        self.key = key
+
+    @property
+    def public_key_hex(self) -> str:
+        return self.key.verify_key.encode().hex()
+
+    def sign(self, message: bytes) -> bytes:
+        return self.key.sign(message).signature
+
+
+def _participants() -> list[dict]:
+    records = []
+    for pair_index in range(1, 21):
+        for member_index, member in enumerate(("a", "b")):
+            key = SigningKey(hashlib.sha256(f"{pair_index}:{member}".encode()).digest())
+            public_key = key.verify_key.encode().hex()
+            records.append(
+                {
+                    "pair_id": f"j1q-pair-{pair_index:02d}",
+                    "member": member,
+                    "key": key,
+                    "participant_id": participant_id(public_key),
+                    "execution_did": participant_did(public_key),
+                    "public_key_hex": public_key,
+                    "profile_sha256": canonical_sha256(["profile", pair_index, member_index]),
+                }
+            )
+    return records
+
+
+def _reviewed_pairing(protocol_hash: str, records: list[dict] | None = None) -> dict:
+    records = records or _participants()
+    pairs = []
+    for pair_index in range(1, 21):
+        members = [item for item in records if item["pair_id"] == f"j1q-pair-{pair_index:02d}"]
+        pairs.append(
+            {
+                "pair_id": f"j1q-pair-{pair_index:02d}",
+                "participant_ids": [item["participant_id"] for item in members],
+                "execution_dids": [item["execution_did"] for item in members],
+                "status": "operator_reviewed",
+                "cognitive_baseline_evidence_created": False,
+                "random_assignment_consent_created": False,
+            }
+        )
+    reviewed = {
+        "schema_version": "j1-qualification-pairing-reviewed:v1",
+        "proposal_id": "j1q-pairing-20260720-r1",
+        "status": "operator_reviewed",
+        "created_at": "2026-07-20T22:00:00+08:00",
+        "reviewed_at": "2026-07-20T22:05:00+08:00",
+        "qualification_protocol_sha256": protocol_hash,
+        "source_proposal_sha256": "1" * 64,
+        "assignment_method": "nonce_randomized_fresh_baseline_pairing_proposal:v1",
+        "assignment_nonce_hex": "2" * 64,
+        "participant_profile_sha256": sorted(item["profile_sha256"] for item in records),
+        "pairs": pairs,
+        "operator_review": {
+            "review_id": "j1q-pairing-review-test-r1",
+            "reviewer_did": reviewer_did(SigningKey(b"r" * 32).verify_key.encode().hex()),
+            "decision": "approve_exact_pairing",
+            "reviewed_at": "2026-07-20T22:05:00+08:00",
+            "review_receipt_sha256": "3" * 64,
+        },
+        "readiness": {
+            "all_participant_identities_provisioned": True,
+            "pairing_operator_reviewed": True,
+            "participant_evidence_complete": False,
+            "real_participant_roster_bound": False,
+            "single_use_authorization_issued": False,
+            "controlled_experiment_execution_ready": False,
+        },
+    }
+    reviewed["reviewed_pairing_sha256"] = canonical_sha256(reviewed)
+    return reviewed
+
+
+def _prepare_evidence(root: Path, protocol: dict) -> dict:
     root.mkdir()
     root.chmod(0o700)
     protocol_hash = canonical_sha256(protocol)
+    records = _participants()
+    reviewed = _reviewed_pairing(protocol_hash, records)
+    pairing_hash = reviewed["reviewed_pairing_sha256"]
+    reviewer_key = SigningKey(b"r" * 32)
+    reviewer = {
+        "did": reviewer_did(reviewer_key.verify_key.encode().hex()),
+        "public_key_hex": reviewer_key.verify_key.encode().hex(),
+        "signer_kind": "pkcs11_ed25519",
+        "credential_version": 1,
+    }
     stack = protocol["frozen_stack"]
     packet_stack = {
         "provider_id": stack["provider_id"],
@@ -79,85 +180,115 @@ def _prepare_evidence(root: Path, protocol: dict) -> None:
         "corpus_id": protocol["task_corpus"]["corpus_id"],
         "verifier_id": stack["verifier_id"],
     }
-    for pair_index in range(20):
+    for pair_index in range(1, 21):
         pair_id = f"j1q-pair-{pair_index:02d}"
+        members = [item for item in records if item["pair_id"] == pair_id]
+        baseline_records = []
+        for item in members:
+            state = {
+                "schema_version": "j1-qualification-initial-state:v1",
+                "participant_id": item["participant_id"],
+                "qualification_protocol_sha256": protocol_hash,
+                "agent_revision": "a" * 40,
+                "runtime_revision": "b" * 40,
+                "prior_mentorship_exposure": False,
+                "memory_entry_count": 0,
+                "relation_count": 0,
+                "model_invocation_count": 0,
+                "tick_count": 0,
+                "execution_authorized": False,
+            }
+            state["initial_state_sha256"] = canonical_sha256(state)
+            baseline_records.append(
+                {
+                    "participant_id": item["participant_id"],
+                    "participant_profile_sha256": item["profile_sha256"],
+                    "initial_state_artifact_sha256": canonical_sha256(["state", item["participant_id"]]),
+                    "initial_state": state,
+                }
+            )
         baseline_path = _write(
             root / f"{pair_id}.baseline.json",
-            {
-                "schema_version": "j1-qualification-cognitive-baseline:v1",
-                **_common(protocol_hash, f"baseline-{pair_index}"),
-                "pair_id": pair_id,
-                "baseline_commitment_sha256": canonical_sha256(
-                    ["cognitive-baseline", pair_index]
-                ),
-                "assessment_method": "operator-reviewed-cognitive-baseline:v1",
-            },
+            build_cognitive_baseline(
+                pair_id=pair_id,
+                reviewed_pairing_sha256=pairing_hash,
+                qualification_protocol_sha256=protocol_hash,
+                owner_authorization_id="test-authorization",
+                owner_authorization_statement_sha256="4" * 64,
+                attested_at="2026-07-20T22:10:00+08:00",
+                participants=baseline_records,
+                reviewer=reviewer,
+                signer=_Signer(reviewer_key),
+            ),
         )
-        for member in ("a", "b"):
-            participant_id = f"j1q-participant-{pair_index:02d}-{member}"
-            execution_did = f"did:civ:qualification:{pair_index:02d}:{member}"
+        for item in members:
+            current_participant_id = item["participant_id"]
+            execution_did = item["execution_did"]
             identity_path = _write(
-                root / f"{participant_id}.identity.json",
+                root / f"{current_participant_id}.identity.json",
                 {
                     "schema_version": "j1-qualification-identity-snapshot:v1",
-                    **_common(protocol_hash, f"identity-{participant_id}"),
-                    "participant_id": participant_id,
+                    **_common(protocol_hash, f"identity-{current_participant_id}"),
+                    "participant_id": current_participant_id,
                     "execution_did": execution_did,
                     "credential_version": 1,
                     "signer_kind": "pkcs11",
-                    "public_key_sha256": canonical_sha256(
-                        ["public-key", participant_id]
-                    ),
+                    "public_key_sha256": hashlib.sha256(bytes.fromhex(item["public_key_hex"])).hexdigest(),
                     "identity_state_sha256": canonical_sha256(
-                        ["identity-state", participant_id]
+                        ["identity-state", current_participant_id]
                     ),
                 },
             )
             custody_path = _write(
-                root / f"{participant_id}.custody.json",
+                root / f"{current_participant_id}.custody.json",
                 {
                     "schema_version": "j1-qualification-custody-provenance:v1",
-                    **_common(protocol_hash, f"custody-{participant_id}"),
-                    "participant_id": participant_id,
+                    **_common(protocol_hash, f"custody-{current_participant_id}"),
+                    "participant_id": current_participant_id,
                     "execution_did": execution_did,
                     "signer_kind": "pkcs11",
                     "non_exportable": True,
                     "key_reference_sha256": canonical_sha256(
-                        ["key-reference", participant_id]
+                        ["key-reference", current_participant_id]
                     ),
                 },
             )
             isolation_path = _write(
-                root / f"{participant_id}.isolation.json",
+                root / f"{current_participant_id}.isolation.json",
                 {
                     "schema_version": "j1-qualification-isolation-root:v1",
-                    **_common(protocol_hash, f"isolation-{participant_id}"),
-                    "participant_id": participant_id,
+                    **_common(protocol_hash, f"isolation-{current_participant_id}"),
+                    "participant_id": current_participant_id,
                     "execution_did": execution_did,
-                    "isolation_id": f"j1q-isolation-{pair_index:02d}-{member}",
+                    "isolation_id": f"j1q-isolation-{pair_index:02d}-{item['member']}",
                     "isolation_commitment_sha256": canonical_sha256(
-                        ["isolation", participant_id]
+                        ["isolation", current_participant_id]
                     ),
                     "exclusive_assignment": True,
                 },
             )
             consent_path = _write(
-                root / f"{participant_id}.consent.json",
-                {
-                    "schema_version": "j1-qualification-consent-receipt:v1",
-                    **_common(protocol_hash, f"consent-{participant_id}"),
-                    "participant_id": participant_id,
-                    "execution_did": execution_did,
-                    "random_assignment_consented": True,
-                    "model_execution_authorized": False,
-                    "consent_statement_sha256": canonical_sha256(
-                        ["random-assignment-consent", participant_id]
-                    ),
-                },
+                root / f"{current_participant_id}.consent.json",
+                build_participant_consent(
+                    participant={
+                        "participant_id": current_participant_id,
+                        "execution_did": execution_did,
+                        "public_key_hex": item["public_key_hex"],
+                    },
+                    pair_id=pair_id,
+                    participant_profile_sha256=item["profile_sha256"],
+                    reviewed_pairing_sha256=pairing_hash,
+                    qualification_protocol_sha256=protocol_hash,
+                    owner_authorization_id="test-authorization",
+                    owner_authorization_statement_sha256="4" * 64,
+                    attested_at="2026-07-20T22:10:00+08:00",
+                    consent_nonce=hashlib.sha256(current_participant_id.encode()).digest(),
+                    signer=_Signer(item["key"]),
+                ),
             )
             packet = {
                 "schema_version": PACKET_SCHEMA,
-                "participant_id": participant_id,
+                "participant_id": current_participant_id,
                 "pair_id": pair_id,
                 "execution_did": execution_did,
                 "credential_version": 1,
@@ -175,7 +306,8 @@ def _prepare_evidence(root: Path, protocol: dict) -> None:
                 },
             }
             packet["packet_sha256"] = canonical_sha256(packet)
-            _write(root / f"{participant_id}.participant.json", packet)
+            _write(root / f"{current_participant_id}.participant.json", packet)
+    return reviewed
 
 
 def _run(tmp_path: Path, *, prepare_evidence: bool = True) -> tuple[dict, Path, Path]:
@@ -193,16 +325,19 @@ def _run(tmp_path: Path, *, prepare_evidence: bool = True) -> tuple[dict, Path, 
     )
     evidence_root = tmp_path / "participant-evidence"
     if prepare_evidence:
-        _prepare_evidence(evidence_root, protocol)
+        reviewed = _prepare_evidence(evidence_root, protocol)
     else:
         evidence_root.mkdir()
         evidence_root.chmod(0o700)
+        reviewed = _reviewed_pairing(protocol_hash)
+    reviewed_path = _write(tmp_path / "reviewed-pairing.json", reviewed)
     output_path = tmp_path / "private" / "qualification-roster.review-required.json"
     report_path = tmp_path / "private" / "qualification-roster-intake-report.json"
     report = prepare_roster_draft(
         roster_id="j1q-roster-20260720-r1",
         qualification_protocol_path=protocol_path,
         protocol_freeze_report_path=freeze_report_path,
+        reviewed_pairing_path=reviewed_path,
         evidence_root=evidence_root,
         output_path=output_path,
         report_path=report_path,
@@ -236,8 +371,8 @@ def test_prepares_review_required_roster_from_40_bound_participants(
 def test_rejects_tampered_participant_evidence(tmp_path: Path) -> None:
     protocol = _protocol()
     evidence_root = tmp_path / "participant-evidence"
-    _prepare_evidence(evidence_root, protocol)
-    identity_path = evidence_root / "j1q-participant-00-a.identity.json"
+    reviewed = _prepare_evidence(evidence_root, protocol)
+    identity_path = sorted(evidence_root.glob("*.identity.json"))[0]
     identity = json.loads(identity_path.read_text(encoding="utf-8"))
     identity["identity_state_sha256"] = "0" * 64
     _write(identity_path, identity)
@@ -252,12 +387,14 @@ def test_rejects_tampered_participant_evidence(tmp_path: Path) -> None:
             "readiness": {"qualification_protocol_frozen": True},
         },
     )
+    reviewed_path = _write(tmp_path / "reviewed-pairing.json", reviewed)
     output_path = tmp_path / "private" / "roster.json"
 
     report = prepare_roster_draft(
         roster_id="j1q-roster-20260720-r1",
         qualification_protocol_path=protocol_path,
         protocol_freeze_report_path=freeze_path,
+        reviewed_pairing_path=reviewed_path,
         evidence_root=evidence_root,
         output_path=output_path,
         report_path=tmp_path / "private" / "report.json",
@@ -274,9 +411,9 @@ def test_rejects_tampered_participant_evidence(tmp_path: Path) -> None:
 def test_rejects_symlinked_participant_evidence(tmp_path: Path) -> None:
     protocol = _protocol()
     evidence_root = tmp_path / "participant-evidence"
-    _prepare_evidence(evidence_root, protocol)
-    identity_path = evidence_root / "j1q-participant-00-a.identity.json"
-    target_path = evidence_root / "j1q-participant-00-a.identity.target.json"
+    reviewed = _prepare_evidence(evidence_root, protocol)
+    identity_path = sorted(evidence_root.glob("*.identity.json"))[0]
+    target_path = identity_path.with_suffix(".target.json")
     identity_path.rename(target_path)
     identity_path.symlink_to(target_path.name)
     protocol_path = _write(tmp_path / "qualification-protocol.json", protocol)
@@ -290,12 +427,14 @@ def test_rejects_symlinked_participant_evidence(tmp_path: Path) -> None:
             "readiness": {"qualification_protocol_frozen": True},
         },
     )
+    reviewed_path = _write(tmp_path / "reviewed-pairing.json", reviewed)
     output_path = tmp_path / "private" / "roster.json"
 
     report = prepare_roster_draft(
         roster_id="j1q-roster-20260720-r1",
         qualification_protocol_path=protocol_path,
         protocol_freeze_report_path=freeze_path,
+        reviewed_pairing_path=reviewed_path,
         evidence_root=evidence_root,
         output_path=output_path,
         report_path=tmp_path / "private" / "report.json",
@@ -336,11 +475,16 @@ def test_freeze_hash_mismatch_clears_protocol_readiness(tmp_path: Path) -> None:
     evidence_root.mkdir()
     evidence_root.chmod(0o700)
     output_path = tmp_path / "private" / "roster.json"
+    reviewed_path = _write(
+        tmp_path / "reviewed-pairing.json",
+        _reviewed_pairing(canonical_sha256(protocol)),
+    )
 
     report = prepare_roster_draft(
         roster_id="j1q-roster-20260720-r1",
         qualification_protocol_path=protocol_path,
         protocol_freeze_report_path=freeze_path,
+        reviewed_pairing_path=reviewed_path,
         evidence_root=evidence_root,
         output_path=output_path,
         report_path=tmp_path / "private" / "report.json",

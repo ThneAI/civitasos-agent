@@ -23,6 +23,7 @@ from benchmarks.j1.qualification_participant_evidence import (
     validate_evidence_artifact,
     validate_participant_packet,
 )
+from benchmarks.j1.qualification_pairing_review import validate_reviewed_pairing
 from benchmarks.j1.qualification_roster import validate_qualification_protocol
 from benchmarks.j1_qualification_admission_gate import DEFAULT_REQUEST
 from benchmarks.j1_qualification_protocol_freeze_gate import GATE_SCHEMA
@@ -34,6 +35,7 @@ def prepare_collection_package(
     prepared_at: str,
     qualification_protocol_path: Path,
     protocol_freeze_report_path: Path,
+    reviewed_pairing_path: Path,
     evidence_root: Path,
     roster_id: str,
     roster_output_path: Path,
@@ -48,6 +50,9 @@ def prepare_collection_package(
     freeze_report, freeze_bytes = _read_private(
         protocol_freeze_report_path, "qualification_protocol_freeze_report", failures
     )
+    reviewed_pairing, reviewed_pairing_bytes = _read_private(
+        reviewed_pairing_path, "reviewed_pairing", failures
+    )
     request = read_json_object(DEFAULT_REQUEST)
     protocol_hash = canonical_sha256(protocol) if protocol else ""
     protocol_failures: list[str] = []
@@ -58,6 +63,12 @@ def prepare_collection_package(
             )
         )
     protocol_failures.extend(_freeze_failures(freeze_report, protocol_hash))
+    protocol_failures.extend(
+        f"reviewed_pairing:{failure}"
+        for failure in validate_reviewed_pairing(reviewed_pairing)
+    )
+    if reviewed_pairing.get("qualification_protocol_sha256") != protocol_hash:
+        protocol_failures.append("reviewed_pairing_protocol_hash_mismatch")
     protocol_frozen = bool(protocol_hash) and not protocol_failures
     failures.extend(protocol_failures)
     failures.extend(_metadata_failures(collection_id, roster_id, prepared_at))
@@ -98,6 +109,7 @@ def prepare_collection_package(
             roster_id=roster_id,
             protocol_path=qualification_protocol_path,
             freeze_report_path=protocol_freeze_report_path,
+            reviewed_pairing_path=reviewed_pairing_path,
             evidence_root=evidence_root,
             roster_output_path=roster_output_path,
         ),
@@ -116,6 +128,9 @@ def prepare_collection_package(
             ),
             "protocol_freeze_report": _artifact_from_bytes(
                 protocol_freeze_report_path, freeze_bytes
+            ),
+            "reviewed_pairing": _artifact_from_bytes(
+                reviewed_pairing_path, reviewed_pairing_bytes
             ),
         },
         "evidence_root": str(evidence_root.resolve()),
@@ -344,6 +359,7 @@ def _runner(
     roster_id: str,
     protocol_path: Path,
     freeze_report_path: Path,
+    reviewed_pairing_path: Path,
     evidence_root: Path,
     roster_output_path: Path,
 ) -> str:
@@ -353,6 +369,7 @@ def _runner(
         "roster_id": shlex.quote(roster_id),
         "protocol": shlex.quote(str(protocol_path.resolve())),
         "freeze": shlex.quote(str(freeze_report_path.resolve())),
+        "pairing": shlex.quote(str(reviewed_pairing_path.resolve())),
         "evidence": shlex.quote(str(evidence_root.resolve())),
         "roster": shlex.quote(str(roster_output_path.resolve())),
     }
@@ -369,6 +386,7 @@ exec "$PYTHON" -m benchmarks.j1_qualification_roster_intake \\
   --roster-id {values["roster_id"]} \\
   --qualification-protocol {values["protocol"]} \\
   --protocol-freeze-report {values["freeze"]} \\
+  --reviewed-pairing {values["pairing"]} \\
   --evidence-root {values["evidence"]} \\
   --output {values["roster"]} \\
   --report "$ROOT/reports/qualification-roster-intake-$STAMP.json"
@@ -381,6 +399,7 @@ def main() -> int:
     parser.add_argument("--prepared-at", default=_timestamp())
     parser.add_argument("--qualification-protocol", type=Path, required=True)
     parser.add_argument("--protocol-freeze-report", type=Path, required=True)
+    parser.add_argument("--reviewed-pairing", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
     parser.add_argument("--roster-id", required=True)
     parser.add_argument("--roster-output", type=Path, required=True)
@@ -392,6 +411,7 @@ def main() -> int:
             prepared_at=args.prepared_at,
             qualification_protocol_path=args.qualification_protocol,
             protocol_freeze_report_path=args.protocol_freeze_report,
+            reviewed_pairing_path=args.reviewed_pairing,
             evidence_root=args.evidence_root,
             roster_id=args.roster_id,
             roster_output_path=args.roster_output,

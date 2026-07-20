@@ -36,19 +36,27 @@ def build_collection_templates(
         "attested_at": "TODO_REPLACE_RFC3339_TIMESTAMP",
         "public_only": False,
         "secret_material_included": False,
-        "operator_attestation_sha256": "",
     }
+    operator_attestation = {"operator_attestation_sha256": ""}
     templates = {
         "cognitive_baseline": {
             "schema_version": EVIDENCE_SCHEMAS["cognitive_baseline"],
             **common,
             "pair_id": "TODO_REPLACE_REAL_PAIR_ID",
+            "reviewed_pairing_sha256": "",
+            "owner_authorization_id": "TODO_REPLACE_OWNER_AUTHORIZATION_ID",
+            "owner_authorization_statement_sha256": "",
             "baseline_commitment_sha256": "",
-            "assessment_method": "TODO_REPLACE_REAL_ASSESSMENT_METHOD",
+            "assessment_method": "pre-execution-cognitive-state-baseline:v1",
+            "performance_measurement_performed": False,
+            "participants": [],
+            "reviewer": {},
+            "signature": {},
         },
         "identity_snapshot": {
             "schema_version": EVIDENCE_SCHEMAS["identity_snapshot"],
             **common,
+            **operator_attestation,
             "participant_id": "TODO_REPLACE_REAL_PARTICIPANT_ID",
             "execution_did": "TODO_REPLACE_REAL_DID_CIV",
             "credential_version": 0,
@@ -59,6 +67,7 @@ def build_collection_templates(
         "custody_provenance": {
             "schema_version": EVIDENCE_SCHEMAS["custody_provenance"],
             **common,
+            **operator_attestation,
             "participant_id": "TODO_REPLACE_REAL_PARTICIPANT_ID",
             "execution_did": "TODO_REPLACE_REAL_DID_CIV",
             "signer_kind": "TODO_REPLACE_ALLOWED_SIGNER_KIND",
@@ -68,6 +77,7 @@ def build_collection_templates(
         "isolation_root": {
             "schema_version": EVIDENCE_SCHEMAS["isolation_root"],
             **common,
+            **operator_attestation,
             "participant_id": "TODO_REPLACE_REAL_PARTICIPANT_ID",
             "execution_did": "TODO_REPLACE_REAL_DID_CIV",
             "isolation_id": "TODO_REPLACE_REAL_ISOLATION_ID",
@@ -79,9 +89,18 @@ def build_collection_templates(
             **common,
             "participant_id": "TODO_REPLACE_REAL_PARTICIPANT_ID",
             "execution_did": "TODO_REPLACE_REAL_DID_CIV",
+            "pair_id": "TODO_REPLACE_REAL_PAIR_ID",
+            "reviewed_pairing_sha256": "",
+            "owner_authorization_id": "TODO_REPLACE_OWNER_AUTHORIZATION_ID",
+            "owner_authorization_statement_sha256": "",
+            "participant_profile_sha256": "",
+            "public_key_hex": "",
+            "consent_nonce_hex": "",
+            "consent_statement": "TODO_REPLACE_EXACT_CONSENT_STATEMENT",
             "random_assignment_consented": False,
             "model_execution_authorized": False,
             "consent_statement_sha256": "",
+            "signature": {},
         },
     }
     templates["participant_packet"] = {

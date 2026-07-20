@@ -2,21 +2,30 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .qualification_baseline_consent import (
+    BASELINE_FIELDS,
+    BASELINE_SCHEMA,
+    CONSENT_FIELDS,
+    CONSENT_SCHEMA,
+    validate_cognitive_baseline,
+    validate_participant_consent,
+)
 from .controlled_comparison import canonical_sha256
 from .qualification_roster import contains_secret_field, validate_roster_entry
 
 
 PACKET_SCHEMA = "j1-qualification-participant-evidence:v1"
 EVIDENCE_SCHEMAS = {
-    "cognitive_baseline": "j1-qualification-cognitive-baseline:v1",
+    "cognitive_baseline": BASELINE_SCHEMA,
     "identity_snapshot": "j1-qualification-identity-snapshot:v1",
     "custody_provenance": "j1-qualification-custody-provenance:v1",
     "isolation_root": "j1-qualification-isolation-root:v1",
-    "consent_receipt": "j1-qualification-consent-receipt:v1",
+    "consent_receipt": CONSENT_SCHEMA,
 }
 PACKET_FIELDS = {
     "schema_version",
@@ -42,13 +51,7 @@ COMMON_ARTIFACT_FIELDS = {
     "secret_material_included",
 }
 ARTIFACT_FIELDS = {
-    "cognitive_baseline": COMMON_ARTIFACT_FIELDS
-    | {
-        "pair_id",
-        "baseline_commitment_sha256",
-        "assessment_method",
-        "operator_attestation_sha256",
-    },
+    "cognitive_baseline": BASELINE_FIELDS,
     "identity_snapshot": COMMON_ARTIFACT_FIELDS
     | {
         "participant_id",
@@ -77,15 +80,7 @@ ARTIFACT_FIELDS = {
         "exclusive_assignment",
         "operator_attestation_sha256",
     },
-    "consent_receipt": COMMON_ARTIFACT_FIELDS
-    | {
-        "participant_id",
-        "execution_did",
-        "random_assignment_consented",
-        "model_execution_authorized",
-        "consent_statement_sha256",
-        "operator_attestation_sha256",
-    },
+    "consent_receipt": CONSENT_FIELDS,
 }
 
 
@@ -167,6 +162,7 @@ def validate_evidence_artifact(
     *,
     packet: dict[str, Any],
     qualification_protocol_sha256: str,
+    reviewed_pairing_sha256: str | None = None,
 ) -> list[str]:
     artifact = value if isinstance(value, dict) else {}
     failures: list[str] = []
@@ -207,6 +203,12 @@ def validate_evidence_artifact(
         f"participant_{kind}_contains_secret_field",
         failures,
     )
+    if kind in {"cognitive_baseline", "consent_receipt"} and reviewed_pairing_sha256:
+        _require(
+            artifact.get("reviewed_pairing_sha256") == reviewed_pairing_sha256,
+            f"participant_{kind}_reviewed_pairing_mismatch",
+            failures,
+        )
     if kind == "cognitive_baseline":
         _validate_baseline(artifact, packet, failures)
     elif kind == "identity_snapshot":
@@ -218,6 +220,49 @@ def validate_evidence_artifact(
     elif kind == "consent_receipt":
         _validate_consent(artifact, packet, failures)
     return list(dict.fromkeys(failures))
+
+
+def validate_packet_evidence_bindings(
+    artifacts: dict[str, dict[str, Any]], *, packet: dict[str, Any]
+) -> list[str]:
+    failures: list[str] = []
+    baseline = _object(artifacts.get("cognitive_baseline"))
+    consent = _object(artifacts.get("consent_receipt"))
+    identity = _object(artifacts.get("identity_snapshot"))
+    _require(
+        baseline.get("reviewed_pairing_sha256")
+        == consent.get("reviewed_pairing_sha256"),
+        "participant_baseline_consent_pairing_mismatch",
+        failures,
+    )
+    try:
+        consent_key_sha256 = hashlib.sha256(
+            bytes.fromhex(str(consent.get("public_key_hex", "")))
+        ).hexdigest()
+    except ValueError:
+        consent_key_sha256 = ""
+    _require(
+        identity.get("public_key_sha256") == consent_key_sha256,
+        "participant_identity_consent_key_mismatch",
+        failures,
+    )
+    records = baseline.get("participants")
+    record = next(
+        (
+            item
+            for item in records
+            if isinstance(item, dict)
+            and item.get("participant_id") == packet.get("participant_id")
+        ),
+        {},
+    ) if isinstance(records, list) else {}
+    _require(
+        record.get("participant_profile_sha256")
+        == consent.get("participant_profile_sha256"),
+        "participant_baseline_consent_profile_mismatch",
+        failures,
+    )
+    return failures
 
 
 def roster_entry_from_packet(
@@ -255,15 +300,16 @@ def _validate_baseline(
         "participant_baseline_pair_mismatch",
         failures,
     )
-    _require_hash_fields(
-        artifact,
-        ("baseline_commitment_sha256", "operator_attestation_sha256"),
-        "participant_baseline",
-        failures,
-    )
+    failures.extend(validate_cognitive_baseline(artifact))
+    participants = artifact.get("participants")
+    participant_ids = {
+        item.get("participant_id")
+        for item in participants
+        if isinstance(item, dict)
+    } if isinstance(participants, list) else set()
     _require(
-        _real_text(artifact.get("assessment_method")),
-        "participant_baseline_assessment_method_invalid",
+        packet.get("participant_id") in participant_ids,
+        "participant_baseline_participant_missing",
         failures,
     )
 
@@ -343,6 +389,11 @@ def _validate_consent(
 ) -> None:
     _require_participant_binding(artifact, packet, "consent", failures)
     _require(
+        artifact.get("pair_id") == packet.get("pair_id"),
+        "participant_consent_pair_mismatch",
+        failures,
+    )
+    _require(
         artifact.get("random_assignment_consented") is True,
         "participant_random_assignment_consent_missing",
         failures,
@@ -352,12 +403,7 @@ def _validate_consent(
         "participant_model_execution_must_be_false",
         failures,
     )
-    _require_hash_fields(
-        artifact,
-        ("consent_statement_sha256", "operator_attestation_sha256"),
-        "participant_consent",
-        failures,
-    )
+    failures.extend(validate_participant_consent(artifact))
 
 
 def _require_participant_binding(
