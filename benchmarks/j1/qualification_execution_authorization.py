@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 
+from .controlled_comparison import canonical_sha256
 from .qualification_reviewer_identity import validate_reviewer_identity_profile
 
 
@@ -85,9 +86,9 @@ def build_authorization_context(
         "max_cost_microunits": participant_count
         * per_participant["max_cost_microunits"],
     }
-    return {
+    context = {
         "source_binding": {
-            "qualification_protocol_sha256": protocol.get("protocol_sha256"),
+            "qualification_protocol_sha256": canonical_sha256(protocol),
             "qualification_protocol_artifact_sha256": protocol_artifact_sha256,
             "reviewed_roster_sha256": roster.get("roster_sha256"),
             "reviewed_roster_artifact_sha256": roster_artifact_sha256,
@@ -139,6 +140,11 @@ def build_authorization_context(
             "ledger_append_allowed": False,
         },
     }
+    failures: list[str] = []
+    _validate_context(context, failures)
+    if failures:
+        raise ValueError(f"execution authorization context invalid: {failures}")
+    return context
 
 
 def build_execution_authorization(

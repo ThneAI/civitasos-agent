@@ -166,6 +166,7 @@ def test_signed_authorization_binds_exact_scope_cost_and_ttl(tmp_path: Path) -> 
     receipt, context, reviewer = _receipt(tmp_path)
 
     assert _validate(receipt, context, reviewer) == []
+    assert receipt["source_binding"]["qualification_protocol_sha256"] != "1" * 64
     assert receipt["execution_scope"]["participant_count"] == 40
     assert receipt["execution_scope"]["pair_count"] == 20
     assert receipt["cost_acknowledgement"]["aggregate_ceiling"] == {
