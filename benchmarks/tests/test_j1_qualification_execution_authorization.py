@@ -94,6 +94,7 @@ def _context(tmp_path: Path) -> dict[str, dict]:
             for index in range(40)
         ],
     }
+    assignment = {"reviewed_assignment_sha256": "a" * 64}
     request = {
         "provider": {
             "kind": "openai_compatible",
@@ -114,6 +115,9 @@ def _context(tmp_path: Path) -> dict[str, dict]:
         roster=roster,
         roster_artifact_sha256="6" * 64,
         roster_gate_artifact_sha256="7" * 64,
+        reviewed_assignment=assignment,
+        reviewed_assignment_artifact_sha256="b" * 64,
+        assignment_gate_artifact_sha256="c" * 64,
         admission_request=request,
         admission_request_artifact_sha256="8" * 64,
         provider_admission_report=admission,
@@ -169,6 +173,7 @@ def test_signed_authorization_binds_exact_scope_cost_and_ttl(tmp_path: Path) -> 
     assert receipt["source_binding"]["qualification_protocol_sha256"] != "1" * 64
     assert receipt["execution_scope"]["participant_count"] == 40
     assert receipt["execution_scope"]["pair_count"] == 20
+    assert receipt["source_binding"]["reviewed_assignment_sha256"] == "a" * 64
     assert receipt["cost_acknowledgement"]["aggregate_ceiling"] == {
         "authorized_task_executions": 320,
         "max_tokens": 800000,
@@ -238,3 +243,4 @@ def test_exact_statement_includes_cost_and_failure_boundary(tmp_path: Path) -> N
     assert "800000 tokens and 4000000 microunits" in statement
     assert "any claimed failure requires new authorization" in statement
     assert "Backend/Ledger writes remain prohibited" in statement
+    assert "cohort assignment" in statement

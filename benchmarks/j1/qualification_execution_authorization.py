@@ -16,7 +16,7 @@ from .controlled_comparison import canonical_sha256
 from .qualification_reviewer_identity import validate_reviewer_identity_profile
 
 
-RECEIPT_SCHEMA = "j1-qualification-execution-authorization:v1"
+RECEIPT_SCHEMA = "j1-qualification-execution-authorization:v2"
 CONSUMPTION_SCHEMA = "j1-qualification-authorization-consumption:v1"
 DECISION = "authorize_once"
 MAX_TTL_SECONDS = 1800
@@ -55,6 +55,9 @@ def build_authorization_context(
     roster: dict[str, Any],
     roster_artifact_sha256: str,
     roster_gate_artifact_sha256: str,
+    reviewed_assignment: dict[str, Any],
+    reviewed_assignment_artifact_sha256: str,
+    assignment_gate_artifact_sha256: str,
     admission_request: dict[str, Any],
     admission_request_artifact_sha256: str,
     provider_admission_report: dict[str, Any],
@@ -93,6 +96,11 @@ def build_authorization_context(
             "reviewed_roster_sha256": roster.get("roster_sha256"),
             "reviewed_roster_artifact_sha256": roster_artifact_sha256,
             "roster_gate_artifact_sha256": roster_gate_artifact_sha256,
+            "reviewed_assignment_sha256": reviewed_assignment.get(
+                "reviewed_assignment_sha256"
+            ),
+            "reviewed_assignment_artifact_sha256": reviewed_assignment_artifact_sha256,
+            "assignment_gate_artifact_sha256": assignment_gate_artifact_sha256,
             "admission_request_sha256": provider_admission_report.get(
                 "admission", {}
             ).get("request_sha256"),
@@ -379,7 +387,7 @@ def signature_payload(receipt: dict[str, Any]) -> bytes:
 def _validate_context(receipt: dict[str, Any], failures: list[str]) -> None:
     source = _object(receipt.get("source_binding"))
     _require(
-        len(source) == 8 and all(_sha256(value) for value in source.values()),
+        len(source) == 11 and all(_sha256(value) for value in source.values()),
         "authorization_source_binding_invalid",
         failures,
     )

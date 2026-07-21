@@ -155,6 +155,7 @@ def authorization_statement(
     return (
         f"I authorize exactly one J1-D qualification run {run_id}, bound to protocol "
         f"{source['qualification_protocol_sha256']}, roster {source['reviewed_roster_sha256']}, "
+        f"cohort assignment {source['reviewed_assignment_sha256']}, "
         f"provider {scope['provider_id']}, model {scope['model_id']}, 40 participants, 20 pairs, "
         f"and {aggregate['authorized_task_executions']} task executions. I acknowledge aggregate "
         f"ceilings of {aggregate['max_tokens']} tokens and {aggregate['max_cost_microunits']} "
@@ -191,6 +192,8 @@ def _load_source(**values: Any) -> dict[str, Any]:
         qualification_protocol_path=Path(values["qualification_protocol_path"]),
         reviewed_roster_path=Path(values["reviewed_roster_path"]),
         roster_gate_report_path=Path(values["roster_gate_report_path"]),
+        reviewed_assignment_path=Path(values["reviewed_assignment_path"]),
+        assignment_gate_report_path=Path(values["assignment_gate_report_path"]),
         admission_request_path=Path(values["admission_request_path"]),
         provider_admission_report_path=Path(values["provider_admission_report_path"]),
         provider_env_path=Path(values["provider_env_path"]),
@@ -269,6 +272,8 @@ def main() -> int:
     parser.add_argument("--qualification-protocol", type=Path, required=True)
     parser.add_argument("--reviewed-roster", type=Path, required=True)
     parser.add_argument("--roster-gate-report", type=Path, required=True)
+    parser.add_argument("--reviewed-assignment", type=Path, required=True)
+    parser.add_argument("--assignment-gate-report", type=Path, required=True)
     parser.add_argument("--admission-request", type=Path, required=True)
     parser.add_argument("--provider-admission-report", type=Path, required=True)
     parser.add_argument("--provider-env", type=Path, required=True)
@@ -299,6 +304,8 @@ def main() -> int:
         "qualification_protocol_path": args.qualification_protocol,
         "reviewed_roster_path": args.reviewed_roster,
         "roster_gate_report_path": args.roster_gate_report,
+        "reviewed_assignment_path": args.reviewed_assignment,
+        "assignment_gate_report_path": args.assignment_gate_report,
         "admission_request_path": args.admission_request,
         "provider_admission_report_path": args.provider_admission_report,
         "provider_env_path": args.provider_env,

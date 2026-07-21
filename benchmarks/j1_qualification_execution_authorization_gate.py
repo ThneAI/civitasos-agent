@@ -12,6 +12,7 @@ from typing import Any
 
 from benchmarks.j1.controlled_comparison import canonical_sha256, write_private_json
 from benchmarks.j1.qualification_admission import evaluate_admission, validate_request
+from benchmarks.j1.qualification_cohort_assignment import validate_reviewed_assignment
 from benchmarks.j1.qualification_execution_authorization import (
     build_authorization_context,
     validate_execution_authorization,
@@ -26,6 +27,7 @@ from benchmarks.j1.qualification_roster import (
 
 
 GATE_SCHEMA = "j1-qualification-execution-authorization-gate:v1"
+ASSIGNMENT_GATE_SCHEMA = "j1-qualification-cohort-assignment-gate:v1"
 ROSTER_GATE_SCHEMA = "j1-qualification-roster-gate:v2"
 ADMISSION_GATE_SCHEMA = "j1-qualification-admission-gate:v1"
 CONTRACT_SOURCE = (
@@ -41,6 +43,8 @@ def run_gate(
     qualification_protocol_path: Path,
     reviewed_roster_path: Path,
     roster_gate_report_path: Path,
+    reviewed_assignment_path: Path,
+    assignment_gate_report_path: Path,
     admission_request_path: Path,
     provider_admission_report_path: Path,
     provider_env_path: Path,
@@ -58,6 +62,8 @@ def run_gate(
         qualification_protocol_path=qualification_protocol_path,
         reviewed_roster_path=reviewed_roster_path,
         roster_gate_report_path=roster_gate_report_path,
+        reviewed_assignment_path=reviewed_assignment_path,
+        assignment_gate_report_path=assignment_gate_report_path,
         admission_request_path=admission_request_path,
         provider_admission_report_path=provider_admission_report_path,
         provider_env_path=provider_env_path,
@@ -135,6 +141,8 @@ def load_authorization_source_context(
     qualification_protocol_path: Path,
     reviewed_roster_path: Path,
     roster_gate_report_path: Path,
+    reviewed_assignment_path: Path,
+    assignment_gate_report_path: Path,
     admission_request_path: Path,
     provider_admission_report_path: Path,
     provider_env_path: Path,
@@ -154,6 +162,12 @@ def load_authorization_source_context(
     )
     roster_gate, roster_gate_raw = _read_json(
         roster_gate_report_path, "roster_gate_report_unreadable", failures
+    )
+    assignment, assignment_raw = _read_json(
+        reviewed_assignment_path, "reviewed_assignment_unreadable", failures
+    )
+    assignment_gate, assignment_gate_raw = _read_json(
+        assignment_gate_report_path, "assignment_gate_report_unreadable", failures
     )
     request, request_raw = _read_json(
         admission_request_path, "admission_request_unreadable", failures, private=False
@@ -198,6 +212,16 @@ def load_authorization_source_context(
         roster=roster,
         failures=failures,
     )
+    failures.extend(validate_reviewed_assignment(assignment))
+    _validate_assignment_gate(
+        assignment_gate,
+        assignment_gate_report_path=assignment_gate_report_path,
+        assignment_path=reviewed_assignment_path,
+        assignment=assignment,
+        protocol_path=qualification_protocol_path,
+        roster_path=reviewed_roster_path,
+        failures=failures,
+    )
     _validate_provider_admission(
         admission,
         request_path=admission_request_path,
@@ -220,6 +244,9 @@ def load_authorization_source_context(
         roster=roster,
         roster_artifact_sha256=hashlib.sha256(roster_raw).hexdigest(),
         roster_gate_artifact_sha256=hashlib.sha256(roster_gate_raw).hexdigest(),
+        reviewed_assignment=assignment,
+        reviewed_assignment_artifact_sha256=hashlib.sha256(assignment_raw).hexdigest(),
+        assignment_gate_artifact_sha256=hashlib.sha256(assignment_gate_raw).hexdigest(),
         admission_request=request,
         admission_request_artifact_sha256=hashlib.sha256(request_raw).hexdigest(),
         provider_admission_report=admission,
@@ -238,6 +265,10 @@ def load_authorization_source_context(
             ),
             "reviewed_roster": _artifact(reviewed_roster_path, roster_raw),
             "roster_gate_report": _artifact(roster_gate_report_path, roster_gate_raw),
+            "reviewed_assignment": _artifact(reviewed_assignment_path, assignment_raw),
+            "assignment_gate_report": _artifact(
+                assignment_gate_report_path, assignment_gate_raw
+            ),
             "admission_request": _artifact(admission_request_path, request_raw),
             "provider_admission_report": _artifact(
                 provider_admission_report_path, admission_raw
@@ -245,6 +276,44 @@ def load_authorization_source_context(
             "reviewer_profile": _artifact(reviewer_profile_path, reviewer_raw),
         },
     }
+
+
+def _validate_assignment_gate(
+    gate: dict[str, Any],
+    *,
+    assignment_gate_report_path: Path,
+    assignment_path: Path,
+    assignment: dict[str, Any],
+    protocol_path: Path,
+    roster_path: Path,
+    failures: list[str],
+) -> None:
+    if not (
+        gate.get("schema_version") == ASSIGNMENT_GATE_SCHEMA
+        and gate.get("passed") is True
+        and gate.get("failure_reasons") == []
+        and gate.get("reviewed_assignment_sha256")
+        == assignment.get("reviewed_assignment_sha256")
+        and gate.get("participant_count") == 40
+        and gate.get("pair_count") == 20
+        and gate.get("readiness", {}).get("cohort_assignment_bound") is True
+        and gate.get("readiness", {}).get("single_use_authorization_issued") is False
+    ):
+        failures.append("assignment_gate_report_invalid")
+    expected = {
+        "reviewed_assignment": assignment_path,
+        "qualification_protocol": protocol_path,
+        "reviewed_roster": roster_path,
+    }
+    for field, path in expected.items():
+        reference = gate.get("artifacts", {}).get(field, {})
+        if (
+            reference.get("path") != str(path.resolve())
+            or reference.get("sha256") != hashlib.sha256(path.read_bytes()).hexdigest()
+        ):
+            failures.append(f"assignment_gate_{field}_binding_invalid")
+    if assignment_gate_report_path.stat().st_mode & 0o077:
+        failures.append("assignment_gate_report_permissions_invalid")
 
 
 def _validate_roster_gate(
@@ -445,6 +514,8 @@ def main() -> int:
     parser.add_argument("--qualification-protocol", type=Path, required=True)
     parser.add_argument("--reviewed-roster", type=Path, required=True)
     parser.add_argument("--roster-gate-report", type=Path, required=True)
+    parser.add_argument("--reviewed-assignment", type=Path, required=True)
+    parser.add_argument("--assignment-gate-report", type=Path, required=True)
     parser.add_argument("--admission-request", type=Path, required=True)
     parser.add_argument("--provider-admission-report", type=Path, required=True)
     parser.add_argument("--provider-env", type=Path, required=True)
@@ -461,6 +532,8 @@ def main() -> int:
         qualification_protocol_path=args.qualification_protocol,
         reviewed_roster_path=args.reviewed_roster,
         roster_gate_report_path=args.roster_gate_report,
+        reviewed_assignment_path=args.reviewed_assignment,
+        assignment_gate_report_path=args.assignment_gate_report,
         admission_request_path=args.admission_request,
         provider_admission_report_path=args.provider_admission_report,
         provider_env_path=args.provider_env,
