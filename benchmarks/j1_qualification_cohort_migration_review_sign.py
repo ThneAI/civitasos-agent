@@ -273,12 +273,13 @@ def main() -> int:
     parser.add_argument("--token-label", required=True)
     parser.add_argument("--key-label", required=True)
     parser.add_argument("--key-id", required=True)
+    parser.add_argument("--pin-file", type=Path)
     parser.add_argument(
         "--repository-root", type=Path, default=Path(__file__).parents[1]
     )
     parser.add_argument("--output-root", type=Path, required=True)
     args = parser.parse_args()
-    pin = read_pin("PKCS#11 user PIN: ")
+    pin = read_pin(args.pin_file)
     report = sign_migration_review(
         review_id=args.review_id,
         reviewed_at=args.reviewed_at,
