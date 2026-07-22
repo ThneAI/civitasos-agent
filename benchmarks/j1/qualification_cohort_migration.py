@@ -12,9 +12,8 @@ from .qualification_verifier import (
 )
 
 
-SCHEMA = "j1-qualification-cohort-migration-plan:v1"
+SCHEMA = "j1-qualification-cohort-migration-plan:v2"
 REQUIRED_BLOCKERS = {
-    "verifier_v2_independent_review_required",
     "protocol_design_amendment_review_required",
     "participant_consent_extension_required",
     "roster_assignment_infrastructure_rebind_required",
@@ -76,15 +75,15 @@ def build_cohort_migration_plan(
     base_reviewed_design: dict[str, Any],
     reviewed_assignment: dict[str, Any],
     signed_advice_manifest: dict[str, Any],
-    verifier_v2_candidate: dict[str, Any],
+    reviewed_verifier_v2: dict[str, Any],
     implementation: dict[str, str],
 ) -> dict[str, Any]:
     verifier_failures = validate_verifier_manifest(
-        verifier_v2_candidate,
-        expected_status="review_required",
+        reviewed_verifier_v2,
+        expected_status="operator_reviewed",
     )
     if verifier_failures:
-        raise ValueError(f"verifier v2 candidate invalid: {verifier_failures}")
+        raise ValueError(f"reviewed verifier v2 invalid: {verifier_failures}")
     tasks = sorted(
         base_reviewed_design["treatment"]["tasks"],
         key=lambda item: item["task_id"],
@@ -129,6 +128,10 @@ def build_cohort_migration_plan(
             "pricing_and_budget_unchanged": True,
             "control_advice_projection_remains_empty": True,
         },
+        "completed_prerequisites": {
+            "verifier_v2_material_review_gate_passed": True,
+            "verifier_v2_operator_reviewed": True,
+        },
         "cohort_event_contracts": cohort_contracts,
         "artifact_migration": _artifact_migration(),
         "required_gate_sequence": _required_gate_sequence(),
@@ -145,7 +148,7 @@ def build_cohort_migration_plan(
         "blockers": sorted(REQUIRED_BLOCKERS),
         "readiness": {
             "migration_contract_complete": True,
-            "verifier_v2_operator_reviewed": False,
+            "verifier_v2_operator_reviewed": True,
             "protocol_design_amendment_operator_reviewed": False,
             "participant_consent_extensions_complete": False,
             "downstream_bindings_refreshed": False,
@@ -174,7 +177,7 @@ def build_cohort_migration_plan(
         base_reviewed_design=base_reviewed_design,
         reviewed_assignment=reviewed_assignment,
         signed_advice_manifest=signed_advice_manifest,
-        verifier_v2_candidate=verifier_v2_candidate,
+        reviewed_verifier_v2=reviewed_verifier_v2,
         expected_implementation=implementation,
     )
     if failures:
@@ -190,7 +193,7 @@ def validate_cohort_migration_plan(
     base_reviewed_design: dict[str, Any],
     reviewed_assignment: dict[str, Any],
     signed_advice_manifest: dict[str, Any],
-    verifier_v2_candidate: dict[str, Any],
+    reviewed_verifier_v2: dict[str, Any],
     expected_implementation: dict[str, str],
 ) -> list[str]:
     plan = value if isinstance(value, dict) else {}
@@ -204,6 +207,7 @@ def validate_cohort_migration_plan(
             "created_at",
             "source_binding",
             "base_invariants",
+            "completed_prerequisites",
             "cohort_event_contracts",
             "artifact_migration",
             "required_gate_sequence",
@@ -242,6 +246,15 @@ def validate_cohort_migration_plan(
         failures,
     )
     _require(
+        plan.get("completed_prerequisites")
+        == {
+            "verifier_v2_material_review_gate_passed": True,
+            "verifier_v2_operator_reviewed": True,
+        },
+        "cohort_migration_prerequisites_invalid",
+        failures,
+    )
+    _require(
         plan.get("artifact_migration") == _artifact_migration(),
         "cohort_migration_artifact_impact_invalid",
         failures,
@@ -267,14 +280,14 @@ def validate_cohort_migration_plan(
         base_reviewed_design=base_reviewed_design,
         reviewed_assignment=reviewed_assignment,
         signed_advice_manifest=signed_advice_manifest,
-        verifier_v2_candidate=verifier_v2_candidate,
+        reviewed_verifier_v2=reviewed_verifier_v2,
         failures=failures,
     )
     _require(
         plan.get("readiness")
         == {
             "migration_contract_complete": True,
-            "verifier_v2_operator_reviewed": False,
+            "verifier_v2_operator_reviewed": True,
             "protocol_design_amendment_operator_reviewed": False,
             "participant_consent_extensions_complete": False,
             "downstream_bindings_refreshed": False,
@@ -312,7 +325,7 @@ def _validate_source_inventory(
     base_reviewed_design: dict[str, Any],
     reviewed_assignment: dict[str, Any],
     signed_advice_manifest: dict[str, Any],
-    verifier_v2_candidate: dict[str, Any],
+    reviewed_verifier_v2: dict[str, Any],
     failures: list[str],
 ) -> None:
     tasks = {
@@ -387,10 +400,69 @@ def _validate_source_inventory(
         failures,
     )
     verifier_failures = validate_verifier_manifest(
-        verifier_v2_candidate,
-        expected_status="review_required",
+        reviewed_verifier_v2,
+        expected_status="operator_reviewed",
     )
     failures.extend(verifier_failures)
+
+
+def validate_reviewed_verifier_promotion(
+    *,
+    reviewed_corpus: dict[str, Any],
+    reviewed_verifier: dict[str, Any],
+    material_review_gate: dict[str, Any],
+    reviewed_corpus_artifact: dict[str, str],
+    reviewed_verifier_artifact: dict[str, str],
+) -> list[str]:
+    failures: list[str] = []
+    gate = material_review_gate
+    _require(
+        gate.get("schema_version") == "j1-qualification-material-review-gate:v1"
+        and gate.get("passed") is True
+        and gate.get("failure_reasons") == []
+        and gate.get("state")
+        == "j1d_material_review_passed_protocol_freeze_required"
+        and gate.get("review_decision") == "approve_qualification_materials"
+        and gate.get("review_receipt_signature_valid") is True,
+        "cohort_migration_verifier_review_gate_invalid",
+        failures,
+    )
+    _require(
+        gate.get("promoted_artifacts")
+        == {
+            "corpus": reviewed_corpus_artifact,
+            "verifier": reviewed_verifier_artifact,
+        },
+        "cohort_migration_verifier_promotion_binding_invalid",
+        failures,
+    )
+    _require(
+        gate.get("readiness", {}).get("qualification_materials_operator_reviewed")
+        is True
+        and gate.get("readiness", {}).get("controlled_experiment_execution_ready")
+        is False,
+        "cohort_migration_verifier_review_readiness_invalid",
+        failures,
+    )
+    corpus_review = reviewed_corpus.get("operator_review")
+    verifier_review = reviewed_verifier.get("operator_review")
+    receipt_sha256 = gate.get("review_receipt", {}).get("sha256")
+    _require(
+        reviewed_corpus.get("status") == "operator_reviewed"
+        and isinstance(corpus_review, dict)
+        and corpus_review == verifier_review
+        and corpus_review.get("decision") == "approve_qualification_materials"
+        and corpus_review.get("review_receipt_sha256") == receipt_sha256,
+        "cohort_migration_reviewed_material_binding_invalid",
+        failures,
+    )
+    failures.extend(
+        validate_verifier_manifest(
+            reviewed_verifier,
+            expected_status="operator_reviewed",
+        )
+    )
+    return list(dict.fromkeys(failures))
 
 
 def _base_invariants() -> dict[str, bool]:
@@ -411,6 +483,7 @@ def _artifact_migration() -> dict[str, list[str]]:
     return {
         "reusable_as_immutable_parent_evidence": [
             "base_task_corpus",
+            "operator_reviewed_verifier_v2",
             "participant_identity_keys",
             "cognitive_baseline_payloads",
             "reviewed_pair_structure",
@@ -418,7 +491,6 @@ def _artifact_migration() -> dict[str, list[str]]:
             "signed_mentor_advice_payloads_if_mentor_contract_unchanged",
         ],
         "new_review_or_signature_required": [
-            "verifier_v2_material_review",
             "protocol_design_amendment",
             "participant_consent_extension_40_of_40",
             "reviewed_roster_rebind",
@@ -439,7 +511,6 @@ def _artifact_migration() -> dict[str, list[str]]:
 
 def _required_gate_sequence() -> list[str]:
     return [
-        "verifier_v2_independent_material_review",
         "protocol_design_amendment_independent_review",
         "participant_consent_extension_collection",
         "roster_and_assignment_rebind_gate",

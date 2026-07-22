@@ -12,10 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.j1.controlled_comparison import canonical_sha256, write_private_json
-from benchmarks.j1.qualification_cohort_migration import build_cohort_migration_plan
+from benchmarks.j1.qualification_cohort_migration import (
+    build_cohort_migration_plan,
+    validate_reviewed_verifier_promotion,
+)
 
 
-REPORT_SCHEMA = "j1-qualification-cohort-migration-preflight:v1"
+REPORT_SCHEMA = "j1-qualification-cohort-migration-preflight:v2"
 
 
 def prepare_migration(
@@ -27,8 +30,9 @@ def prepare_migration(
     reviewed_assignment_path: Path,
     signed_advice_manifest_path: Path,
     signed_advice_gate_path: Path,
-    verifier_v2_candidate_path: Path,
-    verifier_v2_review_request_path: Path,
+    reviewed_corpus_v2_path: Path,
+    reviewed_verifier_v2_path: Path,
+    verifier_v2_material_review_gate_path: Path,
     repository_root: Path,
     output_root: Path,
 ) -> dict[str, Any]:
@@ -40,11 +44,16 @@ def prepare_migration(
         "reviewed_assignment": reviewed_assignment_path,
         "signed_advice_manifest": signed_advice_manifest_path,
         "signed_advice_gate": signed_advice_gate_path,
-        "verifier_v2_candidate": verifier_v2_candidate_path,
-        "verifier_v2_review_request": verifier_v2_review_request_path,
+        "reviewed_corpus_v2": reviewed_corpus_v2_path,
+        "reviewed_verifier_v2": reviewed_verifier_v2_path,
+        "verifier_v2_material_review_gate": verifier_v2_material_review_gate_path,
     }
     sources = {name: _read_private(path) for name, path in paths.items()}
-    _validate_source_states({name: value for name, (value, _) in sources.items()})
+    _validate_source_states(
+        {name: value for name, (value, _) in sources.items()},
+        paths=paths,
+        raw_sources={name: raw for name, (_, raw) in sources.items()},
+    )
     implementation = _implementation(repository_root)
     source_binding = {
         f"{name}_artifact_sha256": hashlib.sha256(raw).hexdigest()
@@ -58,7 +67,7 @@ def prepare_migration(
         base_reviewed_design=sources["base_reviewed_design"][0],
         reviewed_assignment=sources["reviewed_assignment"][0],
         signed_advice_manifest=sources["signed_advice_manifest"][0],
-        verifier_v2_candidate=sources["verifier_v2_candidate"][0],
+        reviewed_verifier_v2=sources["reviewed_verifier_v2"][0],
         implementation=implementation,
     )
     output_root.mkdir(parents=True, mode=0o700)
@@ -66,6 +75,10 @@ def prepare_migration(
     try:
         plan_path = output_root / "cohort-migration-plan.review-required.json"
         write_private_json(plan_path, plan)
+        statement = approval_statement(
+            plan,
+            hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+        )
         report = {
             "schema_version": REPORT_SCHEMA,
             "passed": True,
@@ -83,6 +96,11 @@ def prepare_migration(
             "blockers": plan["blockers"],
             "readiness": plan["readiness"],
             "implementation": implementation,
+            "approval_request": {
+                "required_exact_statement": statement,
+                "statement_sha256": hashlib.sha256(statement.encode()).hexdigest(),
+                "protocol_design_amendment_independent_review_required": True,
+            },
             "execution_boundary": plan["execution_boundary"],
         }
         report["report_sha256"] = canonical_sha256(report)
@@ -93,7 +111,12 @@ def prepare_migration(
         raise
 
 
-def _validate_source_states(sources: dict[str, dict[str, Any]]) -> None:
+def _validate_source_states(
+    sources: dict[str, dict[str, Any]],
+    *,
+    paths: dict[str, Path],
+    raw_sources: dict[str, bytes],
+) -> None:
     failures = []
     if sources["base_protocol"].get("status") != "frozen":
         failures.append("base_protocol_not_frozen")
@@ -112,14 +135,37 @@ def _validate_source_states(sources: dict[str, dict[str, Any]]) -> None:
         == sources["signed_advice_manifest"].get("manifest_sha256")
     ):
         failures.append("signed_advice_gate_invalid")
-    if sources["verifier_v2_candidate"].get("status") != "review_required":
-        failures.append("verifier_v2_candidate_status_invalid")
-    if sources["verifier_v2_review_request"].get("status") != (
-        "awaiting_independent_operator_decision"
-    ):
-        failures.append("verifier_v2_review_request_status_invalid")
+    failures.extend(
+        validate_reviewed_verifier_promotion(
+            reviewed_corpus=sources["reviewed_corpus_v2"],
+            reviewed_verifier=sources["reviewed_verifier_v2"],
+            material_review_gate=sources["verifier_v2_material_review_gate"],
+            reviewed_corpus_artifact=_artifact_bytes(
+                paths["reviewed_corpus_v2"], raw_sources["reviewed_corpus_v2"]
+            ),
+            reviewed_verifier_artifact=_artifact_bytes(
+                paths["reviewed_verifier_v2"], raw_sources["reviewed_verifier_v2"]
+            ),
+        )
+    )
     if failures:
         raise ValueError(f"cohort migration source state invalid: {failures}")
+
+
+def approval_statement(plan: dict[str, Any], raw_sha256: str) -> str:
+    sources = plan["source_binding"]
+    return (
+        "I approve for independent review only the J1-D cohort protocol/design "
+        f"amendment plan artifact {raw_sha256}, canonical plan {plan['plan_sha256']}, "
+        "binding operator-reviewed Verifier v2 artifact "
+        f"{sources['reviewed_verifier_v2_artifact_sha256']} and Material Review Gate "
+        f"{sources['verifier_v2_material_review_gate_artifact_sha256']}. I acknowledge "
+        "that protocol/design amendment review, 40 of 40 participant consent extensions, "
+        "roster/assignment/infrastructure rebind, refreshed provider admission, and a new "
+        "single-use execution authorization remain required. This approval does not amend "
+        "the protocol, migrate consent, authorize provider or model calls, execute any "
+        "Agent or container, append Backend Facts, or append the Ledger."
+    )
 
 
 def _implementation(repository_root: Path) -> dict[str, str]:
@@ -179,13 +225,14 @@ def main() -> int:
     parser.add_argument("--reviewed-assignment", type=Path, required=True)
     parser.add_argument("--signed-advice-manifest", type=Path, required=True)
     parser.add_argument("--signed-advice-gate", type=Path, required=True)
-    parser.add_argument("--verifier-v2-candidate", type=Path, required=True)
-    parser.add_argument("--verifier-v2-review-request", type=Path, required=True)
+    parser.add_argument("--reviewed-corpus-v2", type=Path, required=True)
+    parser.add_argument("--reviewed-verifier-v2", type=Path, required=True)
+    parser.add_argument("--verifier-v2-material-review-gate", type=Path, required=True)
     parser.add_argument(
         "--repository-root", type=Path, default=Path(__file__).parents[1]
     )
     parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--amendment-id", default="j1d-cohort-migration-20260722-r1")
+    parser.add_argument("--amendment-id", default="j1d-cohort-migration-20260722-r2")
     args = parser.parse_args()
     report = prepare_migration(
         amendment_id=args.amendment_id,
@@ -195,8 +242,9 @@ def main() -> int:
         reviewed_assignment_path=args.reviewed_assignment,
         signed_advice_manifest_path=args.signed_advice_manifest,
         signed_advice_gate_path=args.signed_advice_gate,
-        verifier_v2_candidate_path=args.verifier_v2_candidate,
-        verifier_v2_review_request_path=args.verifier_v2_review_request,
+        reviewed_corpus_v2_path=args.reviewed_corpus_v2,
+        reviewed_verifier_v2_path=args.reviewed_verifier_v2,
+        verifier_v2_material_review_gate_path=args.verifier_v2_material_review_gate,
         repository_root=args.repository_root,
         output_root=args.output_root,
     )
