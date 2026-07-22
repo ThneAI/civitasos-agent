@@ -50,11 +50,11 @@ def prepare_mentor_identity_plan(
     participant_report, participant_report_raw = _read_private(
         participant_provisioning_report_path
     )
-    profiles = _load_participant_profiles(participant_profiles_root)
+    profiles = load_participant_profiles(participant_profiles_root)
     module = Path(module_path).resolve()
     module_sha256 = hashlib.sha256(module.read_bytes()).hexdigest()
     key_id = _key_id(key_id_hex)
-    _validate_sources(
+    validate_mentor_identity_sources(
         reviewed_design=reviewed_design,
         reviewed_design_path=reviewed_design_path,
         reviewed_design_raw=reviewed_design_raw,
@@ -133,8 +133,8 @@ def prepare_mentor_identity_plan(
             "module_path": str(module),
             "module_sha256": module_sha256,
             "token_label": token_label,
-            "token_serial": str(token.serial).strip(),
-            "token_model": str(token.model).strip(),
+            "token_serial": _decode(token.serial),
+            "token_model": _decode(token.model),
             "key_label": key_label,
             "key_id_hex": key_id.hex(),
             "private_key_sensitive": True,
@@ -347,7 +347,7 @@ def approval_statement(plan: dict[str, Any], raw_sha256: str) -> str:
     )
 
 
-def _validate_sources(**values: Any) -> None:
+def validate_mentor_identity_sources(**values: Any) -> None:
     design = values["reviewed_design"]
     gate = values["design_gate"]
     reviewer = values["reviewer"]
@@ -401,7 +401,7 @@ def _validate_sources(**values: Any) -> None:
         )
 
 
-def _load_participant_profiles(root: Path) -> list[dict[str, Any]]:
+def load_participant_profiles(root: Path) -> list[dict[str, Any]]:
     if root.is_symlink() or not root.is_dir() or root.stat().st_mode & 0o077:
         raise ValueError(f"participant profiles root invalid: {root}")
     paths = sorted(root.glob("*.json"))
@@ -426,6 +426,14 @@ def _artifact(path: Path) -> dict[str, str]:
 
 def _artifact_bytes(path: Path, raw: bytes) -> dict[str, str]:
     return {"path": str(path.resolve()), "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def _decode(value: Any) -> str:
+    return (
+        value.decode("ascii").strip()
+        if isinstance(value, bytes)
+        else str(value).strip()
+    )
 
 
 def _key_id(value: str) -> bytes:
