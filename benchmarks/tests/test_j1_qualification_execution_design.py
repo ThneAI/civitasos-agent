@@ -2,18 +2,38 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from nacl.signing import SigningKey
 
 from benchmarks.j1.controlled_comparison import canonical_sha256, write_private_json
 from benchmarks.j1.qualification_execution_design import (
     TASK_DESIGNS,
+    build_execution_design_review_receipt,
     build_execution_design,
+    build_reviewed_execution_design,
     validate_execution_design,
+    validate_execution_design_review_receipt,
+    validate_reviewed_execution_design_binding,
+)
+from benchmarks.tests.test_j1_qualification_execution_authorization import (
+    _Signer,
+    _reviewer,
 )
 from benchmarks.j1_qualification_execution_design import prepare_execution_design
+from benchmarks.j1_qualification_execution_design_review_gate import run_gate
+from benchmarks.j1_qualification_execution_design_review_gate import (
+    DESIGN_CONTRACT_SOURCE as REVIEW_DESIGN_CONTRACT_SOURCE,
+)
+from benchmarks.j1_qualification_execution_design_review_gate import (
+    GATE_SOURCE as REVIEW_GATE_SOURCE,
+)
+from benchmarks.j1_qualification_execution_design_review_gate import (
+    OPERATION_SOURCE as REVIEW_OPERATION_SOURCE,
+)
 
 
 NOW = datetime(2026, 7, 22, tzinfo=timezone.utc).isoformat()
@@ -282,3 +302,175 @@ def test_prepare_execution_design_rejects_assignment_gate_drift(
             assignment_gate_path=paths["gate"],
             output_root=tmp_path / "execution-design",
         )
+
+
+def _reviewed_design_chain(tmp_path: Path) -> tuple[dict, dict, dict, dict, dict]:
+    design, protocol, corpus, assignment = _design()
+    key = SigningKey.generate()
+    reviewer = _reviewer(key)
+    reviewer_sha256 = hashlib.sha256(
+        (json.dumps(reviewer, indent=2, sort_keys=True) + "\n").encode()
+    ).hexdigest()
+    implementation = {
+        "agent_revision": "a" * 40,
+        "design_contract_source_sha256": hashlib.sha256(
+            REVIEW_DESIGN_CONTRACT_SOURCE.read_bytes()
+        ).hexdigest(),
+        "operation_source_sha256": hashlib.sha256(
+            REVIEW_OPERATION_SOURCE.read_bytes()
+        ).hexdigest(),
+        "gate_source_sha256": hashlib.sha256(
+            REVIEW_GATE_SOURCE.read_bytes()
+        ).hexdigest(),
+    }
+    receipt = build_execution_design_review_receipt(
+        review_id="j1d-execution-design-review-20260722-r1",
+        reviewed_at=NOW,
+        authorization_id="j1d-owner-execution-design-review-20260722-r1",
+        authorization_statement_sha256="d" * 64,
+        design=design,
+        design_artifact_sha256="e" * 64,
+        protocol=protocol,
+        corpus=corpus,
+        reviewed_assignment=assignment,
+        reviewer_profile=reviewer,
+        reviewer_profile_sha256=reviewer_sha256,
+        implementation=implementation,
+        signer=_Signer(key),
+    )
+    reviewed = build_reviewed_execution_design(
+        design=design,
+        receipt=receipt,
+        receipt_artifact_sha256="f" * 64,
+    )
+    return (
+        design,
+        protocol,
+        corpus,
+        assignment,
+        {
+            "receipt": receipt,
+            "reviewed": reviewed,
+            "reviewer": reviewer,
+            "reviewer_sha256": reviewer_sha256,
+            "implementation": implementation,
+        },
+    )
+
+
+def test_signed_execution_design_review_binds_exact_design() -> None:
+    design, protocol, corpus, assignment, review = _reviewed_design_chain(Path("."))
+
+    assert (
+        validate_execution_design_review_receipt(
+            review["receipt"],
+            design=design,
+            design_artifact_sha256="e" * 64,
+            protocol=protocol,
+            corpus=corpus,
+            reviewed_assignment=assignment,
+            reviewer_profile=review["reviewer"],
+            reviewer_profile_sha256=review["reviewer_sha256"],
+            implementation=review["implementation"],
+        )
+        == []
+    )
+    assert (
+        validate_reviewed_execution_design_binding(
+            review["reviewed"],
+            design=design,
+            receipt=review["receipt"],
+            receipt_artifact_sha256="f" * 64,
+        )
+        == []
+    )
+
+    tampered = copy.deepcopy(review["receipt"])
+    tampered["design"]["artifact_sha256"] = "0" * 64
+    failures = validate_execution_design_review_receipt(
+        tampered,
+        design=design,
+        design_artifact_sha256="e" * 64,
+        protocol=protocol,
+        corpus=corpus,
+        reviewed_assignment=assignment,
+        reviewer_profile=review["reviewer"],
+        reviewer_profile_sha256=review["reviewer_sha256"],
+        implementation=review["implementation"],
+    )
+    assert "execution_design_review_design_binding_invalid" in failures
+    assert "execution_design_review_signature_invalid" in failures
+
+
+def test_execution_design_review_gate_validates_complete_chain(tmp_path: Path) -> None:
+    design, protocol, corpus, assignment, review = _reviewed_design_chain(tmp_path)
+    paths = _write_operation_sources(tmp_path)
+    write_private_json(paths["protocol"], protocol)
+    write_private_json(paths["corpus"], corpus)
+    protocol["task_corpus"]["artifact_sha256"] = hashlib.sha256(
+        paths["corpus"].read_bytes()
+    ).hexdigest()
+    write_private_json(paths["protocol"], protocol)
+    gate = json.loads(paths["gate"].read_text(encoding="utf-8"))
+    gate["artifacts"]["qualification_protocol"] = {
+        "path": str(paths["protocol"].resolve()),
+        "sha256": hashlib.sha256(paths["protocol"].read_bytes()).hexdigest(),
+    }
+    write_private_json(paths["gate"], gate)
+    design = build_execution_design(
+        design_id="j1d-execution-design-20260722-r1",
+        created_at=NOW,
+        protocol=protocol,
+        corpus=corpus,
+        reviewed_assignment=assignment,
+        pricing_observed_at=NOW,
+    )
+    design_path = tmp_path / "execution-design.json"
+    reviewer_path = tmp_path / "reviewer.json"
+    write_private_json(design_path, design)
+    write_private_json(reviewer_path, review["reviewer"])
+    reviewer_sha256 = hashlib.sha256(reviewer_path.read_bytes()).hexdigest()
+    key = SigningKey.generate()
+    reviewer = _reviewer(key)
+    write_private_json(reviewer_path, reviewer)
+    reviewer_sha256 = hashlib.sha256(reviewer_path.read_bytes()).hexdigest()
+    receipt = build_execution_design_review_receipt(
+        review_id="j1d-execution-design-review-20260722-r1",
+        reviewed_at=NOW,
+        authorization_id="j1d-owner-execution-design-review-20260722-r1",
+        authorization_statement_sha256="d" * 64,
+        design=design,
+        design_artifact_sha256=hashlib.sha256(design_path.read_bytes()).hexdigest(),
+        protocol=protocol,
+        corpus=corpus,
+        reviewed_assignment=assignment,
+        reviewer_profile=reviewer,
+        reviewer_profile_sha256=reviewer_sha256,
+        implementation=review["implementation"],
+        signer=_Signer(key),
+    )
+    receipt_path = tmp_path / "receipt.json"
+    write_private_json(receipt_path, receipt)
+    reviewed = build_reviewed_execution_design(
+        design=design,
+        receipt=receipt,
+        receipt_artifact_sha256=hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+    )
+    reviewed_path = tmp_path / "reviewed-design.json"
+    write_private_json(reviewed_path, reviewed)
+
+    report = run_gate(
+        design_path=design_path,
+        review_receipt_path=receipt_path,
+        reviewed_design_path=reviewed_path,
+        qualification_protocol_path=paths["protocol"],
+        corpus_path=paths["corpus"],
+        reviewed_assignment_path=paths["assignment"],
+        assignment_gate_path=paths["gate"],
+        reviewer_profile_path=reviewer_path,
+        output_path=tmp_path / "execution-design-review-gate.json",
+    )
+
+    assert report["passed"] is True
+    assert report["readiness"]["execution_design_bound"] is True
+    assert report["readiness"]["controlled_experiment_execution_ready"] is False

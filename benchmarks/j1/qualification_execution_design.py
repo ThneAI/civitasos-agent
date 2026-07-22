@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
+
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
 
 from .controlled_comparison import canonical_sha256
 from .qualification_cohort_assignment import validate_reviewed_assignment
+from .qualification_reviewer_identity import validate_reviewer_identity_profile
 
 
 SCHEMA = "j1-qualification-execution-design:v1"
+RECEIPT_SCHEMA = "j1-qualification-execution-design-review-receipt:v1"
+REVIEWED_SCHEMA = "j1-qualification-execution-design-reviewed:v1"
+REVIEW_DECISION = "approve_execution_design_for_independent_review"
 PRICE_SOURCE = "https://api-docs.deepseek.com/quick_start/pricing/"
 DESIGN_FIELDS = {
     "schema_version",
@@ -93,6 +102,13 @@ TASK_DESIGNS = {
         ],
     },
 }
+
+
+class ExecutionDesignReviewSigner(Protocol):
+    @property
+    def public_key_hex(self) -> str: ...
+
+    def sign(self, message: bytes) -> bytes: ...
 
 
 def build_execution_design(
@@ -322,6 +338,353 @@ def validate_execution_design(
     return list(dict.fromkeys(failures))
 
 
+def build_execution_design_review_receipt(
+    *,
+    review_id: str,
+    reviewed_at: str,
+    authorization_id: str,
+    authorization_statement_sha256: str,
+    design: dict[str, Any],
+    design_artifact_sha256: str,
+    protocol: dict[str, Any],
+    corpus: dict[str, Any],
+    reviewed_assignment: dict[str, Any],
+    reviewer_profile: dict[str, Any],
+    reviewer_profile_sha256: str,
+    implementation: dict[str, str],
+    signer: ExecutionDesignReviewSigner,
+) -> dict[str, Any]:
+    failures = validate_execution_design(
+        design,
+        protocol=protocol,
+        corpus=corpus,
+        reviewed_assignment=reviewed_assignment,
+    )
+    failures.extend(validate_reviewer_identity_profile(reviewer_profile))
+    if failures:
+        raise ValueError(f"execution design review source invalid: {failures}")
+    reviewer = reviewer_profile["reviewer"]
+    if signer.public_key_hex.lower() != reviewer["public_key_hex"].lower():
+        raise ValueError("execution design reviewer signer does not match identity")
+    receipt = {
+        "schema_version": RECEIPT_SCHEMA,
+        "review_id": review_id,
+        "decision": REVIEW_DECISION,
+        "reviewed_at": reviewed_at,
+        "authorization": {
+            "authorization_id": authorization_id,
+            "authorization_statement_sha256": authorization_statement_sha256,
+            "source": "interactive_owner_operator_approval",
+        },
+        "design": {
+            "design_id": design["design_id"],
+            "design_sha256": design["design_sha256"],
+            "artifact_sha256": design_artifact_sha256,
+            "task_count": 8,
+            "mentor_template_count": 8,
+            "control_advice_item_count": 0,
+        },
+        "reviewer": {**reviewer, "identity_profile_sha256": reviewer_profile_sha256},
+        "implementation": implementation,
+        "review_checks": {
+            "exact_design_hash_reviewed": True,
+            "treatment_templates_reviewed": True,
+            "control_non_contamination_reviewed": True,
+            "event_evidence_boundary_reviewed": True,
+            "provider_pricing_reviewed": True,
+            "budget_reservation_reviewed": True,
+            "execution_boundary_reviewed": True,
+        },
+        "execution_boundary": {
+            "execution_design_approved": True,
+            "mentor_identity_provisioning_allowed": False,
+            "provider_api_call_allowed": False,
+            "model_invocation_allowed": False,
+            "agent_execution_allowed": False,
+            "backend_fact_append_allowed": False,
+            "ledger_append_allowed": False,
+        },
+    }
+    payload = execution_design_review_signature_payload(receipt)
+    signature = signer.sign(payload)
+    if len(signature) != 64:
+        raise ValueError("execution design review signature must be 64 bytes")
+    receipt["signature"] = {
+        "algorithm": "ed25519",
+        "signed_payload_sha256": hashlib.sha256(payload).hexdigest(),
+        "signature_hex": signature.hex(),
+    }
+    failures = validate_execution_design_review_receipt(
+        receipt,
+        design=design,
+        design_artifact_sha256=design_artifact_sha256,
+        protocol=protocol,
+        corpus=corpus,
+        reviewed_assignment=reviewed_assignment,
+        reviewer_profile=reviewer_profile,
+        reviewer_profile_sha256=reviewer_profile_sha256,
+        implementation=implementation,
+    )
+    if failures:
+        raise ValueError(f"execution design review receipt invalid: {failures}")
+    return receipt
+
+
+def validate_execution_design_review_receipt(
+    value: Any,
+    *,
+    design: dict[str, Any],
+    design_artifact_sha256: str,
+    protocol: dict[str, Any],
+    corpus: dict[str, Any],
+    reviewed_assignment: dict[str, Any],
+    reviewer_profile: dict[str, Any],
+    reviewer_profile_sha256: str,
+    implementation: dict[str, str],
+) -> list[str]:
+    receipt = value if isinstance(value, dict) else {}
+    failures = validate_execution_design(
+        design,
+        protocol=protocol,
+        corpus=corpus,
+        reviewed_assignment=reviewed_assignment,
+    )
+    failures.extend(validate_reviewer_identity_profile(reviewer_profile))
+    _require(
+        set(receipt)
+        == {
+            "schema_version",
+            "review_id",
+            "decision",
+            "reviewed_at",
+            "authorization",
+            "design",
+            "reviewer",
+            "implementation",
+            "review_checks",
+            "execution_boundary",
+            "signature",
+        },
+        "execution_design_review_fields_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("schema_version") == RECEIPT_SCHEMA,
+        "execution_design_review_schema_invalid",
+        failures,
+    )
+    _require(
+        _text(receipt.get("review_id")), "execution_design_review_id_invalid", failures
+    )
+    _require(
+        receipt.get("decision") == REVIEW_DECISION,
+        "execution_design_review_decision_invalid",
+        failures,
+    )
+    _require(
+        _rfc3339(receipt.get("reviewed_at")),
+        "execution_design_review_time_invalid",
+        failures,
+    )
+    authorization = _object(receipt.get("authorization"))
+    _require(
+        authorization
+        == {
+            "authorization_id": authorization.get("authorization_id"),
+            "authorization_statement_sha256": authorization.get(
+                "authorization_statement_sha256"
+            ),
+            "source": "interactive_owner_operator_approval",
+        }
+        and _text(authorization.get("authorization_id"))
+        and _sha256(authorization.get("authorization_statement_sha256")),
+        "execution_design_review_authorization_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("design")
+        == {
+            "design_id": design.get("design_id"),
+            "design_sha256": design.get("design_sha256"),
+            "artifact_sha256": design_artifact_sha256,
+            "task_count": 8,
+            "mentor_template_count": 8,
+            "control_advice_item_count": 0,
+        },
+        "execution_design_review_design_binding_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("reviewer")
+        == {
+            **_object(reviewer_profile.get("reviewer")),
+            "identity_profile_sha256": reviewer_profile_sha256,
+        },
+        "execution_design_review_reviewer_binding_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("implementation") == implementation,
+        "execution_design_review_implementation_binding_invalid",
+        failures,
+    )
+    _validate_review_implementation(_object(receipt.get("implementation")), failures)
+    checks = _object(receipt.get("review_checks"))
+    _require(
+        set(checks)
+        == {
+            "exact_design_hash_reviewed",
+            "treatment_templates_reviewed",
+            "control_non_contamination_reviewed",
+            "event_evidence_boundary_reviewed",
+            "provider_pricing_reviewed",
+            "budget_reservation_reviewed",
+            "execution_boundary_reviewed",
+        }
+        and all(item is True for item in checks.values()),
+        "execution_design_review_checks_incomplete",
+        failures,
+    )
+    boundary = _object(receipt.get("execution_boundary"))
+    _require(
+        len(boundary) == 7
+        and boundary.get("execution_design_approved") is True
+        and all(
+            item is False
+            for key, item in boundary.items()
+            if key != "execution_design_approved"
+        ),
+        "execution_design_review_boundary_invalid",
+        failures,
+    )
+    signature = _object(receipt.get("signature"))
+    payload = execution_design_review_signature_payload(receipt)
+    _require(
+        signature.get("algorithm") == "ed25519",
+        "execution_design_review_signature_algorithm_invalid",
+        failures,
+    )
+    _require(
+        signature.get("signed_payload_sha256") == hashlib.sha256(payload).hexdigest(),
+        "execution_design_review_signature_payload_hash_mismatch",
+        failures,
+    )
+    try:
+        VerifyKey(
+            bytes.fromhex(str(receipt.get("reviewer", {}).get("public_key_hex", "")))
+        ).verify(payload, bytes.fromhex(str(signature.get("signature_hex", ""))))
+    except (BadSignatureError, ValueError):
+        failures.append("execution_design_review_signature_invalid")
+    return list(dict.fromkeys(failures))
+
+
+def build_reviewed_execution_design(
+    *, design: dict[str, Any], receipt: dict[str, Any], receipt_artifact_sha256: str
+) -> dict[str, Any]:
+    reviewed = {
+        **{
+            key: item
+            for key, item in design.items()
+            if key not in {"schema_version", "status", "design_sha256"}
+        },
+        "schema_version": REVIEWED_SCHEMA,
+        "status": "operator_reviewed",
+        "source_design_sha256": design["design_sha256"],
+        "operator_review": {
+            "review_id": receipt["review_id"],
+            "reviewer_did": receipt["reviewer"]["did"],
+            "reviewed_at": receipt["reviewed_at"],
+            "review_receipt_sha256": receipt_artifact_sha256,
+        },
+    }
+    reviewed["reviewed_design_sha256"] = canonical_sha256(reviewed)
+    return reviewed
+
+
+def validate_reviewed_execution_design_binding(
+    value: Any,
+    *,
+    design: dict[str, Any],
+    receipt: dict[str, Any],
+    receipt_artifact_sha256: str,
+) -> list[str]:
+    reviewed = value if isinstance(value, dict) else {}
+    expected = build_reviewed_execution_design(
+        design=design,
+        receipt=receipt,
+        receipt_artifact_sha256=receipt_artifact_sha256,
+    )
+    failures: list[str] = []
+    _require(
+        reviewed.get("schema_version") == REVIEWED_SCHEMA,
+        "reviewed_execution_design_schema_invalid",
+        failures,
+    )
+    _require(
+        reviewed.get("status") == "operator_reviewed",
+        "reviewed_execution_design_status_invalid",
+        failures,
+    )
+    _require(
+        reviewed.get("source_design_sha256") == design.get("design_sha256"),
+        "reviewed_execution_design_source_invalid",
+        failures,
+    )
+    body = {
+        key: item for key, item in reviewed.items() if key != "reviewed_design_sha256"
+    }
+    _require(
+        reviewed.get("reviewed_design_sha256") == canonical_sha256(body),
+        "reviewed_execution_design_hash_mismatch",
+        failures,
+    )
+    _require(
+        reviewed == expected,
+        "reviewed_execution_design_copy_on_write_binding_invalid",
+        failures,
+    )
+    return list(dict.fromkeys(failures))
+
+
+def execution_design_review_signature_payload(receipt: dict[str, Any]) -> bytes:
+    body = {key: item for key, item in receipt.items() if key != "signature"}
+    return json.dumps(
+        body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+
+
+def _validate_review_implementation(value: dict[str, Any], failures: list[str]) -> None:
+    _require(
+        set(value)
+        == {
+            "agent_revision",
+            "design_contract_source_sha256",
+            "operation_source_sha256",
+            "gate_source_sha256",
+        },
+        "execution_design_review_implementation_fields_invalid",
+        failures,
+    )
+    _require(
+        _text(value.get("agent_revision"))
+        and 7 <= len(str(value.get("agent_revision"))) <= 64,
+        "execution_design_review_revision_invalid",
+        failures,
+    )
+    _require(
+        all(
+            _sha256(value.get(field))
+            for field in (
+                "design_contract_source_sha256",
+                "operation_source_sha256",
+                "gate_source_sha256",
+            )
+        ),
+        "execution_design_review_source_hash_invalid",
+        failures,
+    )
+
+
 def _validate_treatment(
     value: dict[str, Any], corpus: dict[str, Any], failures: list[str]
 ) -> None:
@@ -541,6 +904,14 @@ def _object(value: Any) -> dict[str, Any]:
 
 def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value.lower())
+    )
 
 
 def _rfc3339(value: Any) -> bool:

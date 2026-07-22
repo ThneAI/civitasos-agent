@@ -34,7 +34,7 @@ def prepare_execution_design(
     corpus, corpus_raw = _read_private(corpus_path)
     assignment, assignment_raw = _read_private(reviewed_assignment_path)
     assignment_gate, assignment_gate_raw = _read_private(assignment_gate_path)
-    _validate_sources(
+    validate_execution_design_sources(
         protocol=protocol,
         protocol_path=qualification_protocol_path,
         protocol_raw=protocol_raw,
@@ -122,7 +122,7 @@ def approval_statement(design: dict[str, Any], raw_sha256: str) -> str:
     )
 
 
-def _validate_sources(**values: Any) -> None:
+def validate_execution_design_sources(**values: Any) -> None:
     protocol = values["protocol"]
     corpus = values["corpus"]
     assignment = values["assignment"]
