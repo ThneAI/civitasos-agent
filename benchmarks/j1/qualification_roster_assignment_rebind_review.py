@@ -83,6 +83,20 @@ RECEIPT_BOUNDARY = {
     "ledger_append_performed": False,
     "execution_authorization_issued_or_consumed": False,
 }
+PROMOTION_BOUNDARY = {
+    "review_promotion_only": True,
+    "roster_promoted": True,
+    "assignment_promoted": True,
+    "infrastructure_rebound": False,
+    "container_created": False,
+    "container_started": False,
+    "provider_api_call_performed": False,
+    "model_invocation_performed": False,
+    "agent_execution_performed": False,
+    "backend_fact_append_performed": False,
+    "ledger_append_performed": False,
+    "execution_authorization_issued_or_consumed": False,
+}
 
 
 class ReviewSigner(Protocol):
@@ -556,12 +570,20 @@ def build_reviewed_rebound_roster(
         **{
             key: item
             for key, item in candidate.items()
-            if key not in {"schema_version", "status", "rebound_roster_sha256"}
+            if key
+            not in {
+                "schema_version",
+                "status",
+                "rebound_roster_sha256",
+                "execution_boundary",
+            }
         },
         "schema_version": REVIEWED_ROSTER_SCHEMA,
         "status": "operator_reviewed",
         "source_candidate_sha256": candidate["rebound_roster_sha256"],
+        "candidate_execution_boundary": copy.deepcopy(candidate["execution_boundary"]),
         "operator_review": _operator_review(receipt, receipt_artifact_sha256),
+        "execution_boundary": copy.deepcopy(PROMOTION_BOUNDARY),
     }
     reviewed["reviewed_rebound_roster_sha256"] = canonical_sha256(reviewed)
     return reviewed
@@ -578,7 +600,13 @@ def build_reviewed_rebound_assignment(
         **{
             key: item
             for key, item in candidate.items()
-            if key not in {"schema_version", "status", "rebound_assignment_sha256"}
+            if key
+            not in {
+                "schema_version",
+                "status",
+                "rebound_assignment_sha256",
+                "execution_boundary",
+            }
         },
         "schema_version": REVIEWED_ASSIGNMENT_SCHEMA,
         "status": "operator_reviewed",
@@ -586,7 +614,9 @@ def build_reviewed_rebound_assignment(
         "operator_reviewed_roster_sha256": reviewed_roster[
             "reviewed_rebound_roster_sha256"
         ],
+        "candidate_execution_boundary": copy.deepcopy(candidate["execution_boundary"]),
         "operator_review": _operator_review(receipt, receipt_artifact_sha256),
+        "execution_boundary": copy.deepcopy(PROMOTION_BOUNDARY),
     }
     reviewed["reviewed_rebound_assignment_sha256"] = canonical_sha256(reviewed)
     return reviewed

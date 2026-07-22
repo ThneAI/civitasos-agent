@@ -182,6 +182,9 @@ def test_signed_receipt_promotes_both_candidates_copy_on_write() -> None:
     )
     assert candidate_roster["status"] == "review_required"
     assert reviewed_roster["status"] == "operator_reviewed"
+    assert reviewed_roster["candidate_execution_boundary"]["roster_promoted"] is False
+    assert reviewed_roster["execution_boundary"]["roster_promoted"] is True
+    assert reviewed_assignment["execution_boundary"]["assignment_promoted"] is True
     assert (
         reviewed_assignment["operator_reviewed_roster_sha256"]
         == reviewed_roster["reviewed_rebound_roster_sha256"]

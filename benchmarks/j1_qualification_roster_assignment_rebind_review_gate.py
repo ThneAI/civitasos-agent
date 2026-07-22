@@ -14,6 +14,7 @@ from benchmarks.j1.qualification_reviewer_identity import (
     validate_reviewer_identity_profile,
 )
 from benchmarks.j1.qualification_roster_assignment_rebind_review import (
+    PROMOTION_BOUNDARY,
     approval_review_declaration,
     build_reviewed_rebound_assignment,
     build_reviewed_rebound_roster,
@@ -178,20 +179,7 @@ def run_gate(
                 "controlled_experiment_execution_ready": False,
             },
             "next_blocker": "runner_and_infrastructure_rebind_required",
-            "execution_boundary": {
-                "review_promotion_only": True,
-                "roster_promoted": True,
-                "assignment_promoted": True,
-                "infrastructure_rebound": False,
-                "container_created": False,
-                "container_started": False,
-                "provider_api_call_performed": False,
-                "model_invocation_performed": False,
-                "agent_execution_performed": False,
-                "backend_fact_append_performed": False,
-                "ledger_append_performed": False,
-                "execution_authorization_issued_or_consumed": False,
-            },
+            "execution_boundary": PROMOTION_BOUNDARY,
         }
         report["report_sha256"] = canonical_sha256(report)
         write_private_json(
