@@ -58,7 +58,7 @@ def prepare_migration_review_handoff(
         raise ValueError(f"migration review output already exists: {output_root}")
     plan, plan_raw = _read_private(plan_path)
     preflight, preflight_raw = _read_private(candidate_preflight_path)
-    _validate_candidate_bundle(
+    validate_candidate_bundle(
         plan=plan,
         plan_raw=plan_raw,
         plan_path=plan_path,
@@ -136,7 +136,7 @@ def prepare_migration_review_handoff(
         raise
 
 
-def _validate_candidate_bundle(
+def validate_candidate_bundle(
     *,
     plan: dict[str, Any],
     plan_raw: bytes,
