@@ -49,7 +49,7 @@ def prepare_migration(
         "verifier_v2_material_review_gate": verifier_v2_material_review_gate_path,
     }
     sources = {name: _read_private(path) for name, path in paths.items()}
-    _validate_source_states(
+    validate_migration_source_states(
         {name: value for name, (value, _) in sources.items()},
         paths=paths,
         raw_sources={name: raw for name, (_, raw) in sources.items()},
@@ -111,7 +111,7 @@ def prepare_migration(
         raise
 
 
-def _validate_source_states(
+def validate_migration_source_states(
     sources: dict[str, dict[str, Any]],
     *,
     paths: dict[str, Path],
