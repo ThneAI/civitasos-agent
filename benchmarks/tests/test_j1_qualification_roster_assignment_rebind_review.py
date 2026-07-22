@@ -4,13 +4,23 @@ import copy
 import hashlib
 import json
 
+from nacl.signing import SigningKey
+
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_roster_assignment_rebind_review import (
     REQUIRED_CHECKS,
+    REVIEW_DECISION_SCHEMA,
     approval_review_declaration,
+    build_rebind_review_receipt,
     build_rebind_review_decision_template,
     build_rebind_review_request,
+    build_reviewed_rebound_assignment,
+    build_reviewed_rebound_roster,
+    validate_completed_review_decision,
+    validate_rebind_review_receipt,
     validate_rebind_review_request,
+    validate_reviewed_rebound_assignment,
+    validate_reviewed_rebound_roster,
 )
 from benchmarks.tests.test_j1_qualification_roster_assignment_rebind import (
     _candidates,
@@ -110,3 +120,129 @@ def test_review_declaration_is_request_bound_and_non_executable() -> None:
     assert "approve_roster_assignment_rebind" in declaration
     assert "does not reassign or substitute any participant" in declaration
     assert hashlib.sha256(declaration.encode()).hexdigest()
+
+
+def test_signed_receipt_promotes_both_candidates_copy_on_write() -> None:
+    request = _bundle()[4]
+    candidate_roster, candidate_assignment, _ = _candidates()
+    signer = _Signer()
+    decision = _completed_decision(request, signer.public_key_hex)
+    declaration_sha256 = hashlib.sha256(
+        approval_review_declaration(request).encode()
+    ).hexdigest()
+    receipt = build_rebind_review_receipt(
+        request=request,
+        decision=decision,
+        review_declaration_sha256=declaration_sha256,
+        reviewer_profile_sha256="d" * 64,
+        implementation=IMPLEMENTATION,
+        signer=signer,
+    )
+
+    assert validate_completed_review_decision(decision, request=request) == []
+    assert (
+        validate_rebind_review_receipt(
+            receipt,
+            request=request,
+            expected_review_declaration_sha256=declaration_sha256,
+            expected_reviewer_profile_sha256="d" * 64,
+            expected_implementation=IMPLEMENTATION,
+        )
+        == []
+    )
+    reviewed_roster = build_reviewed_rebound_roster(
+        candidate=candidate_roster,
+        receipt=receipt,
+        receipt_artifact_sha256="e" * 64,
+    )
+    reviewed_assignment = build_reviewed_rebound_assignment(
+        candidate=candidate_assignment,
+        reviewed_roster=reviewed_roster,
+        receipt=receipt,
+        receipt_artifact_sha256="e" * 64,
+    )
+    assert (
+        validate_reviewed_rebound_roster(
+            reviewed_roster,
+            candidate=candidate_roster,
+            receipt=receipt,
+            receipt_artifact_sha256="e" * 64,
+        )
+        == []
+    )
+    assert (
+        validate_reviewed_rebound_assignment(
+            reviewed_assignment,
+            candidate=candidate_assignment,
+            reviewed_roster=reviewed_roster,
+            receipt=receipt,
+            receipt_artifact_sha256="e" * 64,
+        )
+        == []
+    )
+    assert candidate_roster["status"] == "review_required"
+    assert reviewed_roster["status"] == "operator_reviewed"
+    assert (
+        reviewed_assignment["operator_reviewed_roster_sha256"]
+        == reviewed_roster["reviewed_rebound_roster_sha256"]
+    )
+
+
+def test_signed_receipt_rejects_signature_tamper() -> None:
+    request = _bundle()[4]
+    signer = _Signer()
+    declaration_sha256 = hashlib.sha256(
+        approval_review_declaration(request).encode()
+    ).hexdigest()
+    receipt = build_rebind_review_receipt(
+        request=request,
+        decision=_completed_decision(request, signer.public_key_hex),
+        review_declaration_sha256=declaration_sha256,
+        reviewer_profile_sha256="d" * 64,
+        implementation=IMPLEMENTATION,
+        signer=signer,
+    )
+    receipt["signature"]["signature_hex"] = "00" * 64
+
+    failures = validate_rebind_review_receipt(
+        receipt,
+        request=request,
+        expected_review_declaration_sha256=declaration_sha256,
+        expected_reviewer_profile_sha256="d" * 64,
+        expected_implementation=IMPLEMENTATION,
+    )
+
+    assert "rebind_review_signature_invalid" in failures
+
+
+class _Signer:
+    def __init__(self) -> None:
+        self._key = SigningKey.generate()
+        self.public_key_hex = self._key.verify_key.encode().hex()
+
+    def sign(self, message: bytes) -> bytes:
+        return self._key.sign(message).signature
+
+
+def _completed_decision(request: dict, public_key_hex: str) -> dict:
+    return {
+        "schema_version": REVIEW_DECISION_SCHEMA,
+        "review_id": "j1d-rebind-review-r1",
+        "review_request_sha256": request["request_sha256"],
+        "decision": "approve_roster_assignment_rebind",
+        "reviewed_at": NOW,
+        "reviewer": {
+            "did": "did:civ:testnet:z6MkReviewer",
+            "public_key_hex": public_key_hex,
+            "credential_version": 1,
+            "signer_kind": "pkcs11_ed25519",
+            "custody_provenance_sha256": "d" * 64,
+            "signer_attestation_sha256": "d" * 64,
+        },
+        "independence": {
+            "conflicts_disclosed": True,
+            "independent_from_candidate_authoring": True,
+            "human_review_completed": True,
+        },
+        "checklist": {check: True for check in sorted(REQUIRED_CHECKS)},
+    }
