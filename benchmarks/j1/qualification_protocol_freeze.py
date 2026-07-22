@@ -11,10 +11,13 @@ from .qualification_roster import (
     validate_qualification_protocol,
 )
 from .qualification_review_receipt import validate_signed_review_receipt
+from .qualification_verifier import validate_verifier_manifest
 
 
 CORPUS_SCHEMA = "j1-qualification-task-corpus:v1"
-VERIFIER_SCHEMA = "j1-qualification-verifier-manifest:v1"
+LEGACY_VERIFIER_SCHEMA = "j1-qualification-verifier-manifest:v1"
+VERIFIER_SCHEMA = "j1-qualification-verifier-manifest:v2"
+VERIFIER_SCHEMAS = {LEGACY_VERIFIER_SCHEMA, VERIFIER_SCHEMA}
 
 
 def build_qualification_protocol(
@@ -348,10 +351,17 @@ def _validate_verifier(
     verifier: dict[str, Any], corpus: dict[str, Any], failures: list[str]
 ) -> None:
     _require(
-        verifier.get("schema_version") == VERIFIER_SCHEMA,
+        verifier.get("schema_version") in VERIFIER_SCHEMAS,
         "qualification_verifier_schema_invalid",
         failures,
     )
+    if verifier.get("schema_version") == VERIFIER_SCHEMA:
+        failures.extend(
+            validate_verifier_manifest(
+                verifier,
+                expected_status="operator_reviewed",
+            )
+        )
     _require(
         verifier.get("status") == "operator_reviewed",
         "qualification_verifier_status_invalid",

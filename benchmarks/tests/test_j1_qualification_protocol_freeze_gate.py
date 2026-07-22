@@ -10,7 +10,7 @@ from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_material_review import promote_reviewed_materials
 from benchmarks.j1.qualification_protocol_freeze import (
     CORPUS_SCHEMA,
-    VERIFIER_SCHEMA,
+    LEGACY_VERIFIER_SCHEMA,
     build_qualification_protocol,
     validate_freeze,
 )
@@ -66,7 +66,7 @@ def _candidate_corpus() -> dict:
 
 def _candidate_verifier(corpus: dict) -> dict:
     value = {
-        "schema_version": VERIFIER_SCHEMA,
+        "schema_version": LEGACY_VERIFIER_SCHEMA,
         "status": "review_required",
         "verifier_id": "j1q-deterministic-verifier:v1",
         "source_revision": "a" * 40,

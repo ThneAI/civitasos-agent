@@ -10,7 +10,10 @@ from typing import Any
 from .controlled_comparison import canonical_sha256
 from .qualification_materials import TASK_SOURCE_SCHEMA, validate_task_source
 from .qualification_protocol_freeze import CORPUS_SCHEMA, VERIFIER_SCHEMA
-from .qualification_verifier import CASE_IDS
+from .qualification_verifier import (
+    CASE_IDS,
+    validate_verifier_manifest,
+)
 
 
 REVIEW_GATE_SCHEMA = "j1-qualification-material-review-gate:v1"
@@ -114,6 +117,15 @@ def _validate_verifier(
     verifier_source_bytes: bytes,
     failures: list[str],
 ) -> None:
+    failures.extend(
+        validate_verifier_manifest(
+            verifier,
+            expected_status="review_required",
+            expected_implementation_sha256=hashlib.sha256(
+                verifier_source_bytes
+            ).hexdigest(),
+        )
+    )
     _require(
         verifier.get("schema_version") == VERIFIER_SCHEMA,
         "review_candidate_verifier_schema_invalid",
