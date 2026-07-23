@@ -8,6 +8,7 @@ from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_infrastructure_activation import inspect_projection
 from benchmarks.j1.qualification_provider_admission_refresh import (
     OFFLINE_BOUNDARY,
+    PLAN_SCHEMA_V1,
     PROBE_PROMPT,
     build_refresh_plan,
     probe_authorization_statement,
@@ -82,7 +83,7 @@ def test_probe_budget_is_ceil_of_reviewed_cache_miss_ceiling() -> None:
             output_rate=870_000,
             rate_basis_tokens=1_000_000,
         )
-        == 63
+        == 926
     )
 
 
@@ -95,7 +96,8 @@ def test_refresh_plan_freezes_one_synthetic_call_and_offline_boundary() -> None:
         {"role": "user", "content": PROBE_PROMPT}
     ]
     assert plan["probe_contract"]["participant_data_allowed"] is False
-    assert plan["pricing_and_budget"]["maximum_cost_microunits"] == 63
+    assert plan["probe_contract"]["max_output_tokens"] == 1000
+    assert plan["pricing_and_budget"]["maximum_cost_microunits"] == 926
     assert plan["execution_boundary"] == OFFLINE_BOUNDARY
     assert plan["credential_contract"]["credential_value_persisted"] is False
 
@@ -103,7 +105,7 @@ def test_refresh_plan_freezes_one_synthetic_call_and_offline_boundary() -> None:
 def test_refresh_plan_rejects_call_budget_and_boundary_expansion() -> None:
     plan = _plan()
     plan["probe_contract"]["call_count"] = 2
-    plan["pricing_and_budget"]["maximum_cost_microunits"] = 64
+    plan["pricing_and_budget"]["maximum_cost_microunits"] = 927
     plan["authorization_contract"]["participant_container_start_allowed"] = True
     plan["plan_sha256"] = canonical_sha256(
         {key: item for key, item in plan.items() if key != "plan_sha256"}
@@ -124,6 +126,24 @@ def test_refresh_plan_self_hash_detects_tampering() -> None:
     assert "refresh_plan_identity_invalid" in validate_refresh_plan(tampered)
 
 
+def test_v1_eight_token_plan_remains_verifiable_as_immutable_history() -> None:
+    plan = _plan()
+    plan["schema_version"] = PLAN_SCHEMA_V1
+    plan["probe_contract"]["request_body"]["max_tokens"] = 8
+    plan["probe_contract"]["request_body_sha256"] = canonical_sha256(
+        plan["probe_contract"]["request_body"]
+    )
+    plan["probe_contract"]["max_output_tokens"] = 8
+    plan["probe_contract"]["max_total_tokens"] = 136
+    plan["pricing_and_budget"]["maximum_cost_microunits"] = 63
+    plan["pricing_and_budget"]["absolute_authorization_cost_ceiling_microunits"] = 63
+    plan["plan_sha256"] = canonical_sha256(
+        {key: item for key, item in plan.items() if key != "plan_sha256"}
+    )
+
+    assert validate_refresh_plan(plan) == []
+
+
 def test_authorization_binds_plan_request_cost_and_narrow_non_permissions() -> None:
     plan = _plan()
     statement = probe_authorization_statement(
@@ -133,12 +153,14 @@ def test_authorization_binds_plan_request_cost_and_narrow_non_permissions() -> N
         base_url=plan["frozen_stack"]["base_url"],
         model_id=plan["frozen_stack"]["model_id"],
         request_body_sha256=plan["probe_contract"]["request_body_sha256"],
-        maximum_cost_microunits=63,
+        maximum_cost_microunits=926,
+        max_input_tokens=plan["probe_contract"]["max_input_tokens"],
+        max_output_tokens=plan["probe_contract"]["max_output_tokens"],
     )
 
     assert "exactly one bounded J1-D live-provider admission probe" in statement
     assert "one HTTPS POST" in statement
-    assert "63 USD microunits" in statement
+    assert "926 USD microunits" in statement
     assert "does not permit starting, creating, or removing" in statement
     assert "execution authorization issuance or consumption" in statement
     assert hashlib.sha256(statement.encode()).hexdigest()

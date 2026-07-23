@@ -43,6 +43,8 @@ def _artifacts(tmp_path: Path) -> tuple[dict, Path, dict, Path, str]:
         model_id=plan["frozen_stack"]["model_id"],
         request_body_sha256=plan["probe_contract"]["request_body_sha256"],
         maximum_cost_microunits=plan["pricing_and_budget"]["maximum_cost_microunits"],
+        max_input_tokens=plan["probe_contract"]["max_input_tokens"],
+        max_output_tokens=plan["probe_contract"]["max_output_tokens"],
     )
     preflight = {
         "schema_version": PREFLIGHT_SCHEMA,
@@ -147,9 +149,38 @@ def test_probe_response_enforces_model_usage_and_cost_ceiling() -> None:
     with pytest.raises(ValueError, match="token reservation"):
         normalize_probe_response(
             status=200,
-            body=_provider_body(output=9),
+            body=_provider_body(output=1001),
             plan=plan,
         )
+
+
+def test_failed_transport_diagnostics_hash_null_content_without_persisting_body() -> (
+    None
+):
+    body = json.dumps(
+        {
+            "id": "provider-response-1",
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": None, "reasoning_content": "private"},
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 7,
+                "completion_tokens": 8,
+                "total_tokens": 15,
+            },
+        }
+    ).encode()
+
+    evidence = probe_operation._sanitized_transport_evidence(status=200, body=body)
+
+    assert evidence["content_kind"] == "null"
+    assert evidence["content_sha256"] == hashlib.sha256(b"null").hexdigest()
+    assert evidence["usage"]["completion_tokens"] == 8
+    assert "private" not in str(evidence)
 
 
 def test_probe_receipt_rejects_inventory_or_boundary_expansion() -> None:
@@ -215,9 +246,9 @@ def test_probe_claim_binds_reservation_and_output() -> None:
     assert claim["reservation"] == {
         "call_count": 1,
         "max_input_tokens": 128,
-        "max_output_tokens": 8,
-        "max_total_tokens": 136,
-        "max_cost_microunits": 63,
+        "max_output_tokens": 1000,
+        "max_total_tokens": 1128,
+        "max_cost_microunits": 926,
     }
     assert claim["claim_sha256"] == canonical_sha256(
         {key: item for key, item in claim.items() if key != "claim_sha256"}

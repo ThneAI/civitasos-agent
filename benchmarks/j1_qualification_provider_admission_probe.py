@@ -117,6 +117,7 @@ def execute_probe(
     write_private_json(journal_path, journal)
     provider_env_read_count = 0
     provider_call_count = 0
+    transport_evidence: dict[str, Any] | None = None
     try:
         api_key = _read_provider_configuration(
             provider_env_path,
@@ -138,6 +139,7 @@ def execute_probe(
             request_body,
         )
         api_key = ""
+        transport_evidence = _sanitized_transport_evidence(status=status, body=body)
         provider_result = normalize_probe_response(
             status=status,
             body=body,
@@ -248,6 +250,7 @@ def execute_probe(
             implementation=implementation,
             provider_env_read_count=provider_env_read_count,
             provider_call_count=provider_call_count,
+            transport_evidence=transport_evidence,
             error=error,
         )
         write_private_json(
@@ -279,7 +282,9 @@ def _replay_plan_sources(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "activation_gate",
         "runner_manifest",
     }
-    if set(values) != required:
+    optional = {"prior_failed_probe_gate", "prior_probe_claim"}
+    extras = set(values) - required
+    if not required.issubset(values) or extras not in (set(), optional):
         raise ValueError("provider admission probe source set invalid")
     return values
 
@@ -344,6 +349,75 @@ def _https_post_once(url: str, api_key: str, body: dict[str, Any]) -> tuple[int,
     return status, result
 
 
+def _sanitized_transport_evidence(*, status: int, body: bytes) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "http_status": status,
+        "raw_response_sha256": hashlib.sha256(body).hexdigest(),
+        "raw_response_bytes": len(body),
+        "json_object": False,
+        "response_model": None,
+        "response_id_sha256": None,
+        "choice_count": 0,
+        "content_kind": "unavailable",
+        "content_sha256": None,
+        "finish_reason": None,
+        "usage": None,
+        "raw_response_persisted": False,
+        "response_content_persisted": False,
+    }
+    try:
+        value = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return evidence
+    if not isinstance(value, dict):
+        return evidence
+    evidence["json_object"] = True
+    if isinstance(value.get("model"), str):
+        evidence["response_model"] = value["model"]
+    if value.get("id") is not None:
+        evidence["response_id_sha256"] = hashlib.sha256(
+            str(value["id"]).encode()
+        ).hexdigest()
+    choices = value.get("choices")
+    if isinstance(choices, list):
+        evidence["choice_count"] = len(choices)
+        if choices and isinstance(choices[0], dict):
+            evidence["finish_reason"] = choices[0].get("finish_reason")
+            message = choices[0].get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if content is None:
+                    evidence["content_kind"] = "null"
+                    encoded = b"null"
+                elif isinstance(content, str):
+                    evidence["content_kind"] = "string"
+                    encoded = content.encode()
+                else:
+                    evidence["content_kind"] = type(content).__name__
+                    encoded = json.dumps(
+                        content,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode()
+                evidence["content_sha256"] = hashlib.sha256(encoded).hexdigest()
+    usage = value.get("usage")
+    if isinstance(usage, dict):
+        allowed = (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens",
+        )
+        evidence["usage"] = {
+            key: usage[key]
+            for key in allowed
+            if type(usage.get(key)) is int and usage[key] >= 0
+        }
+    return evidence
+
+
 def _failure_report(
     *,
     probe_id: str,
@@ -358,6 +432,7 @@ def _failure_report(
     implementation: dict[str, str],
     provider_env_read_count: int,
     provider_call_count: int,
+    transport_evidence: dict[str, Any] | None,
     error: Exception,
 ) -> dict[str, Any]:
     boundary = {
@@ -388,6 +463,7 @@ def _failure_report(
         "journal": _artifact(journal_path),
         "provider_env_read_count": provider_env_read_count,
         "provider_call_count": provider_call_count,
+        "sanitized_transport_evidence": transport_evidence,
         "retry_performed": False,
         "readiness": {
             "live_provider_admission_refreshed": False,
@@ -462,6 +538,8 @@ def _canonical_source_sha256(name: str, value: dict[str, Any]) -> str:
         "activation": "activation_sha256",
         "activation_gate": "report_sha256",
         "runner_manifest": "manifest_sha256",
+        "prior_failed_probe_gate": "report_sha256",
+        "prior_probe_claim": "claim_sha256",
     }
     return str(value.get(fields.get(name, ""), ""))
 

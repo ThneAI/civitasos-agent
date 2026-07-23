@@ -9,11 +9,14 @@ from typing import Any
 from .controlled_comparison import canonical_sha256
 
 
-PLAN_SCHEMA = "j1-qualification-provider-admission-refresh-plan:v1"
-PREFLIGHT_SCHEMA = "j1-qualification-provider-admission-refresh-preflight:v1"
+PLAN_SCHEMA_V1 = "j1-qualification-provider-admission-refresh-plan:v1"
+PLAN_SCHEMA = "j1-qualification-provider-admission-refresh-plan:v2"
+PREFLIGHT_SCHEMA_V1 = "j1-qualification-provider-admission-refresh-preflight:v1"
+PREFLIGHT_SCHEMA = "j1-qualification-provider-admission-refresh-preflight:v2"
 PROBE_PROMPT = "Reply with exactly ADMITTED."
 PROBE_MAX_INPUT_TOKENS = 128
-PROBE_MAX_OUTPUT_TOKENS = 8
+PROBE_MAX_OUTPUT_TOKENS_V1 = 8
+PROBE_MAX_OUTPUT_TOKENS = 1000
 OFFLINE_BOUNDARY = {
     "provider_admission_refresh_planning_only": True,
     "credential_file_accessed": False,
@@ -295,6 +298,7 @@ def build_refresh_plan(
     design: dict[str, Any],
     inventory_snapshot: dict[str, Any],
     implementation: dict[str, str],
+    prior_failed_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider = _object(design.get("preserved_provider_call"))
     pricing = _object(design.get("preserved_pricing"))
@@ -367,6 +371,7 @@ def build_refresh_plan(
             "access_allowed_only_after_exact_owner_authorization": True,
         },
         "inventory_snapshot": inventory_snapshot,
+        "prior_failed_probe": prior_failed_probe,
         "authorization_contract": {
             "exact_plan_raw_and_canonical_hashes_required": True,
             "single_use_required": True,
@@ -405,11 +410,16 @@ def validate_refresh_plan(plan: dict[str, Any]) -> list[str]:
     pricing = _object(budget.get("pricing"))
     rates = _object(pricing.get("rates_microunits"))
     authorization = _object(plan.get("authorization_contract"))
+    schema = plan.get("schema_version")
+    expected_output_tokens = {
+        PLAN_SCHEMA_V1: PROBE_MAX_OUTPUT_TOKENS_V1,
+        PLAN_SCHEMA: PROBE_MAX_OUTPUT_TOKENS,
+    }.get(schema, -1)
     request_body = {
         "model": stack.get("model_id"),
         "messages": [{"role": "user", "content": PROBE_PROMPT}],
         "temperature": 0,
-        "max_tokens": PROBE_MAX_OUTPUT_TOKENS,
+        "max_tokens": expected_output_tokens,
         "stream": False,
     }
     try:
@@ -417,11 +427,12 @@ def validate_refresh_plan(plan: dict[str, Any]) -> list[str]:
             input_rate=int(rates["input_cache_miss"]),
             output_rate=int(rates["output"]),
             rate_basis_tokens=int(pricing["rate_basis_tokens"]),
+            max_output_tokens=expected_output_tokens,
         )
     except (KeyError, TypeError, ValueError, ZeroDivisionError):
         expected_cost = -1
     _require(
-        plan.get("schema_version") == PLAN_SCHEMA
+        schema in {PLAN_SCHEMA_V1, PLAN_SCHEMA}
         and plan.get("status") == "owner_authorization_required"
         and plan.get("plan_sha256") == canonical_sha256(body),
         "refresh_plan_identity_invalid",
@@ -432,7 +443,9 @@ def validate_refresh_plan(plan: dict[str, Any]) -> list[str]:
         and probe.get("method") == "POST"
         and probe.get("path") == "/chat/completions"
         and probe.get("max_input_tokens") == PROBE_MAX_INPUT_TOKENS
-        and probe.get("max_output_tokens") == PROBE_MAX_OUTPUT_TOKENS
+        and probe.get("max_output_tokens") == expected_output_tokens
+        and probe.get("max_total_tokens")
+        == PROBE_MAX_INPUT_TOKENS + expected_output_tokens
         and probe.get("participant_data_allowed") is False
         and probe.get("request_body") == request_body
         and probe.get("request_body_sha256") == canonical_sha256(request_body)
@@ -459,6 +472,27 @@ def validate_refresh_plan(plan: dict[str, Any]) -> list[str]:
         "refresh_authorization_boundary_invalid",
         failures,
     )
+    prior = plan.get("prior_failed_probe")
+    if prior is not None:
+        prior = _object(prior)
+        _require(
+            all(
+                _sha256_text(prior.get(field))
+                for field in (
+                    "gate_artifact_sha256",
+                    "gate_sha256",
+                    "claim_artifact_sha256",
+                    "claim_sha256",
+                    "authorization_statement_sha256",
+                )
+            )
+            and prior.get("failure_reasons") == ["provider_content_invalid"]
+            and prior.get("authorization_consumed") is True
+            and prior.get("authorization_reusable") is False
+            and prior.get("new_exact_authorization_required") is True,
+            "refresh_prior_failed_probe_invalid",
+            failures,
+        )
     return failures
 
 
@@ -471,6 +505,8 @@ def probe_authorization_statement(
     model_id: str,
     request_body_sha256: str,
     maximum_cost_microunits: int,
+    max_input_tokens: int = PROBE_MAX_INPUT_TOKENS,
+    max_output_tokens: int = PROBE_MAX_OUTPUT_TOKENS_V1,
 ) -> str:
     return (
         "I authorize exactly one bounded J1-D live-provider admission probe from "
@@ -479,8 +515,8 @@ def probe_authorization_statement(
         "provider environment file and exactly one HTTPS POST to "
         f"{base_url}/chat/completions using provider {provider_id}, model "
         f"{model_id}, and frozen synthetic request body SHA-256 "
-        f"{request_body_sha256}, with at most {PROBE_MAX_INPUT_TOKENS} input tokens, "
-        f"{PROBE_MAX_OUTPUT_TOKENS} output tokens, and an absolute cost ceiling of "
+        f"{request_body_sha256}, with at most {max_input_tokens} input tokens, "
+        f"{max_output_tokens} output tokens, and an absolute cost ceiling of "
         f"{maximum_cost_microunits} USD microunits under the operator-reviewed "
         "pricing bound in the plan. I acknowledge that the pricing was not "
         "independently refreshed by the offline preflight and any detected pricing "
@@ -495,11 +531,13 @@ def probe_authorization_statement(
 
 
 def probe_maximum_cost_microunits(
-    *, input_rate: int, output_rate: int, rate_basis_tokens: int
+    *,
+    input_rate: int,
+    output_rate: int,
+    rate_basis_tokens: int,
+    max_output_tokens: int = PROBE_MAX_OUTPUT_TOKENS,
 ) -> int:
-    numerator = (
-        PROBE_MAX_INPUT_TOKENS * input_rate + PROBE_MAX_OUTPUT_TOKENS * output_rate
-    )
+    numerator = PROBE_MAX_INPUT_TOKENS * input_rate + max_output_tokens * output_rate
     return math.ceil(numerator / rate_basis_tokens)
 
 
@@ -532,6 +570,11 @@ def _artifact_matches(value: Any, raw_sha256: Any, canonical_sha256_value: Any) 
 
 def _object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _sha256_text(value: Any) -> bool:
+    text = str(value or "")
+    return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
 
 
 def _require(condition: bool, code: str, failures: list[str]) -> None:

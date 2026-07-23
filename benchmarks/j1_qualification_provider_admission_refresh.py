@@ -46,6 +46,8 @@ def generate_refresh_preflight(
     runner_manifest_path: Path,
     repository_root: Path,
     output_root: Path,
+    prior_failed_probe_gate_path: Path | None = None,
+    prior_claim_path: Path | None = None,
 ) -> dict[str, Any]:
     _require_rfc3339(created_at)
     if output_root.exists():
@@ -62,6 +64,11 @@ def generate_refresh_preflight(
         "activation_gate": activation_gate_path,
         "runner_manifest": runner_manifest_path,
     }
+    if (prior_failed_probe_gate_path is None) != (prior_claim_path is None):
+        raise ValueError("prior failed probe Gate and claim must be supplied together")
+    if prior_failed_probe_gate_path and prior_claim_path:
+        paths["prior_failed_probe_gate"] = prior_failed_probe_gate_path
+        paths["prior_probe_claim"] = prior_claim_path
     values: dict[str, dict[str, Any]] = {}
     raw_values: dict[str, bytes] = {}
     for name, path in paths.items():
@@ -84,6 +91,7 @@ def generate_refresh_preflight(
     )
     if failures:
         raise ValueError(f"provider admission refresh source invalid: {failures}")
+    prior_failed_probe = _validate_prior_failed_probe(values, raw_sha256)
     inventory_snapshot, inventory_failures = _inspect_current_inventory(
         infrastructure=values["infrastructure"],
         activation=values["activation"],
@@ -111,6 +119,7 @@ def generate_refresh_preflight(
         design=values["design"],
         inventory_snapshot=inventory_snapshot,
         implementation=implementation,
+        prior_failed_probe=prior_failed_probe,
     )
     plan_failures = validate_refresh_plan(plan)
     if plan_failures:
@@ -127,6 +136,8 @@ def generate_refresh_preflight(
         model_id=plan["frozen_stack"]["model_id"],
         request_body_sha256=plan["probe_contract"]["request_body_sha256"],
         maximum_cost_microunits=plan["pricing_and_budget"]["maximum_cost_microunits"],
+        max_input_tokens=plan["probe_contract"]["max_input_tokens"],
+        max_output_tokens=plan["probe_contract"]["max_output_tokens"],
     )
     report = {
         "schema_version": PREFLIGHT_SCHEMA,
@@ -149,6 +160,9 @@ def generate_refresh_preflight(
             "provider_budget_reserved_under_reviewed_rates": True,
             "credential_not_accessed": True,
             "network_and_model_not_invoked": True,
+            "prior_failed_probe_and_consumed_claim_bound": (
+                prior_failed_probe is not None
+            ),
         },
         "inventory_snapshot": inventory_snapshot,
         "owner_authorization": {
@@ -278,8 +292,60 @@ def _canonical_artifact_sha256(name: str, value: dict[str, Any]) -> str:
         "activation": "activation_sha256",
         "activation_gate": "report_sha256",
         "runner_manifest": "manifest_sha256",
+        "prior_failed_probe_gate": "report_sha256",
+        "prior_probe_claim": "claim_sha256",
     }
     return str(value[fields[name]])
+
+
+def _validate_prior_failed_probe(
+    values: dict[str, dict[str, Any]],
+    raw_sha256: dict[str, str],
+) -> dict[str, Any] | None:
+    gate = values.get("prior_failed_probe_gate")
+    claim = values.get("prior_probe_claim")
+    if gate is None and claim is None:
+        return None
+    if not isinstance(gate, dict) or not isinstance(claim, dict):
+        raise ValueError("prior failed probe Evidence incomplete")
+    gate_body = {key: item for key, item in gate.items() if key != "report_sha256"}
+    claim_body = {key: item for key, item in claim.items() if key != "claim_sha256"}
+    authorization = gate.get("authorization", {})
+    claim_ref = (
+        authorization.get("claim", {}) if isinstance(authorization, dict) else {}
+    )
+    valid = (
+        gate.get("schema_version")
+        == "j1-qualification-provider-admission-probe-gate:v1"
+        and gate.get("passed") is False
+        and gate.get("state")
+        == "provider_admission_probe_failed_authorization_consumed"
+        and gate.get("failure_reasons") == ["provider_content_invalid"]
+        and gate.get("report_sha256") == canonical_sha256(gate_body)
+        and authorization.get("consumed") is True
+        and authorization.get("reusable") is False
+        and claim.get("schema_version")
+        == "j1-qualification-provider-admission-probe-claim:v1"
+        and claim.get("single_use") is True
+        and claim.get("claim_sha256") == canonical_sha256(claim_body)
+        and claim.get("authorization_statement_sha256")
+        == authorization.get("statement_sha256")
+        and claim_ref.get("sha256") == raw_sha256.get("prior_probe_claim")
+        and claim_ref.get("canonical_sha256") == claim.get("claim_sha256")
+    )
+    if not valid:
+        raise ValueError("prior failed probe Evidence invalid")
+    return {
+        "gate_artifact_sha256": raw_sha256["prior_failed_probe_gate"],
+        "gate_sha256": gate["report_sha256"],
+        "claim_artifact_sha256": raw_sha256["prior_probe_claim"],
+        "claim_sha256": claim["claim_sha256"],
+        "authorization_statement_sha256": authorization["statement_sha256"],
+        "failure_reasons": gate["failure_reasons"],
+        "authorization_consumed": True,
+        "authorization_reusable": False,
+        "new_exact_authorization_required": True,
+    }
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -319,6 +385,8 @@ def main() -> int:
     parser.add_argument("--activation", type=Path, required=True)
     parser.add_argument("--activation-gate", type=Path, required=True)
     parser.add_argument("--runner-manifest", type=Path, required=True)
+    parser.add_argument("--prior-failed-probe-gate", type=Path)
+    parser.add_argument("--prior-claim", type=Path)
     parser.add_argument(
         "--repository-root",
         type=Path,
@@ -341,6 +409,8 @@ def main() -> int:
         runner_manifest_path=args.runner_manifest,
         repository_root=args.repository_root,
         output_root=args.output_root,
+        prior_failed_probe_gate_path=args.prior_failed_probe_gate,
+        prior_claim_path=args.prior_claim,
     )
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     return 0

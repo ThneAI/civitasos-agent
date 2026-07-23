@@ -8,6 +8,7 @@ from typing import Any
 from .controlled_comparison import canonical_sha256
 from .qualification_provider_admission_refresh import (
     PREFLIGHT_SCHEMA,
+    PREFLIGHT_SCHEMA_V1,
     probe_authorization_statement,
     validate_refresh_plan,
 )
@@ -58,12 +59,18 @@ def validate_probe_sources(
         maximum_cost_microunits=int(
             _object(plan.get("pricing_and_budget")).get("maximum_cost_microunits", -1)
         ),
+        max_input_tokens=int(
+            _object(plan.get("probe_contract")).get("max_input_tokens", -1)
+        ),
+        max_output_tokens=int(
+            _object(plan.get("probe_contract")).get("max_output_tokens", -1)
+        ),
     )
     statement_sha256 = hashlib.sha256(expected_statement.encode()).hexdigest()
     owner = _object(preflight.get("owner_authorization"))
     plan_ref = _object(preflight.get("plan"))
     _require(
-        preflight.get("schema_version") == PREFLIGHT_SCHEMA
+        preflight.get("schema_version") in {PREFLIGHT_SCHEMA_V1, PREFLIGHT_SCHEMA}
         and preflight.get("passed") is True
         and preflight.get("failure_reasons") == []
         and preflight.get("state")
