@@ -10,7 +10,7 @@ from .controlled_comparison import canonical_sha256
 
 POST_RUN_SCHEMA = "j1-qualification-post-run-contract:v1"
 CLOSEOUT_SCHEMA = "j1-qualification-operator-closeout-contract:v1"
-STATUS = "review_required"
+STATUSES = {"review_required", "operator_reviewed_frozen"}
 
 
 def build_post_run_contract(
@@ -20,6 +20,7 @@ def build_post_run_contract(
     evaluator_manifest_sha256: str,
     source_binding: dict[str, str],
     implementation: dict[str, str],
+    status: str = "review_required",
 ) -> dict[str, Any]:
     value = _post_run_value(
         contract_id=contract_id,
@@ -27,12 +28,14 @@ def build_post_run_contract(
         evaluator_manifest_sha256=evaluator_manifest_sha256,
         source_binding=source_binding,
         implementation=implementation,
+        status=status,
     )
     failures = validate_post_run_contract(
         value,
         evaluator_manifest_sha256=evaluator_manifest_sha256,
         source_binding=source_binding,
         implementation=implementation,
+        expected_status=status,
     )
     if failures:
         raise ValueError(f"post-run contract invalid: {failures}")
@@ -46,11 +49,12 @@ def _post_run_value(
     evaluator_manifest_sha256: str,
     source_binding: dict[str, str],
     implementation: dict[str, str],
+    status: str = "review_required",
 ) -> dict[str, Any]:
     value = {
         "schema_version": POST_RUN_SCHEMA,
         "contract_id": contract_id,
-        "status": STATUS,
+        "status": status,
         "created_at": created_at,
         "source_binding": {
             **source_binding,
@@ -112,6 +116,7 @@ def build_closeout_contract(
     post_run_contract_sha256: str,
     source_binding: dict[str, str],
     implementation: dict[str, str],
+    status: str = "review_required",
 ) -> dict[str, Any]:
     value = _closeout_value(
         contract_id=contract_id,
@@ -120,6 +125,7 @@ def build_closeout_contract(
         post_run_contract_sha256=post_run_contract_sha256,
         source_binding=source_binding,
         implementation=implementation,
+        status=status,
     )
     failures = validate_closeout_contract(
         value,
@@ -127,6 +133,7 @@ def build_closeout_contract(
         post_run_contract_sha256=post_run_contract_sha256,
         source_binding=source_binding,
         implementation=implementation,
+        expected_status=status,
     )
     if failures:
         raise ValueError(f"closeout contract invalid: {failures}")
@@ -141,11 +148,12 @@ def _closeout_value(
     post_run_contract_sha256: str,
     source_binding: dict[str, str],
     implementation: dict[str, str],
+    status: str = "review_required",
 ) -> dict[str, Any]:
     value = {
         "schema_version": CLOSEOUT_SCHEMA,
         "contract_id": contract_id,
-        "status": STATUS,
+        "status": status,
         "created_at": created_at,
         "source_binding": {
             **source_binding,
@@ -201,25 +209,34 @@ def validate_post_run_contract(
     evaluator_manifest_sha256: str,
     source_binding: dict[str, str],
     implementation: dict[str, str],
+    expected_status: str | None = None,
 ) -> list[str]:
     actual = value if isinstance(value, dict) else {}
+    status = str(actual.get("status") or "")
     expected = _post_run_value(
         contract_id=actual.get("contract_id", ""),
         created_at=actual.get("created_at", ""),
         evaluator_manifest_sha256=evaluator_manifest_sha256,
         source_binding=source_binding,
         implementation=implementation,
+        status=status,
     )
     failures = _exact(value, expected, "post_run")
     source = actual.get("source_binding")
     _require(
         actual.get("schema_version") == POST_RUN_SCHEMA
-        and actual.get("status") == STATUS
+        and status in STATUSES
         and _text(actual.get("contract_id"))
         and _rfc3339(actual.get("created_at")),
         "post_run_contract_identity_invalid",
         failures,
     )
+    if expected_status is not None:
+        _require(
+            status == expected_status,
+            "post_run_contract_status_mismatch",
+            failures,
+        )
     _require(
         isinstance(source, dict)
         and source
@@ -248,8 +265,10 @@ def validate_closeout_contract(
     post_run_contract_sha256: str,
     source_binding: dict[str, str],
     implementation: dict[str, str],
+    expected_status: str | None = None,
 ) -> list[str]:
     actual = value if isinstance(value, dict) else {}
+    status = str(actual.get("status") or "")
     expected = _closeout_value(
         contract_id=actual.get("contract_id", ""),
         created_at=actual.get("created_at", ""),
@@ -257,17 +276,24 @@ def validate_closeout_contract(
         post_run_contract_sha256=post_run_contract_sha256,
         source_binding=source_binding,
         implementation=implementation,
+        status=status,
     )
     failures = _exact(value, expected, "closeout")
     source = actual.get("source_binding")
     _require(
         actual.get("schema_version") == CLOSEOUT_SCHEMA
-        and actual.get("status") == STATUS
+        and status in STATUSES
         and _text(actual.get("contract_id"))
         and _rfc3339(actual.get("created_at")),
         "closeout_contract_identity_invalid",
         failures,
     )
+    if expected_status is not None:
+        _require(
+            status == expected_status,
+            "closeout_contract_status_mismatch",
+            failures,
+        )
     _require(
         isinstance(source, dict)
         and source

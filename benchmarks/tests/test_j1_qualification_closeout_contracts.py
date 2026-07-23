@@ -103,3 +103,46 @@ def test_closeout_contract_rejects_effectiveness_override() -> None:
     )
     assert "closeout_contract_binding_invalid" in failures
     assert "closeout_contract_hash_invalid" in failures
+
+
+def test_post_run_and_closeout_contracts_support_reviewed_frozen_status() -> None:
+    evaluator_sha256 = "f" * 64
+    post_run = build_post_run_contract(
+        contract_id="j1q-post-run-r1",
+        created_at="2026-07-23T00:00:00+00:00",
+        evaluator_manifest_sha256=evaluator_sha256,
+        source_binding=_source(),
+        implementation=_implementation(),
+        status="operator_reviewed_frozen",
+    )
+    closeout = build_closeout_contract(
+        contract_id="j1q-closeout-r1",
+        created_at="2026-07-23T00:00:00+00:00",
+        evaluator_manifest_sha256=evaluator_sha256,
+        post_run_contract_sha256=post_run["contract_sha256"],
+        source_binding=_source(),
+        implementation=_implementation(),
+        status="operator_reviewed_frozen",
+    )
+
+    assert (
+        validate_post_run_contract(
+            post_run,
+            evaluator_manifest_sha256=evaluator_sha256,
+            source_binding=_source(),
+            implementation=_implementation(),
+            expected_status="operator_reviewed_frozen",
+        )
+        == []
+    )
+    assert (
+        validate_closeout_contract(
+            closeout,
+            evaluator_manifest_sha256=evaluator_sha256,
+            post_run_contract_sha256=post_run["contract_sha256"],
+            source_binding=_source(),
+            implementation=_implementation(),
+            expected_status="operator_reviewed_frozen",
+        )
+        == []
+    )
