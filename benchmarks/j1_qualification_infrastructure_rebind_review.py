@@ -104,6 +104,17 @@ def prepare_review_handoff(
         sorted(item["sha256"] for item in isolations.values())
     )
     candidate_impl = candidate_implementation(repository_root)
+    frozen_candidate_impl = plan.get("implementation", {})
+    if (
+        not isinstance(frozen_candidate_impl, dict)
+        or candidate_impl.get("source_sha256")
+        != frozen_candidate_impl.get("source_sha256")
+        or not _is_ancestor(
+            repository_root,
+            str(frozen_candidate_impl.get("source_revision", "")),
+        )
+    ):
+        raise ValueError("infrastructure rebind candidate implementation drifted")
     target_root = str(
         Path(plan["isolations"][0]["target_isolation"]["input_root"]).parents[1]
     )
@@ -118,7 +129,7 @@ def prepare_review_handoff(
         runner_manifest=runner_manifest,
         expected_source_container_state=source_state,
         expected_target_state_root=target_root,
-        expected_implementation=candidate_impl,
+        expected_implementation=frozen_candidate_impl,
     )
     if plan_failures:
         raise ValueError(f"infrastructure rebind plan invalid: {plan_failures}")
@@ -274,6 +285,22 @@ def _git(root: Path, *arguments: str) -> str:
         capture_output=True,
         text=True,
     ).stdout
+
+
+def _is_ancestor(repository_root: Path, revision: str) -> bool:
+    if not (
+        7 <= len(revision) <= 64
+        and all(char in "0123456789abcdef" for char in revision.lower())
+    ):
+        return False
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", revision, "HEAD"],
+        cwd=repository_root.resolve(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 def _artifact(path: Path) -> dict[str, str]:
