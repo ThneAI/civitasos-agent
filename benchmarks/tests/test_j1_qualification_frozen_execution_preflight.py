@@ -5,6 +5,7 @@ import hashlib
 
 import pytest
 
+from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_frozen_execution_preflight import (
     PLAN_BOUNDARY,
     SOURCE_NAMES,
@@ -82,7 +83,7 @@ def _controls() -> dict:
     }
 
 
-def _plan() -> dict:
+def _plan(*, supersession: dict | None = None) -> dict:
     return build_execution_plan(
         run_id="j1d-run-r1",
         created_at="2026-07-24T08:00:00+08:00",
@@ -96,6 +97,7 @@ def _plan() -> dict:
             "domain_source_sha256": "b" * 64,
             "operation_source_sha256": "c" * 64,
         },
+        superseded_execution_evidence=supersession,
     )
 
 
@@ -179,6 +181,71 @@ def test_owner_statement_binds_active_stack_scope_and_cost() -> None:
     assert "does not itself start a container" in statement
 
 
+def test_renewal_plan_binds_expired_unclaimed_v3_authorization() -> None:
+    supersession = {
+        "prior_v2_preflight_reusable": False,
+        "prior_v2_authorization_reusable": False,
+        "reason": "active_stack_and_frozen_evaluator_binding_changed",
+        "prior_v3_authorization": {
+            "path": "/private/prior-authorization.json",
+            "sha256": "1" * 64,
+            "signed_payload_sha256": "2" * 64,
+            "authorization_id": "prior-v3-r1",
+            "valid_until": "2026-07-24T14:07:35+00:00",
+        },
+        "prior_v3_gate": {
+            "path": "/private/prior-gate.json",
+            "sha256": "3" * 64,
+            "canonical_sha256": "4" * 64,
+        },
+        "prior_v3_authorization_expired": True,
+        "prior_v3_authorization_consumed": False,
+        "prior_v3_authorization_reusable": False,
+        "renewal_reason": "expired_unclaimed",
+    }
+    plan = _plan(supersession=supersession)
+    statement = owner_authorization_statement(
+        plan_artifact_sha256="5" * 64,
+        plan=plan,
+    )
+
+    assert validate_execution_plan(plan) == []
+    assert "prior-v3-r1" in statement
+    assert "expired, unclaimed, non-reusable authorization" in statement
+    assert "1" * 64 in statement
+    assert "4" * 64 in statement
+
+
+def test_renewal_plan_rejects_reusable_or_claimed_prior_authorization() -> None:
+    supersession = {
+        "prior_v2_preflight_reusable": False,
+        "prior_v2_authorization_reusable": False,
+        "reason": "active_stack_and_frozen_evaluator_binding_changed",
+        "prior_v3_authorization": {
+            "path": "/private/prior-authorization.json",
+            "sha256": "1" * 64,
+            "signed_payload_sha256": "2" * 64,
+            "authorization_id": "prior-v3-r1",
+            "valid_until": "2026-07-24T14:07:35+00:00",
+        },
+        "prior_v3_gate": {
+            "path": "/private/prior-gate.json",
+            "sha256": "3" * 64,
+            "canonical_sha256": "4" * 64,
+        },
+        "prior_v3_authorization_expired": True,
+        "prior_v3_authorization_consumed": True,
+        "prior_v3_authorization_reusable": True,
+        "renewal_reason": "expired_unclaimed",
+    }
+    plan = _plan()
+    plan["superseded_execution_evidence"] = supersession
+
+    failures = validate_execution_plan(plan)
+    assert "frozen_execution_supersession_invalid" in failures
+    assert "frozen_execution_plan_hash_invalid" in failures
+
+
 def test_preflight_validates_exact_plan_inventory_and_statement() -> None:
     plan = _plan()
     plan_bytes = b'{"frozen":"plan"}\n'
@@ -237,3 +304,31 @@ def test_preflight_rejects_statement_or_check_tamper() -> None:
     assert "frozen_execution_preflight_checks_invalid" in failures
     assert "frozen_execution_preflight_owner_request_invalid" in failures
     assert "frozen_execution_preflight_hash_invalid" in failures
+
+
+def test_validator_accepts_immutable_legacy_nonrenewal_preflight() -> None:
+    plan = _plan()
+    plan_bytes = b'{"frozen":"plan"}\n'
+    inventory = {"running_count": 0}
+    preflight = build_preflight(
+        plan_path="/private/plan.json",
+        plan_bytes=plan_bytes,
+        plan=plan,
+        created_at="2026-07-24T08:00:00+08:00",
+        inventory_snapshot=inventory,
+    )
+    del preflight["checks"]["expired_unclaimed_v3_authorization_bound"]
+    preflight["preflight_sha256"] = canonical_sha256(
+        {key: item for key, item in preflight.items() if key != "preflight_sha256"}
+    )
+
+    assert (
+        validate_preflight(
+            preflight,
+            plan_path="/private/plan.json",
+            plan_bytes=plan_bytes,
+            plan=plan,
+            expected_inventory_snapshot=inventory,
+        )
+        == []
+    )

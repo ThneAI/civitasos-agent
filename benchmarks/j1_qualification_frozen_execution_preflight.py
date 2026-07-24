@@ -16,6 +16,10 @@ from benchmarks.j1.qualification_closeout_contracts import (
     validate_closeout_contract,
     validate_post_run_contract,
 )
+from benchmarks.j1.qualification_frozen_execution_authorization import (
+    validate_authorization,
+    validate_gate_report,
+)
 from benchmarks.j1.qualification_frozen_execution_preflight import (
     MAX_TTL_SECONDS,
     SOURCE_NAMES,
@@ -73,6 +77,9 @@ def generate_frozen_execution_preflight(
     authorization_output_root: Path,
     authorization_consumption_path: Path,
     post_run_output_root: Path,
+    prior_authorization_path: Path | None = None,
+    prior_authorization_gate_path: Path | None = None,
+    prior_reviewer_profile_path: Path | None = None,
 ) -> dict[str, Any]:
     _require_rfc3339(created_at)
     if set(source_paths) != SOURCE_NAMES:
@@ -86,6 +93,15 @@ def generate_frozen_execution_preflight(
         "post_run_output_root": post_run_output_root,
     }
     _validate_future_paths(output_root=output_root, future_paths=future_paths)
+    prior_paths = (
+        prior_authorization_path,
+        prior_authorization_gate_path,
+        prior_reviewer_profile_path,
+    )
+    if any(prior_paths) and not all(prior_paths):
+        raise ValueError(
+            "prior authorization, Gate, and reviewer profile must be supplied together"
+        )
     artifacts = {name: _read_private(path, name) for name, path in source_paths.items()}
     _validate_frozen_stack(artifacts)
     inventory_snapshot, inventory_failures = _inspect_current_inventory(
@@ -103,6 +119,16 @@ def generate_frozen_execution_preflight(
     ):
         raise ValueError("frozen execution container inventory drifted since admission")
     implementation = _implementation(repository_root)
+    supersession = (
+        _expired_unclaimed_supersession(
+            prior_authorization_path=prior_authorization_path,
+            prior_gate_path=prior_authorization_gate_path,
+            reviewer_profile_path=prior_reviewer_profile_path,
+            created_at=created_at,
+        )
+        if all(prior_paths)
+        else None
+    )
     source_artifacts = {
         name: {
             "path": str(item["path"]),
@@ -169,6 +195,7 @@ def generate_frozen_execution_preflight(
             **{name: str(path.resolve()) for name, path in future_paths.items()},
         },
         implementation=implementation,
+        superseded_execution_evidence=supersession,
     )
     output_root.mkdir(parents=True, mode=0o700)
     output_root.chmod(0o700)
@@ -448,6 +475,104 @@ def _read_private(path: Path, label: str) -> dict[str, Any]:
     }
 
 
+def _expired_unclaimed_supersession(
+    *,
+    prior_authorization_path: Path,
+    prior_gate_path: Path,
+    reviewer_profile_path: Path,
+    created_at: str,
+) -> dict[str, Any]:
+    authorization_artifact = _read_private(
+        prior_authorization_path,
+        "prior_v3_authorization",
+    )
+    gate_artifact = _read_private(prior_gate_path, "prior_v3_authorization_gate")
+    profile_artifact = _read_private(reviewer_profile_path, "prior_reviewer_profile")
+    authorization = authorization_artifact["value"]
+    gate = gate_artifact["value"]
+    profile = profile_artifact["value"]
+    plan_ref = authorization.get("source_binding", {}).get("plan", {})
+    preflight_ref = authorization.get("source_binding", {}).get("preflight", {})
+    prior_plan_artifact = _read_private(
+        Path(str(plan_ref.get("path", ""))),
+        "prior_v3_plan",
+    )
+    prior_preflight_artifact = _read_private(
+        Path(str(preflight_ref.get("path", ""))),
+        "prior_v3_preflight",
+    )
+    if prior_plan_artifact["sha256"] != plan_ref.get(
+        "sha256"
+    ) or prior_preflight_artifact["sha256"] != preflight_ref.get("sha256"):
+        raise ValueError("prior v3 authorization source artifact drifted")
+    prior_plan = prior_plan_artifact["value"]
+    prior_preflight = prior_preflight_artifact["value"]
+    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    valid_until = datetime.fromisoformat(
+        str(authorization.get("valid_until", "")).replace("Z", "+00:00")
+    )
+    failures = validate_authorization(
+        authorization,
+        plan_path=str(prior_plan_artifact["path"]),
+        plan_bytes=prior_plan_artifact["raw"],
+        plan=prior_plan,
+        preflight_path=str(prior_preflight_artifact["path"]),
+        preflight_bytes=prior_preflight_artifact["raw"],
+        preflight=prior_preflight,
+        reviewer_profile=profile,
+        reviewer_profile_sha256=profile_artifact["sha256"],
+        expected_implementation=authorization.get("implementation", {}),
+        require_current=False,
+    )
+    failures.extend(
+        validate_gate_report(
+            gate,
+            authorization_path=str(authorization_artifact["path"]),
+            authorization_bytes=authorization_artifact["raw"],
+            authorization=authorization,
+            plan=prior_plan,
+            preflight=prior_preflight,
+            expected_inventory_snapshot=prior_preflight["inventory_snapshot"],
+        )
+    )
+    if failures:
+        raise ValueError(f"prior v3 authorization Evidence invalid: {failures}")
+    if created <= valid_until:
+        raise ValueError("prior v3 authorization has not expired")
+    for field in (
+        "authorization_consumption_path",
+        "execution_root",
+        "post_run_output_root",
+    ):
+        if Path(authorization["controls"][field]).exists():
+            raise ValueError(
+                f"prior v3 authorization is not expired-unclaimed: {field}"
+            )
+    return {
+        "prior_v2_preflight_reusable": False,
+        "prior_v2_authorization_reusable": False,
+        "reason": "active_stack_and_frozen_evaluator_binding_changed",
+        "prior_v3_authorization": {
+            "path": str(authorization_artifact["path"]),
+            "sha256": authorization_artifact["sha256"],
+            "signed_payload_sha256": authorization["signature"][
+                "signed_payload_sha256"
+            ],
+            "authorization_id": authorization["authorization_id"],
+            "valid_until": authorization["valid_until"],
+        },
+        "prior_v3_gate": {
+            "path": str(gate_artifact["path"]),
+            "sha256": gate_artifact["sha256"],
+            "canonical_sha256": gate["report_sha256"],
+        },
+        "prior_v3_authorization_expired": True,
+        "prior_v3_authorization_consumed": False,
+        "prior_v3_authorization_reusable": False,
+        "renewal_reason": "expired_unclaimed",
+    }
+
+
 def _artifact_ref(name: str, item: dict[str, Any]) -> dict[str, str]:
     return {
         "path": str(item["path"]),
@@ -528,6 +653,9 @@ def main() -> int:
     parser.add_argument("--authorization-output-root", type=Path, required=True)
     parser.add_argument("--authorization-consumption-path", type=Path, required=True)
     parser.add_argument("--post-run-output-root", type=Path, required=True)
+    parser.add_argument("--prior-authorization", type=Path)
+    parser.add_argument("--prior-authorization-gate", type=Path)
+    parser.add_argument("--prior-reviewer-profile", type=Path)
     args = parser.parse_args()
     source_paths = {name: getattr(args, name) for name in SOURCE_NAMES}
     report = generate_frozen_execution_preflight(
@@ -540,6 +668,9 @@ def main() -> int:
         authorization_output_root=args.authorization_output_root,
         authorization_consumption_path=args.authorization_consumption_path,
         post_run_output_root=args.post_run_output_root,
+        prior_authorization_path=args.prior_authorization,
+        prior_authorization_gate_path=args.prior_authorization_gate,
+        prior_reviewer_profile_path=args.prior_reviewer_profile,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

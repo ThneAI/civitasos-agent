@@ -57,6 +57,7 @@ def build_execution_plan(
     cost_acknowledgement: dict[str, Any],
     controls: dict[str, Any],
     implementation: dict[str, str],
+    superseded_execution_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     value = {
         "schema_version": PLAN_SCHEMA,
@@ -68,11 +69,9 @@ def build_execution_plan(
         "execution_scope": copy.deepcopy(execution_scope),
         "cost_acknowledgement": copy.deepcopy(cost_acknowledgement),
         "controls": copy.deepcopy(controls),
-        "superseded_execution_evidence": {
-            "prior_v2_preflight_reusable": False,
-            "prior_v2_authorization_reusable": False,
-            "reason": "active_stack_and_frozen_evaluator_binding_changed",
-        },
+        "superseded_execution_evidence": copy.deepcopy(
+            superseded_execution_evidence or _base_supersession()
+        ),
         "implementation": copy.deepcopy(implementation),
         "execution_boundary": copy.deepcopy(PLAN_BOUNDARY),
     }
@@ -200,12 +199,7 @@ def validate_execution_plan(value: Any) -> list[str]:
         failures,
     )
     _require(
-        plan.get("superseded_execution_evidence")
-        == {
-            "prior_v2_preflight_reusable": False,
-            "prior_v2_authorization_reusable": False,
-            "reason": "active_stack_and_frozen_evaluator_binding_changed",
-        },
+        _valid_supersession(plan.get("superseded_execution_evidence")),
         "frozen_execution_supersession_invalid",
         failures,
     )
@@ -271,6 +265,7 @@ def build_preflight(
             "exact_320_task_scope_bound": True,
             "cost_and_token_ceilings_bound": True,
             "superseded_v2_authorization_rejected": True,
+            "expired_unclaimed_v3_authorization_bound": _is_renewal(plan),
             "no_execution_or_external_write_performed": True,
         },
         "owner_authorization": {
@@ -339,20 +334,27 @@ def validate_preflight(
         "frozen_execution_preflight_inventory_invalid",
         failures,
     )
+    expected_checks = {
+        "active_amended_stack_bound": True,
+        "rebound_roster_assignment_bound": True,
+        "signed_treatment_advice_bound": True,
+        "forty_stopped_replacement_containers_verified": True,
+        "live_provider_admission_bound": True,
+        "frozen_evaluator_post_run_closeout_bound": True,
+        "exact_320_task_scope_bound": True,
+        "cost_and_token_ceilings_bound": True,
+        "superseded_v2_authorization_rejected": True,
+        "expired_unclaimed_v3_authorization_bound": _is_renewal(plan),
+        "no_execution_or_external_write_performed": True,
+    }
+    legacy_checks = {
+        key: item
+        for key, item in expected_checks.items()
+        if key != "expired_unclaimed_v3_authorization_bound"
+    }
     _require(
-        preflight.get("checks")
-        == {
-            "active_amended_stack_bound": True,
-            "rebound_roster_assignment_bound": True,
-            "signed_treatment_advice_bound": True,
-            "forty_stopped_replacement_containers_verified": True,
-            "live_provider_admission_bound": True,
-            "frozen_evaluator_post_run_closeout_bound": True,
-            "exact_320_task_scope_bound": True,
-            "cost_and_token_ceilings_bound": True,
-            "superseded_v2_authorization_rejected": True,
-            "no_execution_or_external_write_performed": True,
-        },
+        preflight.get("checks") == expected_checks
+        or (not _is_renewal(plan) and preflight.get("checks") == legacy_checks),
         "frozen_execution_preflight_checks_invalid",
         failures,
     )
@@ -393,6 +395,15 @@ def owner_authorization_statement(
     sources = plan["source_artifacts"]
     scope = plan["execution_scope"]
     cost = plan["cost_acknowledgement"]
+    supersession = plan["superseded_execution_evidence"]
+    renewal = (
+        " This renewal supersedes expired, unclaimed, non-reusable authorization "
+        f"{supersession['prior_v3_authorization']['authorization_id']} raw SHA-256 "
+        f"{supersession['prior_v3_authorization']['sha256']} and Gate canonical "
+        f"SHA-256 {supersession['prior_v3_gate']['canonical_sha256']}."
+        if _is_renewal(plan)
+        else ""
+    )
     return (
         f"I authorize issuance of exactly one 1800-second single-use J1-D "
         f"qualification execution authorization for run {plan['run_id']} from plan "
@@ -414,10 +425,72 @@ def owner_authorization_statement(
         f"{cost['aggregate_reserved_cost_microunits']} USD microunits, an absolute "
         f"protocol ceiling of {cost['aggregate_protocol_max_cost_microunits']} USD "
         "microunits, atomic single-use claim before execution, and that any claimed "
-        "failure requires a new authorization. This authorization does not itself "
+        f"failure requires a new authorization.{renewal} This authorization does not "
+        "itself "
         "start a container or execute a provider, model, Agent, or experiment; "
         "Backend Fact and Ledger append remain prohibited, and no effectiveness "
         "claim is authorized before signed closeout."
+    )
+
+
+def _base_supersession() -> dict[str, Any]:
+    return {
+        "prior_v2_preflight_reusable": False,
+        "prior_v2_authorization_reusable": False,
+        "reason": "active_stack_and_frozen_evaluator_binding_changed",
+    }
+
+
+def _valid_supersession(value: Any) -> bool:
+    supersession = _object(value)
+    if supersession == _base_supersession():
+        return True
+    return (
+        set(supersession)
+        == {
+            *set(_base_supersession()),
+            "prior_v3_authorization",
+            "prior_v3_gate",
+            "prior_v3_authorization_expired",
+            "prior_v3_authorization_consumed",
+            "prior_v3_authorization_reusable",
+            "renewal_reason",
+        }
+        and all(
+            supersession.get(key) == expected
+            for key, expected in _base_supersession().items()
+        )
+        and _valid_prior_authorization_ref(supersession.get("prior_v3_authorization"))
+        and _valid_artifact_ref(supersession.get("prior_v3_gate"))
+        and supersession.get("prior_v3_authorization_expired") is True
+        and supersession.get("prior_v3_authorization_consumed") is False
+        and supersession.get("prior_v3_authorization_reusable") is False
+        and supersession.get("renewal_reason") == "expired_unclaimed"
+    )
+
+
+def _valid_prior_authorization_ref(value: Any) -> bool:
+    ref = _object(value)
+    return (
+        set(ref)
+        == {
+            "path",
+            "sha256",
+            "signed_payload_sha256",
+            "authorization_id",
+            "valid_until",
+        }
+        and _absolute_path(ref.get("path"))
+        and _sha256(ref.get("sha256"))
+        and _sha256(ref.get("signed_payload_sha256"))
+        and _text(ref.get("authorization_id"))
+        and _rfc3339(ref.get("valid_until"))
+    )
+
+
+def _is_renewal(plan: dict[str, Any]) -> bool:
+    return "prior_v3_authorization" in _object(
+        plan.get("superseded_execution_evidence")
     )
 
 
