@@ -16,15 +16,24 @@ from benchmarks.j1.qualification_review_v4 import (
     build_review_request,
     reviewer_approval_statement,
 )
+from benchmarks.j1_qualification_runtime_inventory_v4 import activation_inventory
 
 
 EXECUTION_SOURCE_PATHS = [
+    "benchmarks/j1/qualification_container_runner_v4.py",
     "benchmarks/j1/qualification_execution_contract_v4.py",
+    "benchmarks/j1/qualification_execution_entry_v4.py",
     "benchmarks/j1/qualification_orchestrator_v4.py",
     "benchmarks/j1/qualification_fault_matrix_v4.py",
+    "benchmarks/j1/qualification_live_adapter_v4.py",
+    "benchmarks/j1/qualification_live_boundaries_v4.py",
+    "benchmarks/j1/qualification_live_evidence_v4.py",
     "benchmarks/j1_qualification_execution_contract_v4.py",
+    "benchmarks/j1_qualification_execution_entry_v4.py",
+    "benchmarks/j1_qualification_live_execute_v4.py",
     "benchmarks/j1_qualification_orchestrator_v4.py",
     "benchmarks/j1_qualification_fault_matrix_v4.py",
+    "benchmarks/j1_qualification_runtime_inventory_v4.py",
 ]
 
 
@@ -39,6 +48,7 @@ def generate_review_materials(
     fault_report_path: Path,
     repository_root: Path,
     output_root: Path,
+    pytest_passed_count: int,
 ) -> dict[str, Any]:
     if output_root.exists():
         raise FileExistsError(f"r4 review output exists: {output_root}")
@@ -52,7 +62,9 @@ def generate_review_materials(
         fault=fault,
         offline_journal_path=offline_journal_path,
     )
-    inventory = _container_inventory()
+    inventory = _container_inventory(contract)
+    if not _remote_revision_verified(repository_root):
+        raise ValueError("r4 review revision is not present at configured origin")
     source_implementation = {
         "review_material_revision": _git(repository_root, "rev-parse", "HEAD"),
         "execution_contract_revision": contract["implementation"]["source_revision"],
@@ -86,7 +98,7 @@ def generate_review_materials(
         verification={
             "ruff_all_passed": True,
             "pytest_all_passed": True,
-            "pytest_passed_count": 1447,
+            "pytest_passed_count": pytest_passed_count,
             "journal_artifact_hash_recomputed": True,
             "remote_revision_verified": True,
         },
@@ -161,26 +173,31 @@ def _validate_evidence(
         raise ValueError("r4 fault matrix evidence invalid")
 
 
-def _container_inventory() -> dict[str, int]:
-    output = subprocess.run(
-        [
-            "docker",
-            "ps",
-            "-a",
-            "--filter",
-            "name=civitas-j1q-runner",
-            "--format",
-            "{{.Status}}",
-        ],
-        check=True,
+def _container_inventory(contract: dict[str, Any]) -> dict[str, int]:
+    reference = contract["source_artifacts"]["infrastructure_activation"]
+    path = Path(reference["path"])
+    activation = _read_object(path)
+    if (
+        hashlib.sha256(path.read_bytes()).hexdigest() != reference["sha256"]
+        or activation.get("activation_sha256") != reference["canonical_sha256"]
+    ):
+        raise ValueError("r4 review activation source drift")
+    return activation_inventory(activation)
+
+
+def _remote_revision_verified(root: Path) -> bool:
+    head = _git(root, "rev-parse", "HEAD")
+    branch = _git(root, "branch", "--show-current")
+    if not branch:
+        return False
+    result = subprocess.run(
+        ["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
+        cwd=root,
+        check=False,
         capture_output=True,
         text=True,
-    ).stdout.splitlines()
-    return {
-        "participant_container_count": len(output),
-        "created_count": sum(line.startswith("Created") for line in output),
-        "running_count": sum(line.startswith("Up ") for line in output),
-    }
+    )
+    return result.returncode == 0 and result.stdout.split(maxsplit=1)[0] == head
 
 
 def _ref(path: Path, canonical_digest: str) -> dict[str, str]:
@@ -225,6 +242,7 @@ def main() -> int:
     parser.add_argument("--fault-report", type=Path, required=True)
     parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--pytest-passed-count", type=int, required=True)
     args = parser.parse_args()
     datetime.fromisoformat(args.created_at.replace("Z", "+00:00"))
     handoff = generate_review_materials(
@@ -237,6 +255,7 @@ def main() -> int:
         fault_report_path=args.fault_report,
         repository_root=args.repository_root,
         output_root=args.output_root,
+        pytest_passed_count=args.pytest_passed_count,
     )
     print(json.dumps(handoff, indent=2, sort_keys=True))
     return 0
