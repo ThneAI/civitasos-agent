@@ -15,6 +15,7 @@ from benchmarks.j1.qualification_execution_preflight_v4 import (
     build_execution_plan,
     build_preflight,
 )
+from benchmarks.j1_qualification_runtime_inventory_v4 import activation_inventory
 
 
 DOMAIN_SOURCE = Path(__file__).parent / "j1" / "qualification_execution_preflight_v4.py"
@@ -71,7 +72,10 @@ def generate_preflight(
     }
     for name in evaluation_names:
         _validate_ref(source[name])
-    inventory = _inventory()
+    activation_ref = source["infrastructure_activation"]
+    _validate_ref(activation_ref)
+    activation = _read(Path(activation_ref["path"]))
+    inventory = activation_inventory(activation)
     implementation = _implementation(repository_root)
     refs = {
         "frozen_r4_stack": _ref(frozen_stack_path, frozen["frozen_stack_sha256"]),
@@ -127,20 +131,6 @@ def _validate_ref(reference: dict[str, str]) -> None:
     path = Path(reference["path"])
     if hashlib.sha256(path.read_bytes()).hexdigest() != reference["sha256"]:
         raise ValueError(f"r4 evaluation artifact drift: {path}")
-
-
-def _inventory() -> dict[str, int]:
-    statuses = subprocess.run(
-        ["docker", "ps", "-a", "--filter", "name=civitas-j1q-runner", "--format", "{{.Status}}"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    return {
-        "participant_container_count": len(statuses),
-        "created_count": sum(item.startswith("Created") for item in statuses),
-        "running_count": sum(item.startswith("Up ") for item in statuses),
-    }
 
 
 def _implementation(root: Path) -> dict[str, str]:

@@ -24,6 +24,7 @@ from benchmarks.j1.qualification_provider_probe_v4 import (
     normalize_response,
 )
 from benchmarks.j1_qualification_provider_admission_probe import _https_post_once
+from benchmarks.j1_qualification_runtime_inventory_v4 import activation_inventory
 
 
 DOMAIN_SOURCE = Path(__file__).parent / "j1" / "qualification_provider_probe_v4.py"
@@ -67,7 +68,10 @@ def execute_probe(
     ):
         raise ValueError("r4 provider authorization source mismatch")
     _replay_sources(plan)
-    inventory_before = _inventory()
+    activation, _ = _read_private(
+        Path(plan["source_artifacts"]["infrastructure_activation"]["path"])
+    )
+    inventory_before = activation_inventory(activation)
     implementation = _implementation(repository_root)
     if output_root.exists():
         raise FileExistsError(f"r4 provider probe output exists: {output_root}")
@@ -122,7 +126,7 @@ def execute_probe(
         )
         api_key = ""
         result = normalize_response(status=status, body=body, plan=plan)
-        inventory_after = _inventory()
+        inventory_after = activation_inventory(activation)
         receipt = build_receipt(
             probe_id=probe_id,
             completed_at=datetime.now(UTC).isoformat(),
@@ -228,28 +232,6 @@ def _replay_sources(plan: dict[str, Any]) -> None:
         path = Path(reference["path"])
         if hashlib.sha256(path.read_bytes()).hexdigest() != reference["sha256"]:
             raise ValueError(f"r4 provider source drift: {name}")
-
-
-def _inventory() -> dict[str, int]:
-    statuses = subprocess.run(
-        [
-            "docker",
-            "ps",
-            "-a",
-            "--filter",
-            "name=civitas-j1q-runner",
-            "--format",
-            "{{.Status}}",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    return {
-        "participant_container_count": len(statuses),
-        "created_count": sum(item.startswith("Created") for item in statuses),
-        "running_count": sum(item.startswith("Up ") for item in statuses),
-    }
 
 
 def _implementation(root: Path) -> dict[str, str]:

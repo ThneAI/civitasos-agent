@@ -26,6 +26,7 @@ from benchmarks.j1.qualification_execution_preflight_v4 import (
 from benchmarks.j1.qualification_reviewer_identity import (
     validate_reviewer_identity_profile,
 )
+from benchmarks.j1_qualification_runtime_inventory_v4 import activation_inventory
 from scripts.pkcs11_identity_probe import DEFAULT_MODULE, read_pin
 
 
@@ -96,7 +97,16 @@ def issue_authorization(
         if Path(plan["controls"][name]).exists():
             raise ValueError(f"r4 authorization future path exists: {name}")
     _replay_sources(plan)
-    inventory = _inventory()
+    contract_ref = plan["source_artifacts"]["execution_contract"]
+    contract, _ = _read(Path(contract_ref["path"]))
+    activation_ref = contract["source_artifacts"]["infrastructure_activation"]
+    activation_path = Path(activation_ref["path"])
+    if hashlib.sha256(activation_path.read_bytes()).hexdigest() != activation_ref[
+        "sha256"
+    ]:
+        raise ValueError("r4 authorization activation source drift")
+    activation, _ = _read(activation_path)
+    inventory = activation_inventory(activation)
     if inventory != preflight["inventory_snapshot"]:
         raise ValueError("r4 authorization container inventory drift")
     implementation = _implementation(repository_root)
@@ -145,8 +155,6 @@ def issue_authorization(
         gate_path = output_root / "r4-execution-authorization-gate.json"
         write_private_json(gate_path, gate)
         gate_ref = _ref(gate_path, gate["report_sha256"])
-        contract_ref = plan["source_artifacts"]["execution_contract"]
-        contract = json.loads(Path(contract_ref["path"]).read_text())
         execution_manifest_sha256 = canonical_sha256(contract["task_executions"])
         claim_preflight = build_claim_preflight(
             checked_at=datetime.now(UTC).isoformat(),
@@ -203,28 +211,6 @@ def _replay_sources(plan: dict[str, Any]) -> None:
             != reference["sha256"]
         ):
             raise ValueError(f"r4 authorization source drift: {name}")
-
-
-def _inventory() -> dict[str, int]:
-    statuses = subprocess.run(
-        [
-            "docker",
-            "ps",
-            "-a",
-            "--filter",
-            "name=civitas-j1q-runner",
-            "--format",
-            "{{.Status}}",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    return {
-        "participant_container_count": len(statuses),
-        "created_count": sum(item.startswith("Created") for item in statuses),
-        "running_count": sum(item.startswith("Up ") for item in statuses),
-    }
 
 
 def _implementation(root: Path) -> dict[str, str]:

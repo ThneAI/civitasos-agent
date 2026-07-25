@@ -15,6 +15,7 @@ from benchmarks.j1.qualification_provider_admission_v4 import (
     build_admission_plan,
     build_preflight,
 )
+from benchmarks.j1_qualification_runtime_inventory_v4 import activation_inventory
 
 
 DOMAIN_SOURCE = Path(__file__).parent / "j1" / "qualification_provider_admission_v4.py"
@@ -62,7 +63,7 @@ def generate_preflight(
     _validate_source(protocol_path, protocol, source_refs["amended_protocol"])
     _validate_source(design_path, design, source_refs["amended_design"])
     _validate_source(activation_path, activation, source_refs["infrastructure_activation"])
-    inventory = _inventory()
+    inventory = activation_inventory(activation)
     implementation = _implementation(repository_root)
     refs = {
         "frozen_r4_stack": _ref(frozen_stack_path, frozen["frozen_stack_sha256"]),
@@ -107,28 +108,6 @@ def _validate_source(
         str(value.get(name)) for name in canonical_fields
     }:
         raise ValueError(f"r4 provider source canonical hash mismatch: {path}")
-
-
-def _inventory() -> dict[str, int]:
-    statuses = subprocess.run(
-        [
-            "docker",
-            "ps",
-            "-a",
-            "--filter",
-            "name=civitas-j1q-runner",
-            "--format",
-            "{{.Status}}",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    return {
-        "participant_container_count": len(statuses),
-        "created_count": sum(item.startswith("Created") for item in statuses),
-        "running_count": sum(item.startswith("Up ") for item in statuses),
-    }
 
 
 def _implementation(root: Path) -> dict[str, str]:
