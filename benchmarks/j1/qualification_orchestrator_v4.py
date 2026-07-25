@@ -20,6 +20,7 @@ from .qualification_execution_contract_v4 import (
 
 
 REPORT_SCHEMA = "j1-qualification-r4-offline-orchestrator-report:v1"
+LIVE_REPORT_SCHEMA = "j1-qualification-r4-live-orchestrator-report:v1"
 PROGRESS_TRANSITIONS = {source: target for source, target in ALLOWED_TRANSITIONS}
 BEFORE_DISPATCH_STATES = {
     "planned",
@@ -116,13 +117,33 @@ class OfflineAdapter:
         }
 
     def verify_event_trace(
-        self, task: dict[str, Any], decision: dict[str, Any]
+        self,
+        task: dict[str, Any],
+        decision: dict[str, Any],
+        signature: dict[str, Any],
     ) -> dict[str, Any]:
+        del signature
         return {
             "task_execution_id": task["task_execution_id"],
             "event_script": task["task"]["event_script"],
             "decision_sha256": canonical_sha256(decision),
             "verified": True,
+            "offline_synthetic": True,
+        }
+
+    def event_receipts(self, task: dict[str, Any]) -> dict[str, Any]:
+        del task
+        return {"receipts": [], "offline_synthetic": True}
+
+    def commit_task_evidence(
+        self, task: dict[str, Any], artifacts: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
+        del task
+        return {
+            "artifact_sha256": {
+                name: canonical_sha256(value)
+                for name, value in sorted(artifacts.items())
+            },
             "offline_synthetic": True,
         }
 
@@ -174,6 +195,7 @@ class PrivateWorkspace:
             "response",
             "decision",
             "signature",
+            "event_receipts",
             "event_trace",
         }:
             raise ValueError("invalid private workspace key")
@@ -529,7 +551,49 @@ def run_offline_orchestrator(
     task_limit: int | None = None,
 ) -> dict[str, Any]:
     """Execute or resume the r4 manifest using only deterministic offline adapters."""
-    actual_adapter = adapter or OfflineAdapter()
+    return _run_orchestrator(
+        contract=contract,
+        run_id=run_id,
+        root=root,
+        adapter=adapter or OfflineAdapter(),
+        checkpoint=checkpoint,
+        task_limit=task_limit,
+        live=False,
+    )
+
+
+def run_live_orchestrator(
+    *,
+    contract: dict[str, Any],
+    run_id: str,
+    root: Path,
+    adapter: Any,
+    checkpoint: Callable[[str, dict[str, Any]], None] | None = None,
+    task_limit: int | None = None,
+) -> dict[str, Any]:
+    """Execute or resume a claimed r4 manifest through reviewed live adapters."""
+    return _run_orchestrator(
+        contract=contract,
+        run_id=run_id,
+        root=root,
+        adapter=adapter,
+        checkpoint=checkpoint,
+        task_limit=task_limit,
+        live=True,
+    )
+
+
+def _run_orchestrator(
+    *,
+    contract: dict[str, Any],
+    run_id: str,
+    root: Path,
+    adapter: Any,
+    checkpoint: Callable[[str, dict[str, Any]], None] | None,
+    task_limit: int | None,
+    live: bool,
+) -> dict[str, Any]:
+    actual_adapter = adapter
     journal = ExecutionJournal(root / "execution-journal.sqlite3", contract["contract_sha256"])
     workspace = PrivateWorkspace(root / "workspace")
     tasks = contract["task_executions"]
@@ -594,7 +658,7 @@ def run_offline_orchestrator(
                     )
                     run_failure = "task_failed_after_response"
                 else:
-                    run_failure = "offline_orchestrator_error"
+                    run_failure = "orchestrator_error"
                 if state not in TASK_TERMINAL_STATES:
                     actual_adapter.stop_container(task)
                 break
@@ -610,31 +674,36 @@ def run_offline_orchestrator(
     state_counts = summary["task_states"]
     committed = int(state_counts.get("task_committed", 0))
     complete = committed == len(tasks) and run_failure is None and not journal_failures
+    scope = {
+        "task_execution_count": len(tasks),
+        "provider_call_count": actual_adapter.provider_calls,
+        "participant_signature_count": actual_adapter.participant_signatures,
+        "container_start_count": actual_adapter.container_starts,
+        "container_stop_count": actual_adapter.container_stops,
+    }
     report = {
-        "schema_version": REPORT_SCHEMA,
+        "schema_version": LIVE_REPORT_SCHEMA if live else REPORT_SCHEMA,
         "run_id": run_id,
         "status": "complete" if complete else "failed",
         "contract_sha256": contract["contract_sha256"],
-        "offline_scope": {
-            "task_execution_count": len(tasks),
-            "provider_call_count": actual_adapter.provider_calls,
-            "participant_signature_count": actual_adapter.participant_signatures,
-            "container_start_count": actual_adapter.container_starts,
-            "container_stop_count": actual_adapter.container_stops,
-        },
+        "execution_scope" if live else "offline_scope": scope,
         "journal": summary,
         "failure_reason": run_failure,
         "validation_failures": journal_failures,
-        "execution_boundary": {
-            "offline_adapter_only": True,
-            "real_container_started": False,
-            "provider_credential_read": False,
-            "provider_api_call_performed": False,
-            "model_invocation_performed": False,
-            "pkcs11_signature_performed": False,
-            "backend_fact_append_performed": False,
-            "ledger_append_performed": False,
-        },
+        "execution_boundary": (
+            actual_adapter.execution_boundary()
+            if live
+            else {
+                "offline_adapter_only": True,
+                "real_container_started": False,
+                "provider_credential_read": False,
+                "provider_api_call_performed": False,
+                "model_invocation_performed": False,
+                "pkcs11_signature_performed": False,
+                "backend_fact_append_performed": False,
+                "ledger_append_performed": False,
+            }
+        ),
     }
     report["report_sha256"] = canonical_sha256(report)
     return report
@@ -645,7 +714,7 @@ def _drive_task(
     task: dict[str, Any],
     journal: ExecutionJournal,
     workspace: PrivateWorkspace,
-    adapter: OfflineAdapter,
+    adapter: Any,
     checkpoint: Callable[[str, dict[str, Any]], None] | None,
 ) -> None:
     task_id = task["task_execution_id"]
@@ -813,13 +882,20 @@ def _drive_task(
             "signature_sha256",
         )
         decision = workspace.read(task_id, "decision")
-        trace = adapter.verify_event_trace(task, decision)
+        signature = workspace.read(task_id, "signature")
+        trace = adapter.verify_event_trace(task, decision, signature)
+        receipt_digest = workspace.write(
+            task_id, "event_receipts", adapter.event_receipts(task)
+        )
         trace_digest = workspace.write(task_id, "event_trace", trace)
         journal.transition(
             task,
             "event_trace_verified",
             "event_trace_verified",
-            {"event_trace_sha256": trace_digest},
+            {
+                "event_receipts_sha256": receipt_digest,
+                "event_trace_sha256": trace_digest,
+            },
         )
         _checkpoint(checkpoint, "after_event_trace_verified", task)
         state = "event_trace_verified"
@@ -845,9 +921,29 @@ def _drive_task(
             workspace,
             task,
             "event_trace_verified",
+            "event_receipts",
+            "event_receipts_sha256",
+        )
+        _verify_workspace(
+            journal,
+            workspace,
+            task,
+            "event_trace_verified",
             "event_trace",
             "event_trace_sha256",
         )
+        artifacts = {
+            name: workspace.read(task_id, name)
+            for name in (
+                "request",
+                "response",
+                "decision",
+                "signature",
+                "event_receipts",
+                "event_trace",
+            )
+        }
+        evidence = adapter.commit_task_evidence(task, artifacts)
         adapter.stop_container(task)
         journal.transition(
             task,
@@ -858,6 +954,7 @@ def _drive_task(
                 "decision_sha256": workspace.hash(task_id, "decision"),
                 "signature_sha256": workspace.hash(task_id, "signature"),
                 "event_trace_sha256": workspace.hash(task_id, "event_trace"),
+                "evidence": evidence,
             },
         )
         workspace.clear(task_id)

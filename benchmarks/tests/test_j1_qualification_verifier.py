@@ -13,6 +13,7 @@ from benchmarks.j1.qualification_verifier import (
     CASE_IDS,
     EVIDENCE_SCHEMA,
     VERIFIER_ID,
+    _assignment_commitment,
     build_verifier_candidate,
     validate_verifier_manifest,
     verify_task,
@@ -22,6 +23,47 @@ from benchmarks.j1.qualification_verifier import (
 PROVIDER = "a" * 64
 EVENT_TRACE = "b" * 64
 AUTHORIZATION = "c" * 64
+
+
+def test_assignment_commitment_supports_rebound_and_legacy_shapes() -> None:
+    assert (
+        _assignment_commitment({"rebind_commitment_sha256": "a" * 64})
+        == "a" * 64
+    )
+    assert (
+        _assignment_commitment({"assignment_commitment_sha256": "b" * 64})
+        == "b" * 64
+    )
+
+
+def test_verifier_accepts_self_hashed_rebound_assignment() -> None:
+    assignment = _reviewed_assignment()
+    assignment["schema_version"] = (
+        "j1-qualification-cohort-assignment-rebound:operator-reviewed:v1"
+    )
+    assignment.pop("reviewed_assignment_sha256")
+    for pair in assignment["assignments"]:
+        pair["rebind_commitment_sha256"] = pair.pop(
+            "assignment_commitment_sha256"
+        )
+    assignment["reviewed_rebound_assignment_sha256"] = canonical_sha256(assignment)
+    evidence = _evidence("scope-and-delivery-contract")
+    evidence["assignment_commitment_sha256"] = assignment["assignments"][0][
+        "rebind_commitment_sha256"
+    ]
+    evidence["source_artifacts"][-1]["sha256"] = hashlib.sha256(
+        _assignment_bytes(assignment)
+    ).hexdigest()
+
+    report = verify_task(
+        evidence,
+        reviewed_assignment_bytes=_assignment_bytes(assignment),
+        expected_reviewed_assignment_sha256=assignment[
+            "reviewed_rebound_assignment_sha256"
+        ],
+    )
+
+    assert report["passed"] is True
 
 
 def _assertion(value: object) -> dict:

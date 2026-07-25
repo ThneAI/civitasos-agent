@@ -9,7 +9,7 @@ from typing import Any
 from .controlled_comparison import canonical_sha256
 
 
-CONTRACT_SCHEMA = "j1-qualification-r4-execution-contract:v1"
+CONTRACT_SCHEMA = "j1-qualification-r4-execution-contract:v2"
 SOURCE_NAMES = {
     "amended_protocol",
     "amended_design",
@@ -308,6 +308,11 @@ def _task_executions(
     budget = amended_design.get("preserved_budget_reservation", {})
     values: list[dict[str, Any]] = []
     for pair in sorted(assignments, key=lambda item: item.get("pair_id", "")):
+        assignment_commitment = (
+            pair.get("rebind_commitment_sha256")
+            or pair.get("assignment_commitment_sha256")
+            or canonical_sha256(pair)
+        )
         for cohort in ("mentor", "control"):
             assigned = pair.get(cohort, {})
             participant_id = assigned.get("participant_id")
@@ -321,6 +326,7 @@ def _task_executions(
                     "execution_did": assigned.get("execution_did"),
                     "task_id": task_id,
                     "task_input_sha256": task.get("task_input_sha256"),
+                    "assignment_commitment_sha256": assignment_commitment,
                 }
                 commitment = canonical_sha256(seed)
                 signed_advice = advice.get((str(participant_id), task_id))
@@ -335,6 +341,7 @@ def _task_executions(
                         "participant_id": participant_id,
                         "execution_did": assigned.get("execution_did"),
                         "credential_version": roster_entry.get("credential_version"),
+                        "assignment_commitment_sha256": assignment_commitment,
                         "task": {
                             "task_id": task_id,
                             "task_input_sha256": task.get("task_input_sha256"),
@@ -459,6 +466,7 @@ def _journal_contract() -> dict[str, Any]:
             "provider_response",
             "budget_reconciliation",
             "participant_signature",
+            "event_receipts",
             "task_commit",
         ],
         "raw_prompt_persisted": False,
@@ -512,8 +520,9 @@ def _signature_contract() -> dict[str, Any]:
             "signed_advice_canonical_sha256_or_null",
             "provider_receipt_sha256",
             "decision_sha256",
-            "event_trace_sha256",
         ],
+        "event_trace_created_after_signature": True,
+        "task_evidence_binds_signature_and_event_trace": True,
         "one_signature_per_task_execution": True,
         "unsigned_or_wrong_identity_decision_accepted": False,
     }

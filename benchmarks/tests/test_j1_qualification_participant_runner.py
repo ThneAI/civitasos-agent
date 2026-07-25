@@ -25,6 +25,7 @@ def _input(
             "artifact_sha256": "b" * 64,
             "canonical_sha256": "c" * 64,
             "template": "Preserve scope and receipts.",
+            "visibility": "visible",
             "authority": "advisory_only",
             "may_execute_for_participant": False,
             "may_override_constitution": False,
@@ -81,8 +82,22 @@ def test_runner_prepares_mentor_and_control_requests_without_assertions() -> Non
 
         assert validate_output_envelope(output, source=source) == []
         assert output["provider_request"]["persist_as_evidence"] is False
+        assert output["process_instance_id"] == "in-process"
         assert output["execution_boundary"]["provider_api_call_performed"] is False
         assert "verifier assertions" in output["provider_request"]["system"]
+
+
+def test_runner_hides_revoked_and_stale_advice_before_projection() -> None:
+    for visibility in ("revoked_before_read", "stale_credential_rejected"):
+        source = _input()
+        source["advice_projection"]["visibility"] = visibility
+
+        output = process_envelope(source)
+
+        assert source["advice_projection"]["template"] not in output["provider_request"][
+            "user"
+        ]
+        assert "rejected by the host policy" in output["provider_request"]["user"]
 
 
 def test_runner_finalizes_provider_response_as_unsigned_host_bound_decision() -> None:

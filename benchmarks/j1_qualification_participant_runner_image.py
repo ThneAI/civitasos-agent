@@ -236,6 +236,7 @@ def _synthetic_input() -> dict[str, Any]:
             "artifact_sha256": "b" * 64,
             "canonical_sha256": "c" * 64,
             "template": "Synthetic advisory context.",
+            "visibility": "visible",
             "authority": "advisory_only",
             "may_execute_for_participant": False,
             "may_override_constitution": False,

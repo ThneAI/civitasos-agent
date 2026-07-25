@@ -359,11 +359,11 @@ def verify_task(
     _require(participant_id, "participant_id_missing", failures)
     _require(_real_did(participant_did), "participant_did_invalid", failures)
     _require(cohort in COHORTS, "evidence_cohort_invalid", failures)
-    failures.extend(validate_reviewed_assignment(reviewed_assignment))
+    failures.extend(_validate_assignment_artifact(reviewed_assignment))
+    assignment_sha256 = _reviewed_assignment_sha256(reviewed_assignment)
     _require(
         _sha256(expected_reviewed_assignment_sha256)
-        and reviewed_assignment.get("reviewed_assignment_sha256")
-        == expected_reviewed_assignment_sha256,
+        and assignment_sha256 == expected_reviewed_assignment_sha256,
         "reviewed_assignment_expected_hash_mismatch",
         failures,
     )
@@ -375,7 +375,7 @@ def verify_task(
             and member.get("execution_did") == participant_did
             and evidence.get("pair_id") == assignment.get("pair_id")
             and evidence.get("assignment_commitment_sha256")
-            == assignment.get("assignment_commitment_sha256"),
+            == _assignment_commitment(assignment),
             "evidence_assignment_binding_invalid",
             failures,
         )
@@ -444,9 +444,7 @@ def verify_task(
         "pair_id": evidence.get("pair_id"),
         "cohort": evidence.get("cohort"),
         "verifier_case": case_id,
-        "reviewed_assignment_sha256": reviewed_assignment.get(
-            "reviewed_assignment_sha256"
-        ),
+        "reviewed_assignment_sha256": assignment_sha256,
         "reviewed_assignment_artifact_sha256": reviewed_assignment_artifact_sha256,
         "evidence_sha256": canonical_sha256(evidence),
         "deterministic": True,
@@ -494,6 +492,54 @@ def _assigned_subject(
     ]
     _require(len(matches) == 1, "evidence_participant_assignment_invalid", failures)
     return matches[0] if len(matches) == 1 else {}
+
+
+def _assignment_commitment(assignment: dict[str, Any]) -> Any:
+    return assignment.get("rebind_commitment_sha256") or assignment.get(
+        "assignment_commitment_sha256"
+    )
+
+
+def _reviewed_assignment_sha256(assignment: dict[str, Any]) -> Any:
+    return assignment.get("reviewed_rebound_assignment_sha256") or assignment.get(
+        "reviewed_assignment_sha256"
+    )
+
+
+def _validate_assignment_artifact(value: dict[str, Any]) -> list[str]:
+    if (
+        value.get("schema_version")
+        != "j1-qualification-cohort-assignment-rebound:operator-reviewed:v1"
+    ):
+        return validate_reviewed_assignment(value)
+    failures: list[str] = []
+    assignments = value.get("assignments")
+    pairs = assignments if isinstance(assignments, list) else []
+    participants = [
+        _object(pair.get(cohort)).get("participant_id")
+        for pair in pairs
+        if isinstance(pair, dict)
+        for cohort in ("mentor", "control")
+    ]
+    body = {
+        key: item
+        for key, item in value.items()
+        if key != "reviewed_rebound_assignment_sha256"
+    }
+    _require(
+        value.get("status") == "operator_reviewed"
+        and len(pairs) == 20
+        and len(participants) == 40
+        and len(set(participants)) == 40,
+        "reviewed_rebound_assignment_inventory_invalid",
+        failures,
+    )
+    _require(
+        value.get("reviewed_rebound_assignment_sha256") == canonical_sha256(body),
+        "reviewed_rebound_assignment_hash_mismatch",
+        failures,
+    )
+    return failures
 
 
 def _source_hashes(

@@ -10,17 +10,27 @@ import argparse
 import hashlib
 import json
 import os
+import secrets
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 
-INPUT_SCHEMA = "j1-qualification-participant-runner-input:v1"
-OUTPUT_SCHEMA = "j1-qualification-participant-runner-output:v1"
+INPUT_SCHEMA = "j1-qualification-participant-runner-input:v2"
+OUTPUT_SCHEMA = "j1-qualification-participant-runner-output:v2"
 OPERATIONS = {"prepare_provider_request", "finalize_provider_response"}
+ADVICE_VISIBILITY = {
+    "visible",
+    "revoked_before_read",
+    "stale_credential_rejected",
+}
 MAX_INPUT_BYTES = 65_536
 MAX_TASK_INPUT_BYTES = 1_500
 MAX_DECISION_BYTES = 65_536
+DEFAULT_INPUT_PATH = Path("/input/request.json")
+DEFAULT_OUTPUT_PATH = Path("/output/response.json")
+POLL_INTERVAL_SECONDS = 0.05
 SECRET_KEYS = {
     "api_key",
     "passphrase",
@@ -43,10 +53,14 @@ EXECUTION_BOUNDARY = {
 }
 
 
-def process_envelope(value: Any) -> dict[str, Any]:
+def process_envelope(
+    value: Any, *, process_instance_id: str = "in-process"
+) -> dict[str, Any]:
     failures = validate_input_envelope(value)
     if failures:
         raise ValueError(f"participant runner input invalid: {failures}")
+    if not _text(process_instance_id):
+        raise ValueError("participant runner process instance ID is required")
     envelope = value
     common = {
         "schema_version": OUTPUT_SCHEMA,
@@ -58,6 +72,7 @@ def process_envelope(value: Any) -> dict[str, Any]:
         "pair_id": envelope["participant"]["pair_id"],
         "cohort": envelope["participant"]["cohort"],
         "task_id": envelope["task"]["task_id"],
+        "process_instance_id": process_instance_id,
         "source_binding": {
             "input_envelope_sha256": canonical_sha256(envelope),
             "authorization_artifact_sha256": envelope["authorization"][
@@ -248,6 +263,7 @@ def validate_output_envelope(value: Any, *, source: dict[str, Any]) -> list[str]
             "pair_id",
             "cohort",
             "task_id",
+            "process_instance_id",
             "source_binding",
             "provider_request",
             "participant_decision",
@@ -284,6 +300,11 @@ def validate_output_envelope(value: Any, *, source: dict[str, Any]) -> list[str]
             source["task"]["task_id"],
         ),
         "runner_output_binding_invalid",
+        failures,
+    )
+    _require(
+        _text(output.get("process_instance_id")),
+        "runner_output_process_instance_invalid",
         failures,
     )
     _require(
@@ -356,11 +377,15 @@ def canonical_sha256(value: Any) -> str:
 
 def _provider_request(envelope: dict[str, Any]) -> dict[str, Any]:
     advice = envelope["advice_projection"]
-    advice_text = (
-        advice["template"]
-        if advice is not None
-        else "No mentor advice is assigned to this control participant."
-    )
+    if advice is None:
+        advice_text = "No mentor advice is assigned to this control participant."
+    elif advice["visibility"] == "visible":
+        advice_text = advice["template"]
+    else:
+        advice_text = (
+            "No current mentor advice is available. The assigned advice was "
+            "rejected by the host policy before projection."
+        )
     return {
         "system": (
             "Act only as the bound CivitasOS qualification participant. "
@@ -386,6 +411,7 @@ def _validate_advice(advice: dict[str, Any], failures: list[str]) -> None:
             "artifact_sha256",
             "canonical_sha256",
             "template",
+            "visibility",
             "authority",
             "may_execute_for_participant",
             "may_override_constitution",
@@ -399,6 +425,11 @@ def _validate_advice(advice: dict[str, Any], failures: list[str]) -> None:
         and _sha256(advice.get("canonical_sha256"))
         and _text(advice.get("template")),
         "runner_advice_binding_invalid",
+        failures,
+    )
+    _require(
+        advice.get("visibility") in ADVICE_VISIBILITY,
+        "runner_advice_visibility_invalid",
         failures,
     )
     _require(
@@ -479,6 +510,25 @@ def _write_output(path: Path, value: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
+def _serve(input_path: Path, output_path: Path) -> None:
+    process_instance_id = secrets.token_hex(16)
+    processed_sha256: str | None = None
+    while True:
+        if output_path.exists() or not input_path.is_file():
+            time.sleep(POLL_INTERVAL_SECONDS)
+            continue
+        raw_sha256 = hashlib.sha256(input_path.read_bytes()).hexdigest()
+        if raw_sha256 == processed_sha256:
+            time.sleep(POLL_INTERVAL_SECONDS)
+            continue
+        output = process_envelope(
+            _read_input(input_path),
+            process_instance_id=process_instance_id,
+        )
+        _write_output(output_path, output)
+        processed_sha256 = raw_sha256
+
+
 def _rfc3339(value: Any) -> bool:
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
@@ -507,9 +557,14 @@ def _require(condition: bool, code: str, failures: list[str]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--input", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if (args.input is None) != (args.output is None):
+        parser.error("--input and --output must be provided together")
+    if args.input is None:
+        _serve(DEFAULT_INPUT_PATH, DEFAULT_OUTPUT_PATH)
+        return 0
     output = process_envelope(_read_input(args.input))
     _write_output(args.output, output)
     print(
