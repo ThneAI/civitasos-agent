@@ -59,6 +59,18 @@ def _prepare(tmp_path: Path, source: dict, revision: str = "a" * 40) -> dict:
     )
 
 
+def test_private_json_tightens_parent_and_file_permissions(tmp_path: Path) -> None:
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o777)
+    parent.chmod(0o777)
+    path = parent / "artifact.json"
+
+    write_private_json(path, {"status": "private"})
+
+    assert parent.stat().st_mode & 0o777 == 0o700
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
 def test_materials_are_private_and_require_independent_review(tmp_path: Path) -> None:
     packet = _prepare(tmp_path, _task_source())
     output_root = tmp_path / "private-output"
