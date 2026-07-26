@@ -14,11 +14,12 @@ from nacl.signing import VerifyKey
 from .controlled_comparison import canonical_sha256
 
 
-BUNDLE_SCHEMA = "j1-qualification-r4-failed-closeout-review-bundle:v1"
+BUNDLE_SCHEMA_V1 = "j1-qualification-r4-failed-closeout-review-bundle:v1"
+BUNDLE_SCHEMA = "j1-qualification-r4-failed-closeout-review-bundle:v2"
 REQUEST_SCHEMA = "j1-qualification-r4-failed-closeout-review-request:v1"
 RECEIPT_SCHEMA = "j1-qualification-r4-failed-closeout-review-receipt:v1"
 GATE_SCHEMA = "j1-qualification-r4-failed-closeout-review-gate:v1"
-CHECKLIST = [
+LEGACY_CHECKLIST = [
     "failed_closeout_v1_replay_compatibility_reviewed",
     "failed_closeout_v2_schema_and_signature_boundary_reviewed",
     "known_actual_and_unknown_reservation_accounting_reviewed",
@@ -26,6 +27,18 @@ CHECKLIST = [
     "provider_outcome_unknown_terminal_no_retry_reviewed",
     "provider_broker_unknown_state_transition_reviewed",
     "r8_claim_live_report_and_budget_evidence_binding_reviewed",
+    "source_revision_and_source_file_hashes_reviewed",
+    "ruff_and_full_pytest_evidence_reviewed",
+    "closeout_only_non_execution_boundary_reviewed",
+]
+CHECKLIST = [
+    "failed_closeout_replay_compatibility_reviewed",
+    "failed_closeout_schema_and_signature_boundary_reviewed",
+    "known_actual_and_unknown_reservation_accounting_reviewed",
+    "conservative_chargeable_upper_bound_reviewed",
+    "provider_outcome_unknown_terminal_no_retry_reviewed",
+    "sanitized_failure_diagnostic_reviewed",
+    "claim_live_report_and_budget_evidence_binding_reviewed",
     "source_revision_and_source_file_hashes_reviewed",
     "ruff_and_full_pytest_evidence_reviewed",
     "closeout_only_non_execution_boundary_reviewed",
@@ -92,35 +105,23 @@ def validate_review_bundle(value: Any) -> list[str]:
     bundle = value if isinstance(value, dict) else {}
     failures: list[str] = []
     run = bundle.get("run_evidence", {})
-    budget = run.get("budget_summary", {})
     source = bundle.get("source_implementation", {})
     files = source.get("source_files", {})
     verification = bundle.get("verification", {})
     if not (
-        bundle.get("schema_version") == BUNDLE_SCHEMA
+        bundle.get("schema_version") in {BUNDLE_SCHEMA_V1, BUNDLE_SCHEMA}
         and bundle.get("status") == "independent_review_required"
         and bundle.get("review_scope") == "failed_closeout_implementation_only"
         and _text(bundle.get("bundle_id"))
         and _rfc3339(bundle.get("created_at"))
     ):
         failures.append("failed_closeout_review_bundle_identity_invalid")
-    if not (
-        run.get("run_id") == "j1d-qualification-run-20260726-r8"
-        and _ref(run.get("claim"))
-        and _ref(run.get("live_report"))
-        and run.get("failure_state") == "provider_outcome_unknown"
-        and run.get("provider_call_count") == 4
-        and run.get("committed_task_count") == 3
-        and run.get("unattempted_task_count") == 316
-        and budget.get("reconciled_provider_call_count") == 3
-        and budget.get("provider_outcome_unknown_call_count") == 1
-        and budget.get("actual_tokens") == 1256
-        and budget.get("actual_cost_microunits") == 966
-        and budget.get("unknown_reserved_tokens") == 2500
-        and budget.get("unknown_reserved_cost_microunits") == 1523
-        and budget.get("chargeable_token_upper_bound") == 3756
-        and budget.get("chargeable_cost_upper_bound_microunits") == 2489
-    ):
+    run_valid = (
+        _validate_legacy_r8_run(run)
+        if bundle.get("schema_version") == BUNDLE_SCHEMA_V1
+        else _validate_failed_run(run)
+    )
+    if not run_valid:
         failures.append("failed_closeout_review_run_evidence_invalid")
     required_sources = {
         "benchmarks/j1/qualification_failed_closeout_review_v4.py",
@@ -145,7 +146,12 @@ def validate_review_bundle(value: Any) -> list[str]:
     ):
         failures.append("failed_closeout_review_verification_invalid")
     if not (
-        bundle.get("review_checklist") == CHECKLIST
+        bundle.get("review_checklist")
+        == (
+            LEGACY_CHECKLIST
+            if bundle.get("schema_version") == BUNDLE_SCHEMA_V1
+            else CHECKLIST
+        )
         and bundle.get("promotion_contract", {}).get("execution_preflight_allowed")
         is False
         and bundle.get("promotion_contract", {}).get(
@@ -205,6 +211,7 @@ def reviewer_approval_statement(
     bundle_raw_sha256: str,
     bundle: dict[str, Any],
 ) -> str:
+    run = bundle["run_evidence"]
     return (
         "I have independently reviewed J1-D r4 failed-closeout implementation review "
         f"request raw SHA-256 {request_raw_sha256} and choose "
@@ -214,14 +221,114 @@ def reviewer_approval_statement(
         "review. I approve only copy-on-write promotion of review bundle raw SHA-256 "
         f"{bundle_raw_sha256}, canonical SHA-256 {bundle['bundle_sha256']}, binding "
         f"source revision {bundle['source_implementation']['source_revision']} and "
-        "the r8 failed-run conservative unknown-provider-outcome accounting frozen "
-        "in that bundle. I acknowledge that this promotion permits only generation "
+        f"failed run {run['run_id']} with {run['committed_task_count']} committed, "
+        f"{run.get('failed_task_count', 1)} failed, "
+        f"{run['unattempted_task_count']} unattempted tasks and conservative "
+        "unknown-provider-outcome accounting frozen in that bundle. I acknowledge "
+        "that this promotion permits only generation "
         "and signing of a failed-run closeout preflight and closeout. It does not "
         "promote an execution stack, start a participant container, read a provider "
         "credential, call a provider or model, execute an Agent or experiment, append "
         "Backend Facts, append the Ledger, issue or consume an execution authorization, "
-        "retry any r8 task or provider call, or authorize an effectiveness claim."
+        "retry any task or provider call from the failed run, or authorize an "
+        "effectiveness claim."
     )
+
+
+def _validate_legacy_r8_run(run: dict[str, Any]) -> bool:
+    budget = run.get("budget_summary", {})
+    return bool(
+        run.get("run_id") == "j1d-qualification-run-20260726-r8"
+        and _ref(run.get("claim"))
+        and _ref(run.get("live_report"))
+        and run.get("failure_state") == "provider_outcome_unknown"
+        and run.get("provider_call_count") == 4
+        and run.get("committed_task_count") == 3
+        and run.get("unattempted_task_count") == 316
+        and budget.get("reconciled_provider_call_count") == 3
+        and budget.get("provider_outcome_unknown_call_count") == 1
+        and budget.get("actual_tokens") == 1256
+        and budget.get("actual_cost_microunits") == 966
+        and budget.get("unknown_reserved_tokens") == 2500
+        and budget.get("unknown_reserved_cost_microunits") == 1523
+        and budget.get("chargeable_token_upper_bound") == 3756
+        and budget.get("chargeable_cost_upper_bound_microunits") == 2489
+    )
+
+
+def _validate_failed_run(run: dict[str, Any]) -> bool:
+    budget = run.get("budget_summary", {})
+    diagnostic = run.get("failure_diagnostic", {})
+    committed = run.get("committed_task_count")
+    failed = run.get("failed_task_count")
+    unattempted = run.get("unattempted_task_count")
+    provider_calls = run.get("provider_call_count")
+    failure_state = run.get("failure_state")
+    counts = (
+        budget.get("reconciled_provider_call_count"),
+        budget.get("overrun_provider_call_count"),
+        budget.get("provider_outcome_unknown_call_count"),
+        budget.get("actual_tokens"),
+        budget.get("actual_cost_microunits"),
+        budget.get("unknown_reserved_tokens"),
+        budget.get("unknown_reserved_cost_microunits"),
+        budget.get("chargeable_token_upper_bound"),
+        budget.get("chargeable_cost_upper_bound_microunits"),
+    )
+    return bool(
+        _text(run.get("run_id"))
+        and _ref(run.get("claim"))
+        and _ref(run.get("live_report"))
+        and failure_state
+        in {
+            "task_failed_before_dispatch",
+            "task_failed_after_response",
+            "provider_outcome_unknown",
+        }
+        and all(_nonnegative_int(item) for item in (committed, failed, unattempted))
+        and committed + failed + unattempted == 320
+        and failed == 1
+        and _nonnegative_int(provider_calls)
+        and all(_nonnegative_int(item) for item in counts)
+        and provider_calls
+        == (
+            budget["reconciled_provider_call_count"]
+            + budget["overrun_provider_call_count"]
+            + budget["provider_outcome_unknown_call_count"]
+        )
+        and budget["chargeable_token_upper_bound"]
+        == budget["actual_tokens"] + budget["unknown_reserved_tokens"]
+        and budget["chargeable_cost_upper_bound_microunits"]
+        == (
+            budget["actual_cost_microunits"]
+            + budget["unknown_reserved_cost_microunits"]
+        )
+        and budget["provider_outcome_unknown_call_count"]
+        == (1 if failure_state == "provider_outcome_unknown" else 0)
+        and (
+            failure_state != "provider_outcome_unknown"
+            or (
+                budget["unknown_reserved_tokens"] > 0
+                and budget["unknown_reserved_cost_microunits"] > 0
+            )
+        )
+        and set(diagnostic)
+        == {
+            "failure_category",
+            "failure_stage",
+            "reason",
+            "source_exception_type",
+        }
+        and diagnostic.get("failure_category")
+        in {"http", "parse", "schema", "usage", "internal"}
+        and _text(diagnostic.get("failure_stage"))
+        and _text(diagnostic.get("reason"))
+        and _text(diagnostic.get("source_exception_type"))
+    )
+
+
+def _nonnegative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def build_signed_receipt(
@@ -364,7 +471,9 @@ def _revision(value: Any) -> bool:
 
 def _rfc3339(value: Any) -> bool:
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).tzinfo is not None
+        return (
+            datetime.fromisoformat(str(value).replace("Z", "+00:00")).tzinfo is not None
+        )
     except ValueError:
         return False
 

@@ -61,31 +61,53 @@ def prepare_review(
     revision = _clean_pushed_revision(repository_root)
     claim, claim_raw = _read_private(claim_path)
     report, report_raw = _read_private(live_report_path)
+    claim_ref = _ref(claim_path, claim.get("claim_sha256", ""), raw=claim_raw)
     if not (
-        claim.get("run_id") == "j1d-qualification-run-20260726-r8"
+        isinstance(claim.get("run_id"), str)
+        and claim.get("run_id")
+        and claim.get("claim_sha256")
+        == canonical_sha256(
+            {key: item for key, item in claim.items() if key != "claim_sha256"}
+        )
         and report.get("run_id") == claim["run_id"]
         and report.get("status") == "failed"
-        and report.get("failure_reason") == "provider_outcome_unknown"
+        and report.get("failure_reason")
+        in {
+            "task_failed_before_dispatch",
+            "task_failed_after_response",
+            "provider_outcome_unknown",
+        }
+        and report.get("source_binding", {}).get("claim") == claim_ref
         and report.get("report_sha256")
         == canonical_sha256(
             {key: item for key, item in report.items() if key != "report_sha256"}
         )
     ):
-        raise ValueError("failed closeout review r8 evidence invalid")
+        raise ValueError("failed closeout review run evidence invalid")
     budget = _budget_summary(budget_path)
     states = report["journal"]["task_states"]
+    failed_count = sum(
+        int(states.get(name, 0))
+        for name in (
+            "task_failed_before_dispatch",
+            "task_failed_after_response",
+            "provider_outcome_unknown",
+        )
+    )
     bundle = build_review_bundle(
         bundle_id=bundle_id,
         created_at=created_at,
         run_evidence={
             "run_id": report["run_id"],
-            "claim": _ref(claim_path, claim["claim_sha256"], raw=claim_raw),
+            "claim": claim_ref,
             "live_report": _ref(
                 live_report_path, report["report_sha256"], raw=report_raw
             ),
             "failure_state": report["failure_reason"],
+            "failure_diagnostic": report.get("failure_diagnostic"),
             "provider_call_count": report["execution_scope"]["provider_call_count"],
             "committed_task_count": int(states.get("task_committed", 0)),
+            "failed_task_count": failed_count,
             "unattempted_task_count": int(states.get("planned", 0)),
             "budget_summary": budget,
         },
@@ -196,7 +218,9 @@ def promote_review(
         raise ValueError("failed closeout review approval or artifact binding invalid")
     profile_failures = validate_reviewer_identity_profile(profile)
     if profile_failures:
-        raise ValueError(f"failed closeout reviewer profile invalid: {profile_failures}")
+        raise ValueError(
+            f"failed closeout reviewer profile invalid: {profile_failures}"
+        )
     _validate_pkcs11(
         profile,
         module_path=module_path,

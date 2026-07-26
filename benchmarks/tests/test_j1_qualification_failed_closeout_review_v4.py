@@ -7,7 +7,9 @@ from nacl.signing import SigningKey
 
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_failed_closeout_review_v4 import (
+    BUNDLE_SCHEMA_V1,
     CHECKLIST,
+    LEGACY_CHECKLIST,
     build_review_bundle,
     build_review_gate,
     build_review_request,
@@ -46,28 +48,35 @@ def _bundle() -> dict:
         "benchmarks/j1_qualification_failed_execution_closeout_v4.py",
     }
     return build_review_bundle(
-        bundle_id="r8-closeout-review",
+        bundle_id="r9-closeout-review",
         created_at="2026-07-26T06:00:00+00:00",
         run_evidence={
-            "run_id": "j1d-qualification-run-20260726-r8",
+            "run_id": "j1d-qualification-run-20260726-r9",
             "claim": _ref("a"),
             "live_report": _ref("b"),
             "failure_state": "provider_outcome_unknown",
-            "provider_call_count": 4,
-            "committed_task_count": 3,
-            "unattempted_task_count": 316,
+            "failure_diagnostic": {
+                "failure_category": "schema",
+                "failure_stage": "response_decision",
+                "reason": "SanitizedProviderFailure",
+                "source_exception_type": "ProviderDecisionShapeError",
+            },
+            "provider_call_count": 8,
+            "committed_task_count": 7,
+            "failed_task_count": 1,
+            "unattempted_task_count": 312,
             "budget_summary": {
-                "reconciled_provider_call_count": 3,
+                "reconciled_provider_call_count": 7,
                 "overrun_provider_call_count": 0,
                 "provider_outcome_unknown_call_count": 1,
-                "reserved_tokens": 10000,
-                "reserved_cost_microunits": 6092,
-                "actual_tokens": 1256,
-                "actual_cost_microunits": 966,
+                "reserved_tokens": 20000,
+                "reserved_cost_microunits": 12184,
+                "actual_tokens": 3000,
+                "actual_cost_microunits": 2000,
                 "unknown_reserved_tokens": 2500,
                 "unknown_reserved_cost_microunits": 1523,
-                "chargeable_token_upper_bound": 3756,
-                "chargeable_cost_upper_bound_microunits": 2489,
+                "chargeable_token_upper_bound": 5500,
+                "chargeable_cost_upper_bound_microunits": 3523,
             },
         },
         source_implementation={
@@ -167,3 +176,36 @@ def test_failed_closeout_review_rejects_signature_tamper() -> None:
     )
 
     assert "failed_closeout_review_signature_invalid" in failures
+
+
+def test_failed_closeout_review_keeps_r8_v1_bundle_compatible() -> None:
+    bundle = _bundle()
+    bundle["schema_version"] = BUNDLE_SCHEMA_V1
+    bundle["run_evidence"] = {
+        "run_id": "j1d-qualification-run-20260726-r8",
+        "claim": _ref("a"),
+        "live_report": _ref("b"),
+        "failure_state": "provider_outcome_unknown",
+        "provider_call_count": 4,
+        "committed_task_count": 3,
+        "unattempted_task_count": 316,
+        "budget_summary": {
+            "reconciled_provider_call_count": 3,
+            "overrun_provider_call_count": 0,
+            "provider_outcome_unknown_call_count": 1,
+            "reserved_tokens": 10000,
+            "reserved_cost_microunits": 6092,
+            "actual_tokens": 1256,
+            "actual_cost_microunits": 966,
+            "unknown_reserved_tokens": 2500,
+            "unknown_reserved_cost_microunits": 1523,
+            "chargeable_token_upper_bound": 3756,
+            "chargeable_cost_upper_bound_microunits": 2489,
+        },
+    }
+    bundle["review_checklist"] = LEGACY_CHECKLIST
+    bundle["bundle_sha256"] = canonical_sha256(
+        {key: item for key, item in bundle.items() if key != "bundle_sha256"}
+    )
+
+    assert validate_review_bundle(bundle) == []
