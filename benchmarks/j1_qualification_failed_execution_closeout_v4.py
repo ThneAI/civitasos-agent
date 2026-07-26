@@ -31,7 +31,12 @@ from benchmarks.j1.qualification_failed_execution_closeout_v4 import (
     validate_closeout_artifacts,
     validate_preflight,
 )
-from benchmarks.j1.qualification_review_v4 import validate_review_bundle
+from benchmarks.j1.qualification_failed_closeout_review_v4 import (
+    validate_review_bundle as validate_closeout_review_bundle,
+)
+from benchmarks.j1.qualification_review_v4 import (
+    validate_review_bundle as validate_execution_review_bundle,
+)
 from benchmarks.j1.qualification_reviewer_identity import (
     validate_reviewer_identity_profile,
 )
@@ -677,8 +682,13 @@ def _validate_closeout_implementation_gate(
 ) -> dict[str, dict[str, str]]:
     gate, gate_raw = _read_private(path)
     bundle_ref = gate.get("review_bundle", {})
+    gate_schema = gate.get("schema_version")
     if not (
-        gate.get("schema_version") == "j1-qualification-r4-review-promotion-gate:v1"
+        gate_schema
+        in {
+            "j1-qualification-r4-review-promotion-gate:v1",
+            "j1-qualification-r4-failed-closeout-review-gate:v1",
+        }
         and gate.get("passed") is True
         and gate.get("signature_valid") is True
         and gate.get("report_sha256")
@@ -690,10 +700,15 @@ def _validate_closeout_implementation_gate(
         raise ValueError("failed closeout implementation review Gate invalid")
     bundle_path = Path(str(bundle_ref.get("path", "")))
     bundle, bundle_raw = _read_private(bundle_path)
+    bundle_failures = (
+        validate_closeout_review_bundle(bundle)
+        if gate_schema == "j1-qualification-r4-failed-closeout-review-gate:v1"
+        else validate_execution_review_bundle(bundle)
+    )
     if (
         hashlib.sha256(bundle_raw).hexdigest() != bundle_ref.get("sha256")
         or bundle.get("bundle_sha256") != bundle_ref.get("canonical_sha256")
-        or validate_review_bundle(bundle)
+        or bundle_failures
     ):
         raise ValueError("failed closeout implementation review bundle invalid")
     source = bundle.get("source_implementation", {})
