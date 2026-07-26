@@ -717,7 +717,7 @@ def _validate_closeout_implementation_gate(
         "benchmarks/j1/qualification_failed_execution_closeout_v4.py": (
             implementation["domain_source_sha256"]
         ),
-        "benchmarks/j1_qualification_provider_broker.py": hashlib.sha256(
+        "benchmarks/j1/qualification_provider_broker.py": hashlib.sha256(
             (repository_root / "benchmarks/j1/qualification_provider_broker.py")
             .read_bytes()
         ).hexdigest(),
@@ -725,8 +725,13 @@ def _validate_closeout_implementation_gate(
             implementation["operation_source_sha256"]
         ),
     }
+    reviewed_revision = (
+        source.get("source_revision")
+        if gate_schema == "j1-qualification-r4-failed-closeout-review-gate:v1"
+        else source.get("review_material_revision")
+    )
     if not (
-        source.get("review_material_revision") == implementation["source_revision"]
+        reviewed_revision == implementation["source_revision"]
         and all(source_files.get(name) == digest for name, digest in expected_files.items())
     ):
         raise ValueError("failed closeout implementation is not independently reviewed")

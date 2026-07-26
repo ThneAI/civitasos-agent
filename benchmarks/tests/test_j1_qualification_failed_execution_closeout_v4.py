@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import sqlite3
+from pathlib import Path
 
 from nacl.signing import SigningKey
 
@@ -12,10 +15,15 @@ from benchmarks.j1.qualification_failed_execution_closeout_v4 import (
     validate_closeout_artifacts,
     validate_preflight,
 )
+from benchmarks.j1.qualification_failed_closeout_review_v4 import (
+    build_review_bundle,
+    build_review_gate,
+)
 from benchmarks.j1_qualification_failed_execution_closeout_v4 import (
     _budget_summary,
     _journal_matches_report,
     _pre_orchestrator_failure_state,
+    _validate_closeout_implementation_gate,
 )
 from benchmarks.j1_qualification_live_execute_v4 import _failure_evidence
 
@@ -251,6 +259,100 @@ def test_budget_summary_retains_unknown_provider_reservation(tmp_path) -> None:
         "unknown_reserved_cost_microunits": 1523,
         "chargeable_token_upper_bound": 3756,
         "chargeable_cost_upper_bound_microunits": 2489,
+    }
+
+
+def test_failed_closeout_accepts_reviewed_source_gate(tmp_path) -> None:
+    repository_root = Path(__file__).parents[2]
+    revision = "c" * 40
+    source_paths = {
+        "benchmarks/j1/qualification_failed_closeout_review_v4.py",
+        "benchmarks/j1/qualification_failed_execution_closeout_v4.py",
+        "benchmarks/j1/qualification_provider_broker.py",
+        "benchmarks/j1_qualification_failed_closeout_review_v4.py",
+        "benchmarks/j1_qualification_failed_execution_closeout_v4.py",
+    }
+    bundle = build_review_bundle(
+        bundle_id="r8-closeout-review",
+        created_at="2026-07-26T06:00:00+00:00",
+        run_evidence={
+            "run_id": "j1d-qualification-run-20260726-r8",
+            "claim": _ref("a"),
+            "live_report": _ref("b"),
+            "failure_state": "provider_outcome_unknown",
+            "provider_call_count": 4,
+            "committed_task_count": 3,
+            "unattempted_task_count": 316,
+            "budget_summary": {
+                "reconciled_provider_call_count": 3,
+                "provider_outcome_unknown_call_count": 1,
+                "actual_tokens": 1256,
+                "actual_cost_microunits": 966,
+                "unknown_reserved_tokens": 2500,
+                "unknown_reserved_cost_microunits": 1523,
+                "chargeable_token_upper_bound": 3756,
+                "chargeable_cost_upper_bound_microunits": 2489,
+            },
+        },
+        source_implementation={
+            "source_revision": revision,
+            "source_files": {
+                relative: hashlib.sha256(
+                    (repository_root / relative).read_bytes()
+                ).hexdigest()
+                for relative in source_paths
+            },
+        },
+        verification={
+            "ruff_all_passed": True,
+            "pytest_all_passed": True,
+            "pytest_passed_count": 1493,
+            "remote_revision_verified": True,
+            "provider_or_model_call_performed": False,
+            "participant_container_started": False,
+        },
+    )
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_text(
+        json.dumps(bundle, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+    bundle_path.chmod(0o600)
+    bundle_ref = {
+        "path": str(bundle_path),
+        "sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+        "canonical_sha256": bundle["bundle_sha256"],
+    }
+    gate = build_review_gate(bundle_ref=bundle_ref, receipt_ref=_ref("d"))
+    gate_path = tmp_path / "gate.json"
+    gate_path.write_text(
+        json.dumps(gate, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+    gate_path.chmod(0o600)
+    implementation = {
+        "source_revision": revision,
+        "domain_source_sha256": hashlib.sha256(
+            (
+                repository_root
+                / "benchmarks/j1/qualification_failed_execution_closeout_v4.py"
+            ).read_bytes()
+        ).hexdigest(),
+        "operation_source_sha256": hashlib.sha256(
+            (
+                repository_root
+                / "benchmarks/j1_qualification_failed_execution_closeout_v4.py"
+            ).read_bytes()
+        ).hexdigest(),
+    }
+
+    refs = _validate_closeout_implementation_gate(
+        gate_path,
+        repository_root=repository_root,
+        implementation=implementation,
+    )
+
+    assert set(refs) == {
+        "closeout_implementation_review_gate",
+        "closeout_implementation_review_bundle",
     }
 
 
