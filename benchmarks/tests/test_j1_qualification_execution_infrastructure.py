@@ -12,6 +12,7 @@ from benchmarks.j1.qualification_event_harness import (
     validate_built_event_trace,
     validate_event_trace,
 )
+from benchmarks.j1.qualification_live_evidence_v4 import build_live_trace
 from benchmarks.j1.qualification_execution_infrastructure import (
     REQUIRED_BLOCKERS,
     build_execution_infrastructure_plan,
@@ -224,6 +225,43 @@ def test_event_trace_rejects_model_assertions_and_same_process_restart() -> None
     assert "harness_restart_process_replacement_invalid" in validate_event_trace(
         [restarted], expected_script=["runtime_restarted"]
     )
+
+
+def test_live_control_credential_rotation_derives_absence_evidence() -> None:
+    task = {
+        "task_execution_id": "control-credential-rotation",
+        "participant_id": "control-1",
+        "execution_did": "did:civ:qualification:control-1",
+        "cohort": "control",
+        "credential_version": 1,
+        "task": {
+            "task_id": "j1q-heldout-credential-rotation-06",
+            "event_script": [
+                "advice_assignment_absence_observed",
+                "credential_rotated",
+                "stale_advice_absence_observed",
+                "current_credential_read_attempt",
+            ],
+        },
+    }
+
+    receipts, trace = build_live_trace(
+        run_id="run-1",
+        authorization_sha256="a" * 64,
+        task=task,
+        decision_sha256="b" * 64,
+        signature_sha256="c" * 64,
+        provider_receipt_sha256="d" * 64,
+        first_process_instance_id="process-1",
+        final_process_instance_id="process-1",
+    )
+
+    assert (
+        validate_event_trace(receipts, expected_script=task["task"]["event_script"])
+        == []
+    )
+    assert trace["assertions"]["advice_assignment_present"]["value"] is False
+    assert trace["assertions"]["stale_advice_present"]["value"] is False
 
 
 def test_provider_broker_reserves_reconciles_and_redacts(tmp_path: Path) -> None:

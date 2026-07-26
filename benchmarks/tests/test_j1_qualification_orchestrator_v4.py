@@ -186,3 +186,34 @@ def test_resume_after_response_commit_does_not_call_provider_twice(
     assert report["status"] == "complete"
     assert adapter.provider_calls == 1
     assert adapter.participant_signatures == 1
+
+
+def test_event_trace_failure_is_sanitized_after_signature(tmp_path: Path) -> None:
+    contract, _ = _contract()
+
+    class InvalidTraceAdapter(OfflineAdapter):
+        def verify_event_trace(
+            self,
+            task: dict,
+            decision: dict,
+            signature: dict,
+        ) -> dict:
+            del task, decision, signature
+            raise ValueError("private validation details")
+
+    report = run_offline_orchestrator(
+        contract=contract,
+        run_id="offline-r4",
+        root=tmp_path / "run",
+        adapter=InvalidTraceAdapter(),
+        task_limit=1,
+    )
+
+    assert report["failure_reason"] == "task_failed_after_response"
+    assert report["failure_diagnostic"] == {
+        "reason": "SanitizedExecutionFailure",
+        "failure_category": "internal",
+        "failure_stage": "event_trace_validation",
+        "source_exception_type": "ValueError",
+    }
+    assert "private validation details" not in str(report)

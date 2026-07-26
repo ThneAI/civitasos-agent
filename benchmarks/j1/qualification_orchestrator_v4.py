@@ -973,7 +973,13 @@ def _drive_task(
         )
         decision = workspace.read(task_id, "decision")
         signature = workspace.read(task_id, "signature")
-        trace = adapter.verify_event_trace(task, decision, signature)
+        try:
+            trace = adapter.verify_event_trace(task, decision, signature)
+        except ValueError as error:
+            raise SanitizedExecutionFailure(
+                stage="event_trace_validation",
+                source_exception_type=type(error).__name__,
+            ) from None
         receipt_digest = workspace.write(
             task_id, "event_receipts", adapter.event_receipts(task)
         )
@@ -1089,6 +1095,19 @@ def _sanitized_failure_diagnostic(
         "failure_stage": fallback_stage,
         "source_exception_type": type(error).__name__,
     }
+
+
+class SanitizedExecutionFailure(ValueError):
+    """Execution failure carrying only reviewed, non-content diagnostics."""
+
+    failure_category = "internal"
+
+    def __init__(self, *, stage: str, source_exception_type: str) -> None:
+        if stage not in PROVIDER_FAILURE_STAGES[self.failure_category]:
+            raise ValueError("execution failure stage is not reviewed")
+        self.failure_stage = stage
+        self.source_exception_type = source_exception_type
+        super().__init__(f"sanitized execution failure at {stage}")
 
 
 def _checkpoint(

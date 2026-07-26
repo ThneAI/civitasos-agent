@@ -189,6 +189,13 @@ def validate_preflight(value: Any) -> list[str]:
         and execution.get("committed_task_count", -1) >= 0
         and execution.get("failed_task_count", -1) >= 1
         and execution.get("unattempted_task_count", -1) >= 0
+        and execution.get("signed_failed_task_count", 0) in {0, 1}
+        and execution.get("signed_failed_task_count", 0)
+        <= execution.get("failed_task_count")
+        and (
+            failure.get("state") == "task_failed_after_response"
+            or execution.get("signed_failed_task_count", 0) == 0
+        )
         and execution.get("committed_task_count")
         + execution.get("failed_task_count")
         + execution.get("unattempted_task_count")
@@ -196,6 +203,7 @@ def validate_preflight(value: Any) -> list[str]:
         and execution.get("provider_call_count") == accounted_provider_calls
         and execution.get("participant_signature_count")
         == execution.get("committed_task_count")
+        + execution.get("signed_failed_task_count", 0)
     )
     pre_orchestrator_valid = (
         execution.get("authorized_task_count") == 320

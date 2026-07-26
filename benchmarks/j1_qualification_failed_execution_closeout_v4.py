@@ -374,7 +374,10 @@ def _context(
                 + budget["overrun_provider_call_count"]
                 + budget["provider_outcome_unknown_call_count"]
             )
-            and execution_scope["participant_signature_count"] == committed
+            and execution_scope["participant_signature_count"]
+            == journal["participant_signature_count"]
+            and journal["participant_signature_count"]
+            == committed + journal["signed_failed_task_count"]
         ):
             raise ValueError("failed closeout execution or budget counts invalid")
         failure = journal["failure"]
@@ -389,6 +392,7 @@ def _context(
             "participant_signature_count": int(
                 execution_scope["participant_signature_count"]
             ),
+            "signed_failed_task_count": journal["signed_failed_task_count"],
             "container_start_count": int(execution_scope["container_start_count"]),
             "container_stop_count": int(execution_scope["container_stop_count"]),
         }
@@ -591,6 +595,19 @@ def _journal_summary(path: Path) -> dict[str, Any]:
             raise ValueError("failed closeout requires exactly one terminal failure")
         failed = failure_rows[0]
         payload = json.loads(failed["payload_json"])
+        signature_task_ids = {
+            row["task_execution_id"]
+            for row in rows
+            if row["to_state"] == "decision_signed"
+        }
+        signature_event_count = sum(
+            row["to_state"] == "decision_signed" for row in rows
+        )
+        if signature_event_count != len(signature_task_ids):
+            raise ValueError("failed closeout participant signature events invalid")
+        signed_failed_task_count = int(
+            failed["task_execution_id"] in signature_task_ids
+        )
         failure = {
             "state": failed["to_state"],
             "reason": str(payload.get("reason") or failed["event_type"]),
@@ -629,6 +646,8 @@ def _journal_summary(path: Path) -> dict[str, Any]:
     return {
         "logical": logical,
         "failure": failure,
+        "participant_signature_count": signature_event_count,
+        "signed_failed_task_count": signed_failed_task_count,
         "raw_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
 

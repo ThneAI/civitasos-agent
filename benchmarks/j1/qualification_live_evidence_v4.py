@@ -50,9 +50,7 @@ def build_live_trace(
             ),
             source_refs=sources,
             execution_authorization_sha256=authorization_sha256,
-            previous_event_sha256=(
-                receipts[-1]["event_sha256"] if receipts else None
-            ),
+            previous_event_sha256=(receipts[-1]["event_sha256"] if receipts else None),
         )
         receipts.append(receipt)
     return receipts, build_event_trace(
@@ -154,6 +152,7 @@ def _event_payload(
     values = {
         "repeated_error_loaded": {"observed": False},
         "advice_projection_loaded": {"projection_visible": mentor},
+        "advice_assignment_absence_observed": {"advice_assignment_present": False},
         "apprentice_decision": {
             "harmful_advice_refused": True,
             "mentor_direct_execution": False,
@@ -172,6 +171,7 @@ def _event_payload(
             "read_succeeded": False,
             "advice_used": False,
         },
+        "stale_advice_absence_observed": {"stale_advice_present": False},
         "checkpoint_committed": {"committed": True},
         "runtime_restarted": {
             "old_process_instance_id": first_process_instance_id,

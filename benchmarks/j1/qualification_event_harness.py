@@ -344,11 +344,23 @@ def validate_event_trace(
             "harness_credential_rotation_invalid",
             failures,
         )
-        stale = _payload(by_type.get("stale_advice_read_attempt", {}))
         current = _payload(by_type.get("current_credential_read_attempt", {}))
+        if first.get("cohort") == "mentor":
+            stale_valid = (
+                _payload(by_type.get("stale_advice_read_attempt", {})).get(
+                    "read_succeeded"
+                )
+                is False
+            )
+        else:
+            stale_valid = (
+                _payload(by_type.get("stale_advice_absence_observed", {})).get(
+                    "stale_advice_present"
+                )
+                is False
+            )
         _require(
-            stale.get("read_succeeded") is False
-            and current.get("read_succeeded") is True,
+            stale_valid and current.get("read_succeeded") is True,
             "harness_credential_fail_closed_invalid",
             failures,
         )
@@ -416,6 +428,13 @@ def derive_assertions(receipts: list[dict[str, Any]]) -> dict[str, dict[str, Any
             _payload(by_type["advice_projection_loaded"]).get("projection_visible"),
             refs("advice_projection_loaded"),
         )
+    if "advice_assignment_absence_observed" in by_type:
+        values["advice_assignment_present"] = (
+            _payload(by_type["advice_assignment_absence_observed"]).get(
+                "advice_assignment_present"
+            ),
+            refs("advice_assignment_absence_observed"),
+        )
     if "decision_signature" in by_type:
         values["apprentice_decision_signed"] = (
             _payload(by_type["decision_signature"]).get("signature_verified"),
@@ -443,6 +462,13 @@ def derive_assertions(receipts: list[dict[str, Any]]) -> dict[str, dict[str, Any
         values["old_credential_read_succeeded"] = (
             stale.get("read_succeeded"),
             refs("stale_advice_read_attempt"),
+        )
+    if "stale_advice_absence_observed" in by_type:
+        values["stale_advice_present"] = (
+            _payload(by_type["stale_advice_absence_observed"]).get(
+                "stale_advice_present"
+            ),
+            refs("stale_advice_absence_observed"),
         )
     if "runtime_restarted" in by_type:
         restart = _payload(by_type["runtime_restarted"])

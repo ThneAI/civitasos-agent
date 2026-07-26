@@ -34,6 +34,7 @@ PROVIDER_FAILURE_STAGES = {
     },
     "usage": {"response_usage", "broker_usage", "budget_reconciliation"},
     "internal": {
+        "event_trace_validation",
         "pre_dispatch_unclassified",
         "post_dispatch_unclassified",
         "legacy_unclassified_post_dispatch",

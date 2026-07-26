@@ -218,6 +218,58 @@ def test_failed_execution_closeout_accounts_for_unknown_provider_outcome() -> No
     assert "conservative upper bound 3756 tokens and 2489 USD microunits" in statement
 
 
+def test_failed_execution_closeout_accounts_for_signed_failed_task() -> None:
+    preflight = _preflight()
+    preflight["execution_summary"].update(
+        {
+            "committed_task_count": 9,
+            "failed_task_count": 1,
+            "unattempted_task_count": 310,
+            "provider_call_count": 10,
+            "participant_signature_count": 10,
+            "signed_failed_task_count": 1,
+        }
+    )
+    preflight["failure"].update(
+        {
+            "state": "task_failed_after_response",
+            "reason": "ValueError",
+            "provider_call_performed": True,
+        }
+    )
+    preflight["budget_summary"].update(
+        {
+            "reconciled_provider_call_count": 10,
+            "reserved_tokens": 25000,
+            "reserved_cost_microunits": 15230,
+            "actual_tokens": 1933,
+            "actual_cost_microunits": 948,
+            "chargeable_token_upper_bound": 1933,
+            "chargeable_cost_upper_bound_microunits": 948,
+        }
+    )
+    preflight.pop("owner_authorization")
+    preflight.pop("preflight_sha256")
+    rebuilt = build_preflight(
+        checked_at=preflight["checked_at"],
+        run_id=preflight["run_id"],
+        authorization_id=preflight["authorization_id"],
+        source_binding=preflight["source_binding"],
+        execution_summary=preflight["execution_summary"],
+        failure=preflight["failure"],
+        budget_summary=preflight["budget_summary"],
+        terminal_inventory=preflight["terminal_inventory"],
+        output_root=preflight["output_root"],
+        implementation=preflight["implementation"],
+    )
+
+    assert validate_preflight(rebuilt) == []
+    assert (
+        "10 participant signatures"
+        in rebuilt["owner_authorization"]["required_exact_statement"]
+    )
+
+
 def test_budget_summary_retains_unknown_provider_reservation(tmp_path) -> None:
     path = tmp_path / "budget.sqlite3"
     connection = sqlite3.connect(path)
@@ -455,6 +507,105 @@ def test_failed_closeout_replays_legacy_unknown_dispatch_as_performed(tmp_path) 
     assert journal["failure"]["failure_category"] == "internal"
     assert journal["failure"]["failure_stage"] == "legacy_unclassified_post_dispatch"
     assert journal["failure"]["source_exception_type"] == "ValueError"
+
+
+def test_failed_closeout_counts_signature_on_failed_task(tmp_path) -> None:
+    path = tmp_path / "journal.sqlite3"
+    events = [
+        {
+            "sequence": 1,
+            "from_state": "decision_finalized",
+            "to_state": "decision_signed",
+            "event_type": "offline_participant_signature_simulated",
+            "occurred_at": "2026-07-26T06:00:00+00:00",
+            "payload_json": '{"signature_sha256":"' + "a" * 64 + '"}',
+        },
+        {
+            "sequence": 2,
+            "from_state": "decision_signed",
+            "to_state": "task_failed_after_response",
+            "event_type": "task_failed_after_response",
+            "occurred_at": "2026-07-26T06:00:01+00:00",
+            "payload_json": (
+                '{"failure_category":"internal",'
+                '"failure_stage":"event_trace_validation",'
+                '"provider_call_performed":true,'
+                '"provider_retry_performed":false,'
+                '"reason":"SanitizedExecutionFailure",'
+                '"source_exception_type":"ValueError"}'
+            ),
+        },
+    ]
+    previous = None
+    rows = []
+    for event in events:
+        payload_sha256 = hashlib.sha256(event["payload_json"].encode()).hexdigest()
+        body = {
+            "sequence": event["sequence"],
+            "task_execution_id": "task-failed",
+            "call_id": "call-failed",
+            "from_state": event["from_state"],
+            "to_state": event["to_state"],
+            "event_type": event["event_type"],
+            "occurred_at": event["occurred_at"],
+            "payload_sha256": payload_sha256,
+            "previous_event_sha256": previous,
+        }
+        event_sha256 = canonical_sha256(body)
+        rows.append(
+            (
+                body["sequence"],
+                body["task_execution_id"],
+                body["call_id"],
+                body["from_state"],
+                body["to_state"],
+                body["event_type"],
+                body["occurred_at"],
+                event["payload_json"],
+                body["payload_sha256"],
+                body["previous_event_sha256"],
+                event_sha256,
+            )
+        )
+        previous = event_sha256
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE events (
+                sequence INTEGER,
+                task_execution_id TEXT,
+                call_id TEXT,
+                from_state TEXT,
+                to_state TEXT,
+                event_type TEXT,
+                occurred_at TEXT,
+                payload_json TEXT,
+                payload_sha256 TEXT,
+                previous_event_sha256 TEXT,
+                event_sha256 TEXT
+            )
+            """
+        )
+        connection.executemany(
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        connection.execute("CREATE TABLE task_states (state TEXT, count INTEGER)")
+        connection.execute(
+            "INSERT INTO task_states VALUES ('task_failed_after_response', 1)"
+        )
+        connection.execute("CREATE TABLE reservations (status TEXT, count INTEGER)")
+        connection.execute("INSERT INTO reservations VALUES ('reconciled', 1)")
+        connection.commit()
+    finally:
+        connection.close()
+
+    journal = _journal_summary(path)
+
+    assert journal["participant_signature_count"] == 1
+    assert journal["signed_failed_task_count"] == 1
+    assert journal["failure"]["failure_stage"] == "event_trace_validation"
 
 
 def test_failed_closeout_binds_pre_orchestrator_failure(tmp_path) -> None:
