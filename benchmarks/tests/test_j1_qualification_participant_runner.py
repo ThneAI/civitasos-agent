@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
+import threading
+from pathlib import Path
 
+import benchmarks.j1_qualification_participant_runner as participant_runner
 from benchmarks.j1.qualification_participant_runner_image import (
     build_runner_image_manifest,
     validate_runner_image_manifest,
@@ -123,6 +127,40 @@ def test_runner_rejects_control_advice_secret_fields_and_hash_tamper() -> None:
     tampered = _input()
     tampered["task"]["input"] = "changed"
     assert "runner_task_input_hash_invalid" in validate_input_envelope(tampered)
+
+
+def test_runner_publishes_only_complete_json(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "response.json"
+    write_started = threading.Event()
+    finish_write = threading.Event()
+    errors: list[Exception] = []
+
+    def slow_dump(value, handle, **_kwargs) -> None:
+        handle.write('{"state":')
+        handle.flush()
+        write_started.set()
+        assert finish_write.wait(timeout=2)
+        handle.write(json.dumps(value["state"]))
+        handle.write("}")
+
+    monkeypatch.setattr(participant_runner.json, "dump", slow_dump)
+
+    def write() -> None:
+        try:
+            participant_runner._write_output(output, {"state": "complete"})
+        except Exception as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=write)
+    thread.start()
+    assert write_started.wait(timeout=2)
+    assert not output.exists()
+    finish_write.set()
+    thread.join(timeout=2)
+
+    assert not errors
+    assert json.loads(output.read_bytes()) == {"state": "complete"}
+    assert not list(tmp_path.glob(".*.tmp"))
 
 
 def test_runner_image_manifest_rejects_mutable_image_reference() -> None:
