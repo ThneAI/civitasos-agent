@@ -17,6 +17,10 @@ REVIEW_REQUEST_SCHEMA = "j1-qualification-infrastructure-repair-review-request:v
 REVIEW_RECEIPT_SCHEMA = "j1-qualification-infrastructure-repair-review-receipt:v1"
 REVIEWED_SCHEMA = "j1-qualification-infrastructure-repair:operator-reviewed:v1"
 ACTIVATION_SCHEMA = "j1-qualification-infrastructure-repair-activation:v1"
+ALLOWED_PARENT_ACTIVATION_SCHEMAS = {
+    "j1-qualification-infrastructure-activation:v1",
+    ACTIVATION_SCHEMA,
+}
 CHECKLIST = {
     "immutable_parent_activation_reviewed",
     "exact_single_exited_target_reviewed",
@@ -185,8 +189,7 @@ def validate_repair_plan(
         {},
     )
     _require(
-        parent_activation.get("schema_version")
-        == "j1-qualification-infrastructure-activation:v1"
+        parent_activation.get("schema_version") in ALLOWED_PARENT_ACTIVATION_SCHEMAS
         and parent_activation.get("activation_sha256")
         == canonical_sha256(
             {

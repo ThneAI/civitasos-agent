@@ -218,6 +218,45 @@ def test_repair_plan_rejects_second_exited_container() -> None:
     assert "repair_live_inventory_precondition_invalid" in failures
 
 
+def test_repair_plan_accepts_immutable_repair_activation_parent() -> None:
+    parent = _parent()
+    parent["schema_version"] = "j1-qualification-infrastructure-repair-activation:v1"
+    parent["activation_sha256"] = canonical_sha256(
+        {key: item for key, item in parent.items() if key != "activation_sha256"}
+    )
+    inventory = _inventory(parent)
+    implementation = {
+        "source_revision": "c" * 40,
+        "domain_source_sha256": "d" * 64,
+        "operation_source_sha256": "e" * 64,
+    }
+
+    plan = build_repair_plan(
+        repair_id="repair-r2",
+        created_at="2026-07-26T11:00:00+00:00",
+        parent_activation_ref={
+            "path": "/private/repair-activation.json",
+            "sha256": "f" * 64,
+            "canonical_sha256": parent["activation_sha256"],
+        },
+        parent_activation=parent,
+        live_inventory=inventory,
+        target_container_name="container-03",
+        implementation=implementation,
+    )
+
+    assert (
+        validate_repair_plan(
+            plan,
+            parent_activation=parent,
+            live_inventory=inventory,
+            expected_implementation=implementation,
+        )
+        == []
+    )
+    assert plan["parent_activation_canonical_sha256"] == parent["activation_sha256"]
+
+
 def test_review_signature_tampering_is_rejected() -> None:
     parent = _parent()
     inventory = _inventory(parent)
