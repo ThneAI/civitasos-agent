@@ -18,6 +18,15 @@ from .qualification_provider_broker import (
     sanitized_provider_failure,
 )
 
+DECISION_SYSTEM_SUFFIX = (
+    'Return exactly one JSON object with the form {"decision":"<participant '
+    'decision>"} and no other fields. The decision must be a non-empty string. '
+    "Do not return markdown or explanatory text outside the JSON object."
+)
+DECISION_RESPONSE_FORMAT = {"type": "json_object"}
+DECISION_THINKING = {"type": "disabled"}
+MAX_DECISION_BYTES = 65_536
+
 
 class Pkcs11ParticipantSigner:
     def __init__(self, *, session: Any, profiles: dict[str, dict[str, Any]]) -> None:
@@ -69,11 +78,9 @@ class OpenAICompatibleQualificationProvider:
         self.budget = QualificationBudgetStore(budget_path)
 
     def call(self, *, task: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-        prompt = json.dumps(
-            {"system": request["system"], "user": request["user"]},
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
+        prompt = _decision_prompt(
+            system=request["system"],
+            user=request["user"],
         )
         result = execute_provider_call(
             call_id=task["call_id"],
@@ -115,6 +122,19 @@ class OpenAICompatibleQualificationProvider:
                 stage="request_parse",
                 error=error,
             ) from None
+        if not (
+            isinstance(messages, dict)
+            and set(messages) == {"system", "user"}
+            and isinstance(messages.get("system"), str)
+            and messages["system"].endswith(DECISION_SYSTEM_SUFFIX)
+            and isinstance(messages.get("user"), str)
+            and messages["user"]
+        ):
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="request_decision_contract",
+                source_exception_type="ProviderDecisionContractError",
+            )
         body = {
             "model": model,
             "messages": [
@@ -123,6 +143,8 @@ class OpenAICompatibleQualificationProvider:
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "thinking": DECISION_THINKING,
+            "response_format": DECISION_RESPONSE_FORMAT,
             "stream": False,
         }
         try:
@@ -162,13 +184,50 @@ class OpenAICompatibleQualificationProvider:
                 source_exception_type="ProviderModelMismatchError",
             )
         choices = response.get("choices")
+        if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="response_shape",
+                source_exception_type="ProviderChoiceShapeError",
+            )
+        choice = choices[0]
+        if choice.get("finish_reason") != "stop":
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="response_finish_reason",
+                source_exception_type="ProviderFinishReasonError",
+            )
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="response_shape",
+                source_exception_type="ProviderMessageShapeError",
+            )
+        content = message.get("content")
+        if not isinstance(content, str) or not content:
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="response_decision",
+                source_exception_type="ProviderDecisionShapeError",
+            )
+        try:
+            decision_object = json.loads(content)
+        except json.JSONDecodeError as error:
+            raise sanitized_provider_failure(
+                category="parse",
+                stage="response_decision_json_parse",
+                error=error,
+            ) from None
+        decision = (
+            decision_object.get("decision")
+            if isinstance(decision_object, dict)
+            and set(decision_object) == {"decision"}
+            else None
+        )
         if not (
-            isinstance(choices, list)
-            and choices
-            and isinstance(choices[0], dict)
-            and isinstance(choices[0].get("message"), dict)
-            and isinstance(choices[0]["message"].get("content"), str)
-            and choices[0]["message"]["content"]
+            isinstance(decision, str)
+            and 0 < len(decision.encode("utf-8")) <= MAX_DECISION_BYTES
         ):
             raise sanitized_provider_failure(
                 category="schema",
@@ -184,7 +243,7 @@ class OpenAICompatibleQualificationProvider:
                 error=error,
             ) from None
         return {
-            "content": choices[0]["message"]["content"],
+            "content": decision,
             "usage": usage,
         }
 
@@ -209,6 +268,20 @@ def _normalized_design(value: dict[str, Any]) -> dict[str, Any]:
         or value["preserved_budget_reservation"],
         "pricing": value.get("pricing") or value["preserved_pricing"],
     }
+
+
+def _decision_prompt(*, system: str, user: str) -> str:
+    if not system or not user:
+        raise ValueError("provider decision prompt fields are required")
+    return json.dumps(
+        {
+            "system": f"{system.rstrip()}\n\n{DECISION_SYSTEM_SUFFIX}",
+            "user": user,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _normalize_wire_usage(value: Any) -> dict[str, int]:

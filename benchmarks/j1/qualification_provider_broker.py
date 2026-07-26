@@ -18,10 +18,16 @@ ProviderCall = Callable[..., dict[str, Any]]
 
 PROVIDER_FAILURE_STAGES = {
     "http": {"http_transport", "http_status"},
-    "parse": {"request_parse", "response_json_parse"},
+    "parse": {
+        "request_parse",
+        "response_json_parse",
+        "response_decision_json_parse",
+    },
     "schema": {
+        "request_decision_contract",
         "response_shape",
         "response_model",
+        "response_finish_reason",
         "response_decision",
         "broker_result_shape",
         "receipt_validation",
