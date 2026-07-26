@@ -52,6 +52,11 @@ def owner_closeout_statement(preflight: dict[str, Any]) -> str:
     execution = preflight["execution_summary"]
     budget = preflight["budget_summary"]
     failure = preflight["failure"]
+    credential_read = (
+        f"{execution['provider_credential_read_count']} provider credential reads, "
+        if "provider_credential_read_count" in execution
+        else ""
+    )
     return (
         "I authorize exactly one signed J1-D r4 partial-failure closeout for run "
         f"{preflight['run_id']}, consumed authorization "
@@ -66,6 +71,7 @@ def owner_closeout_statement(preflight: dict[str, Any]) -> str:
         f"{execution['unattempted_task_count']} unattempted task executions, "
         f"{execution['provider_call_count']} provider calls, "
         f"{execution['participant_signature_count']} participant signatures, "
+        f"{credential_read}"
         f"{budget['actual_tokens']} actual tokens, and "
         f"{budget['actual_cost_microunits']} actual USD microunits. The terminal "
         f"failure is {failure['state']} caused by {failure['reason']}, with provider "
@@ -134,6 +140,7 @@ def validate_preflight(value: Any) -> list[str]:
     budget = preflight.get("budget_summary", {})
     failure = preflight.get("failure", {})
     inventory = preflight.get("terminal_inventory", {})
+    pre_orchestrator = failure.get("state") == "pre_orchestrator_error"
     if not (
         preflight.get("schema_version") == PREFLIGHT_SCHEMA
         and preflight.get("state")
@@ -143,7 +150,7 @@ def validate_preflight(value: Any) -> list[str]:
         and _text(preflight.get("authorization_id"))
     ):
         failures.append("failed_closeout_preflight_identity_invalid")
-    if not (
+    partial_execution_valid = (
         execution.get("authorized_task_count") == 320
         and execution.get("committed_task_count", -1) >= 0
         and execution.get("failed_task_count", -1) >= 1
@@ -156,6 +163,22 @@ def validate_preflight(value: Any) -> list[str]:
         == budget.get("reconciled_provider_call_count")
         and execution.get("participant_signature_count")
         == execution.get("committed_task_count")
+    )
+    pre_orchestrator_valid = (
+        execution.get("authorized_task_count") == 320
+        and execution.get("committed_task_count") == 0
+        and execution.get("failed_task_count") == 0
+        and execution.get("unattempted_task_count") == 320
+        and execution.get("provider_call_count") == 0
+        and execution.get("participant_signature_count") == 0
+        and execution.get("container_start_count") == 0
+        and execution.get("container_stop_count") == 0
+        and execution.get("provider_credential_read_count") == 1
+        and budget.get("reconciled_provider_call_count") == 0
+    )
+    if not (
+        (pre_orchestrator and pre_orchestrator_valid)
+        or (not pre_orchestrator and partial_execution_valid)
     ):
         failures.append("failed_closeout_execution_summary_invalid")
     if not (
@@ -165,10 +188,15 @@ def validate_preflight(value: Any) -> list[str]:
             "task_failed_after_response",
             "provider_outcome_unknown",
             "orchestrator_error",
+            "pre_orchestrator_error",
         }
         and _text(failure.get("reason"))
         and _text(failure.get("task_execution_id"))
         and isinstance(failure.get("provider_call_performed"), bool)
+        and (
+            not pre_orchestrator
+            or failure.get("provider_credential_read_performed") is True
+        )
     ):
         failures.append("failed_closeout_failure_invalid")
     if not (
@@ -193,9 +221,7 @@ def validate_preflight(value: Any) -> list[str]:
         and inventory.get("created_count", 0) + inventory.get("exited_count", 0) == 40
     ):
         failures.append("failed_closeout_terminal_inventory_invalid")
-    statement = preflight.get("owner_authorization", {}).get(
-        "required_exact_statement"
-    )
+    statement = preflight.get("owner_authorization", {}).get("required_exact_statement")
     if not (
         isinstance(statement, str)
         and statement == owner_closeout_statement(preflight)
@@ -340,8 +366,7 @@ def validate_closeout_artifacts(
     if not (
         evaluation.get("schema_version") == EVALUATION_SCHEMA
         and evaluation.get("status") == "ineligible_failed_run"
-        and evaluation.get("post_run_receipt_sha256")
-        == post_run.get("receipt_sha256")
+        and evaluation.get("post_run_receipt_sha256") == post_run.get("receipt_sha256")
         and evaluation.get("report_sha256")
         == canonical_sha256(
             {key: item for key, item in evaluation.items() if key != "report_sha256"}
@@ -363,8 +388,7 @@ def validate_closeout_artifacts(
         and closeout.get("decision") == "record_failed_run"
         and closeout.get("preflight") == preflight_ref
         and closeout.get("post_run_receipt_sha256") == post_run.get("receipt_sha256")
-        and closeout.get("evaluation_report_sha256")
-        == evaluation.get("report_sha256")
+        and closeout.get("evaluation_report_sha256") == evaluation.get("report_sha256")
         and closeout.get("reviewer")
         == {
             **expected_reviewer,
@@ -387,6 +411,9 @@ def build_closeout_gate(
     artifact_refs: dict[str, dict[str, str]],
     artifacts: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    pre_orchestrator = (
+        preflight.get("failure", {}).get("state") == "pre_orchestrator_error"
+    )
     value = {
         "schema_version": GATE_SCHEMA,
         "passed": True,
@@ -398,8 +425,10 @@ def build_closeout_gate(
         "artifacts": copy.deepcopy(artifact_refs),
         "checks": {
             "claim_remains_consumed": True,
-            "partial_execution_bound": True,
-            "journal_and_budget_reconciled": True,
+            "partial_execution_bound": not pre_orchestrator,
+            "pre_orchestrator_failure_bound": pre_orchestrator,
+            "journal_and_budget_reconciled": not pre_orchestrator,
+            "journal_and_budget_absence_verified": pre_orchestrator,
             "terminal_inventory_running_zero": True,
             "operator_signature_valid": True,
             "partial_results_not_promotable": True,

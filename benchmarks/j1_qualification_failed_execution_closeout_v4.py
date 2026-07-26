@@ -235,9 +235,7 @@ def _context(
     )
     claim_ref = _ref(claim_path, claim["claim_sha256"], raw=claim_raw)
     entry_ref = _ref(entry_gate_path, entry_gate["report_sha256"], raw=entry_raw)
-    report_ref = _ref(
-        live_report_path, report["report_sha256"], raw=report_raw
-    )
+    report_ref = _ref(live_report_path, report["report_sha256"], raw=report_raw)
     expected_plan_ref = _ref(plan_path, plan["plan_sha256"], raw=plan_raw)
     expected_execution_preflight_ref = _ref(
         execution_preflight_path,
@@ -274,16 +272,12 @@ def _context(
             "failed closeout upstream signature or claim invalid: "
             f"{profile_failures + authorization_failures + claim_failures}"
         )
-    if not (
+    common_gate_valid = (
         issuance_gate.get("passed") is True
         and issuance_gate.get("authorization") == authorization_ref
         and issuance_gate.get("report_sha256")
         == canonical_sha256(
-            {
-                key: item
-                for key, item in issuance_gate.items()
-                if key != "report_sha256"
-            }
+            {key: item for key, item in issuance_gate.items() if key != "report_sha256"}
         )
         and claim_preflight.get("preflight_sha256")
         == canonical_sha256(
@@ -299,48 +293,90 @@ def _context(
         == canonical_sha256(
             {key: item for key, item in entry_gate.items() if key != "report_sha256"}
         )
-        and report.get("status") == "failed"
-        and report.get("run_id") == authorization["run_id"]
-        and report.get("source_binding", {}).get("claim") == claim_ref
-        and report.get("source_binding", {}).get("entry_gate") == entry_ref
         and report.get("report_sha256")
         == canonical_sha256(
             {key: item for key, item in report.items() if key != "report_sha256"}
         )
-    ):
+    )
+    partial_report = (
+        report.get("status") == "failed"
+        and report.get("run_id") == authorization["run_id"]
+        and report.get("source_binding", {}).get("claim") == claim_ref
+        and report.get("source_binding", {}).get("entry_gate") == entry_ref
+    )
+    pre_orchestrator_report = (
+        report.get("schema_version") == "j1-qualification-r4-execution-failure:v1"
+        and report.get("state") == "claimed_execution_failed_closeout_required"
+        and report.get("authorization_artifact_sha256")
+        == hashlib.sha256(authorization_raw).hexdigest()
+        and Path(str(report.get("claim_path", ""))).resolve() == claim_path.resolve()
+        and report.get("execution_started") is True
+        and report.get("automatic_retry_performed") is False
+        and report.get("authorization_reusable") is False
+        and report.get("signed_closeout_required") is True
+        and report.get("backend_fact_append_performed") is False
+        and report.get("ledger_append_performed") is False
+    )
+    if not (common_gate_valid and (partial_report or pre_orchestrator_report)):
         raise ValueError("failed closeout Gate or live report binding invalid")
-    if execution_root.resolve() != Path(
-        authorization["controls"]["execution_root"]
-    ).resolve():
+    if (
+        execution_root.resolve()
+        != Path(authorization["controls"]["execution_root"]).resolve()
+    ):
         raise ValueError("failed closeout execution root differs from authorization")
     journal_path = execution_root / "execution-journal.sqlite3"
     budget_path = execution_root / "provider-budget.sqlite3"
-    journal = _journal_summary(journal_path)
-    budget = _budget_summary(budget_path)
-    if not _journal_matches_report(journal, report["journal"]):
-        raise ValueError("failed closeout execution journal differs from live report")
-    execution_scope = report["execution_scope"]
-    states = journal["logical"]["task_states"]
-    committed = int(states.get("task_committed", 0))
-    failed = sum(
-        int(states.get(name, 0))
-        for name in (
-            "task_failed_before_dispatch",
-            "task_failed_after_response",
-            "provider_outcome_unknown",
+    if pre_orchestrator_report:
+        execution_state = _pre_orchestrator_failure_state(
+            report=report,
+            report_path=live_report_path,
+            execution_root=execution_root,
         )
-    )
-    unattempted = int(states.get("planned", 0))
-    if not (
-        committed + failed + unattempted == 320
-        and execution_scope["provider_call_count"]
-        == budget["reconciled_provider_call_count"]
-        and execution_scope["participant_signature_count"] == committed
-    ):
-        raise ValueError("failed closeout execution or budget counts invalid")
-    failure = journal["failure"]
-    if report.get("failure_reason") != failure["state"]:
-        raise ValueError("failed closeout terminal failure binding invalid")
+        execution_summary = execution_state["execution_summary"]
+        failure = execution_state["failure"]
+        budget = execution_state["budget_summary"]
+        journal = None
+    else:
+        journal = _journal_summary(journal_path)
+        budget = _budget_summary(budget_path)
+        if not _journal_matches_report(journal, report["journal"]):
+            raise ValueError(
+                "failed closeout execution journal differs from live report"
+            )
+        execution_scope = report["execution_scope"]
+        states = journal["logical"]["task_states"]
+        committed = int(states.get("task_committed", 0))
+        failed = sum(
+            int(states.get(name, 0))
+            for name in (
+                "task_failed_before_dispatch",
+                "task_failed_after_response",
+                "provider_outcome_unknown",
+            )
+        )
+        unattempted = int(states.get("planned", 0))
+        if not (
+            committed + failed + unattempted == 320
+            and execution_scope["provider_call_count"]
+            == budget["reconciled_provider_call_count"]
+            and execution_scope["participant_signature_count"] == committed
+        ):
+            raise ValueError("failed closeout execution or budget counts invalid")
+        failure = journal["failure"]
+        if report.get("failure_reason") != failure["state"]:
+            raise ValueError("failed closeout terminal failure binding invalid")
+        execution_summary = {
+            "authorized_task_count": 320,
+            "committed_task_count": committed,
+            "failed_task_count": failed,
+            "unattempted_task_count": unattempted,
+            "provider_call_count": int(execution_scope["provider_call_count"]),
+            "participant_signature_count": int(
+                execution_scope["participant_signature_count"]
+            ),
+            "container_start_count": int(execution_scope["container_start_count"]),
+            "container_stop_count": int(execution_scope["container_stop_count"]),
+        }
     contract_ref = plan["source_artifacts"]["execution_contract"]
     contract, contract_raw = _read_private(Path(contract_ref["path"]))
     activation_ref = contract["source_artifacts"]["infrastructure_activation"]
@@ -370,12 +406,13 @@ def _context(
         )
     }
     frozen_values = {
-        name: _read_bound(reference)
-        for name, reference in frozen_refs.items()
+        name: _read_bound(reference) for name, reference in frozen_refs.items()
     }
-    allowed = frozen_values["frozen_operator_closeout_contract"].get(
-        "operator_decision", {}
-    ).get("allowed", [])
+    allowed = (
+        frozen_values["frozen_operator_closeout_contract"]
+        .get("operator_decision", {})
+        .get("allowed", [])
+    )
     if "record_failed_run" not in allowed:
         raise ValueError("frozen closeout contract forbids record_failed_run")
     implementation = _implementation(repository_root)
@@ -386,35 +423,84 @@ def _context(
         "claim": claim_ref,
         "entry_gate": entry_ref,
         "live_report": report_ref,
-        "execution_journal": _ref(
-            journal_path, journal["logical"]["journal_sha256"]
-        ),
-        "provider_budget": _ref(
-            budget_path, canonical_sha256(budget)
-        ),
         **frozen_refs,
     }
+    if journal is not None:
+        source_binding["execution_journal"] = _ref(
+            journal_path, journal["logical"]["journal_sha256"]
+        )
+        source_binding["provider_budget"] = _ref(budget_path, canonical_sha256(budget))
     return {
         "authorization": authorization,
         "reviewer_profile": profile,
         "reviewer_profile_sha256": hashlib.sha256(profile_raw).hexdigest(),
         "source_binding": source_binding,
-        "execution_summary": {
-            "authorized_task_count": 320,
-            "committed_task_count": committed,
-            "failed_task_count": failed,
-            "unattempted_task_count": unattempted,
-            "provider_call_count": int(execution_scope["provider_call_count"]),
-            "participant_signature_count": int(
-                execution_scope["participant_signature_count"]
-            ),
-            "container_start_count": int(execution_scope["container_start_count"]),
-            "container_stop_count": int(execution_scope["container_stop_count"]),
-        },
+        "execution_summary": execution_summary,
         "failure": failure,
         "budget_summary": budget,
         "terminal_inventory": terminal_inventory,
         "implementation": implementation,
+    }
+
+
+def _pre_orchestrator_failure_state(
+    *,
+    report: dict[str, Any],
+    report_path: Path,
+    execution_root: Path,
+) -> dict[str, Any]:
+    files = {
+        path.relative_to(execution_root)
+        for path in execution_root.rglob("*")
+        if path.is_file()
+    }
+    expected = {report_path.resolve().relative_to(execution_root.resolve())}
+    if files != expected or any(
+        path.is_symlink() for path in execution_root.rglob("*")
+    ):
+        raise ValueError(
+            "pre-orchestrator failure root contains unexpected execution artifacts"
+        )
+    credential_reads = report.get("provider_credential_read_count", 1)
+    container_starts = report.get("participant_container_start_count", 0)
+    provider_calls = report.get("provider_api_call_count", 0)
+    participant_signatures = report.get("participant_signature_count", 0)
+    if not (
+        credential_reads == 1
+        and container_starts == 0
+        and provider_calls == 0
+        and participant_signatures == 0
+    ):
+        raise ValueError("pre-orchestrator failure boundary counts invalid")
+    return {
+        "execution_summary": {
+            "authorized_task_count": 320,
+            "committed_task_count": 0,
+            "failed_task_count": 0,
+            "unattempted_task_count": 320,
+            "provider_call_count": 0,
+            "participant_signature_count": 0,
+            "container_start_count": 0,
+            "container_stop_count": 0,
+            "provider_credential_read_count": 1,
+        },
+        "failure": {
+            "state": "pre_orchestrator_error",
+            "reason": str(report.get("failure_reason") or report["failure_type"]),
+            "task_execution_id": "not_started",
+            "call_id": "not_dispatched",
+            "provider_call_performed": False,
+            "provider_retry_performed": False,
+            "provider_credential_read_performed": True,
+            "event_sha256": report["report_sha256"],
+        },
+        "budget_summary": {
+            "reconciled_provider_call_count": 0,
+            "reserved_tokens": 0,
+            "reserved_cost_microunits": 0,
+            "actual_tokens": 0,
+            "actual_cost_microunits": 0,
+        },
     }
 
 
@@ -579,9 +665,7 @@ def _persist(
             ),
             "operator_closeout": _ref(
                 target / names["operator_closeout"],
-                artifacts["operator_closeout"]["signature"][
-                    "signed_payload_sha256"
-                ],
+                artifacts["operator_closeout"]["signature"]["signed_payload_sha256"],
                 raw=(staging / names["operator_closeout"]).read_bytes(),
             ),
         }
@@ -594,7 +678,9 @@ def _persist(
             expected_implementation=implementation,
         )
         if failures:
-            raise ValueError(f"failed closeout persistence validation failed: {failures}")
+            raise ValueError(
+                f"failed closeout persistence validation failed: {failures}"
+            )
         gate = build_closeout_gate(
             checked_at=datetime.now(UTC).isoformat(),
             preflight_ref=preflight_ref,
@@ -662,7 +748,9 @@ def _ref(
 ) -> dict[str, str]:
     return {
         "path": str(path.resolve()),
-        "sha256": hashlib.sha256(raw if raw is not None else path.read_bytes()).hexdigest(),
+        "sha256": hashlib.sha256(
+            raw if raw is not None else path.read_bytes()
+        ).hexdigest(),
         "canonical_sha256": canonical_digest,
     }
 
@@ -673,7 +761,9 @@ def _implementation(root: Path) -> dict[str, str]:
     return {
         "source_revision": _git(root, "rev-parse", "HEAD"),
         "domain_source_sha256": hashlib.sha256(DOMAIN_SOURCE.read_bytes()).hexdigest(),
-        "operation_source_sha256": hashlib.sha256(OPERATION_SOURCE.read_bytes()).hexdigest(),
+        "operation_source_sha256": hashlib.sha256(
+            OPERATION_SOURCE.read_bytes()
+        ).hexdigest(),
     }
 
 

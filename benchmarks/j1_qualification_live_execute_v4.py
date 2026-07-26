@@ -45,6 +45,7 @@ def execute_claimed_run(
     module_path: str,
     token_label: str,
     pin: str,
+    failure_boundary: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     authorization = claim_context["authorization"]
     contract = claim_context["contract"]
@@ -55,6 +56,15 @@ def execute_claimed_run(
         raise ValueError("r4 live execution root already exists")
     execution_root.mkdir(parents=True, mode=0o700)
     execution_root.chmod(0o700)
+    boundary = failure_boundary if failure_boundary is not None else {}
+    boundary.update(
+        {
+            "provider_credential_read_count": 1,
+            "provider_api_call_count": 0,
+            "participant_container_start_count": 0,
+            "participant_signature_count": 0,
+        }
+    )
     values = _provider_values(provider_env_path, contract)
     api_key = values.pop("BETA6_EXTERNAL_AGENT_API_KEY")
     design_path = Path(contract["source_artifacts"]["amended_design"]["path"])
@@ -115,9 +125,7 @@ def execute_claimed_run(
 def _provider_values(path: Path, contract: dict[str, Any]) -> dict[str, str]:
     failures: list[str] = []
     values = _load_private_env(path, failures)
-    design = _read_object(
-        Path(contract["source_artifacts"]["amended_design"]["path"])
-    )
+    design = _read_object(Path(contract["source_artifacts"]["amended_design"]["path"]))
     provider = design.get("preserved_provider_call") or design["provider_call"]
     expected = {
         "BETA6_EXTERNAL_AGENT_PROVIDER": provider["provider_id"],
@@ -165,7 +173,14 @@ def _failure_evidence(
     error: Exception,
     claim_path: str | None,
     execution_started: bool,
+    execution_root: Path | None,
+    failure_boundary: dict[str, int],
 ) -> dict[str, Any]:
+    pre_orchestrator = bool(
+        execution_started
+        and execution_root is not None
+        and not (execution_root / "execution-journal.sqlite3").exists()
+    )
     value = {
         "schema_version": "j1-qualification-r4-execution-failure:v1",
         "recorded_at": datetime.now(UTC).isoformat(),
@@ -177,6 +192,8 @@ def _failure_evidence(
         ),
         "claim_path": claim_path,
         "failure_type": type(error).__name__,
+        "failure_reason": str(error),
+        "failure_stage": "pre_orchestrator" if pre_orchestrator else "execution_entry",
         "execution_started": execution_started,
         "automatic_retry_performed": False,
         "authorization_reusable": False if claim_path else None,
@@ -184,6 +201,8 @@ def _failure_evidence(
         "backend_fact_append_performed": False,
         "ledger_append_performed": False,
     }
+    if pre_orchestrator:
+        value.update(failure_boundary)
     value["report_sha256"] = canonical_sha256(value)
     return value
 
@@ -206,6 +225,7 @@ def main() -> int:
     parser.add_argument("--repository-root", type=Path, required=True)
     args = parser.parse_args()
     context: dict[str, Any] | None = None
+    failure_boundary: dict[str, int] = {}
     try:
         context = claim_and_build_entry_gate(
             owner_authorization_id=args.owner_authorization_id,
@@ -228,6 +248,7 @@ def main() -> int:
             module_path=args.module,
             token_label=args.token_label,
             pin=pin,
+            failure_boundary=failure_boundary,
         )
     except Exception as error:
         claim_path = None
@@ -235,6 +256,11 @@ def main() -> int:
             claim_path = str(error.claim_path.resolve())
         elif context is not None:
             claim_path = context["claim"]["path"]
+        execution_root = (
+            Path(context["authorization"]["controls"]["execution_root"])
+            if context is not None
+            else None
+        )
         evidence = _failure_evidence(
             authorization_path=args.authorization,
             state=(
@@ -244,10 +270,9 @@ def main() -> int:
             ),
             error=error,
             claim_path=claim_path,
-            execution_started=(
-                context is not None
-                and Path(context["authorization"]["controls"]["execution_root"]).exists()
-            ),
+            execution_started=(execution_root is not None and execution_root.exists()),
+            execution_root=execution_root,
+            failure_boundary=failure_boundary,
         )
         output = (
             Path(context["authorization"]["controls"]["execution_root"])

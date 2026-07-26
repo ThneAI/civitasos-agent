@@ -13,7 +13,9 @@ from benchmarks.j1.qualification_failed_execution_closeout_v4 import (
 )
 from benchmarks.j1_qualification_failed_execution_closeout_v4 import (
     _journal_matches_report,
+    _pre_orchestrator_failure_state,
 )
+from benchmarks.j1_qualification_live_execute_v4 import _failure_evidence
 
 
 class Signer:
@@ -164,3 +166,99 @@ def test_failed_closeout_compares_logical_and_raw_journal_hashes_separately() ->
 
     report["journal_artifact_sha256"] = "d" * 64
     assert not _journal_matches_report(journal, report)
+
+
+def test_failed_closeout_binds_pre_orchestrator_failure(tmp_path) -> None:
+    execution_root = tmp_path / "run"
+    execution_root.mkdir()
+    report_path = execution_root / "live-execution-failure.json"
+    report = {
+        "failure_type": "ValueError",
+        "report_sha256": "a" * 64,
+    }
+    report_path.write_text("{}", encoding="utf-8")
+
+    state = _pre_orchestrator_failure_state(
+        report=report,
+        report_path=report_path,
+        execution_root=execution_root,
+    )
+    preflight = build_preflight(
+        checked_at="2026-07-26T01:31:00+00:00",
+        run_id="run-r7",
+        authorization_id="authorization-r7",
+        source_binding={
+            "claim": _ref("a"),
+            "entry_gate": _ref("b"),
+            "live_report": _ref("c"),
+        },
+        execution_summary=state["execution_summary"],
+        failure=state["failure"],
+        budget_summary=state["budget_summary"],
+        terminal_inventory={
+            "participant_container_count": 40,
+            "created_count": 40,
+            "running_count": 0,
+            "exited_count": 0,
+        },
+        output_root="/private/post-run-r7",
+        implementation={
+            "source_revision": "e" * 40,
+            "domain_source_sha256": "f" * 64,
+            "operation_source_sha256": "0" * 64,
+        },
+    )
+
+    assert validate_preflight(preflight) == []
+    statement = preflight["owner_authorization"]["required_exact_statement"]
+    assert "0 committed, 0 failed, and 320 unattempted" in statement
+    assert "1 provider credential reads" in statement
+    assert "pre_orchestrator_error caused by ValueError" in statement
+
+
+def test_failed_closeout_rejects_pre_orchestrator_execution_artifacts(
+    tmp_path,
+) -> None:
+    execution_root = tmp_path / "run"
+    execution_root.mkdir()
+    report_path = execution_root / "live-execution-failure.json"
+    report_path.write_text("{}", encoding="utf-8")
+    (execution_root / "provider-budget.sqlite3").write_bytes(b"unexpected")
+
+    try:
+        _pre_orchestrator_failure_state(
+            report={"failure_type": "ValueError", "report_sha256": "a" * 64},
+            report_path=report_path,
+            execution_root=execution_root,
+        )
+    except ValueError as error:
+        assert "unexpected execution artifacts" in str(error)
+    else:
+        raise AssertionError("unexpected execution artifacts were accepted")
+
+
+def test_live_failure_marker_uses_explicit_boundary_counts(tmp_path) -> None:
+    execution_root = tmp_path / "run"
+    execution_root.mkdir()
+    authorization = tmp_path / "authorization.json"
+    authorization.write_text("{}", encoding="utf-8")
+
+    evidence = _failure_evidence(
+        authorization_path=authorization,
+        state="claimed_execution_failed_closeout_required",
+        error=ValueError("participant profile inventory invalid"),
+        claim_path="/private/run.claim.json",
+        execution_started=True,
+        execution_root=execution_root,
+        failure_boundary={
+            "provider_credential_read_count": 1,
+            "provider_api_call_count": 0,
+            "participant_container_start_count": 0,
+            "participant_signature_count": 0,
+        },
+    )
+
+    assert evidence["failure_stage"] == "pre_orchestrator"
+    assert evidence["provider_credential_read_count"] == 1
+    assert evidence["provider_api_call_count"] == 0
+    assert evidence["failure_reason"] == "participant profile inventory invalid"
