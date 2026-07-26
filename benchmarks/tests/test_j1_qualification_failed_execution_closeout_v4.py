@@ -11,6 +11,9 @@ from benchmarks.j1.qualification_failed_execution_closeout_v4 import (
     validate_closeout_artifacts,
     validate_preflight,
 )
+from benchmarks.j1_qualification_failed_execution_closeout_v4 import (
+    _journal_matches_report,
+)
 
 
 class Signer:
@@ -144,3 +147,20 @@ def test_failed_execution_closeout_rejects_count_and_signature_tamper() -> None:
 
     assert "failed_closeout_execution_summary_invalid" in failures
     assert "failed_closeout_preflight_hash_invalid" in failures
+
+
+def test_failed_closeout_compares_logical_and_raw_journal_hashes_separately() -> None:
+    logical = {
+        "task_states": {"planned": 315, "task_committed": 4},
+        "budget_states": {"reconciled": 4},
+        "event_count": 50,
+        "last_event_sha256": "a" * 64,
+        "journal_sha256": "b" * 64,
+    }
+    journal = {"logical": logical, "raw_sha256": "c" * 64}
+    report = {**logical, "journal_artifact_sha256": "c" * 64}
+
+    assert _journal_matches_report(journal, report)
+
+    report["journal_artifact_sha256"] = "d" * 64
+    assert not _journal_matches_report(journal, report)

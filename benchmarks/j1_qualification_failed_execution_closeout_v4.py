@@ -317,10 +317,7 @@ def _context(
     budget_path = execution_root / "provider-budget.sqlite3"
     journal = _journal_summary(journal_path)
     budget = _budget_summary(budget_path)
-    if not (
-        journal["logical"] == report["journal"]
-        and journal["raw_sha256"] == report["journal"]["journal_artifact_sha256"]
-    ):
+    if not _journal_matches_report(journal, report["journal"]):
         raise ValueError("failed closeout execution journal differs from live report")
     execution_scope = report["execution_scope"]
     states = journal["logical"]["task_states"]
@@ -532,6 +529,17 @@ def _budget_summary(path: Path) -> dict[str, int]:
         "actual_tokens": int(row[3]),
         "actual_cost_microunits": int(row[4]),
     }
+
+
+def _journal_matches_report(
+    journal: dict[str, Any], report_journal: dict[str, Any]
+) -> bool:
+    logical = dict(report_journal)
+    artifact_sha256 = logical.pop("journal_artifact_sha256", None)
+    return (
+        journal.get("logical") == logical
+        and journal.get("raw_sha256") == artifact_sha256
+    )
 
 
 def _persist(
