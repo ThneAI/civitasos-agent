@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from .controlled_comparison import canonical_sha256
+from .qualification_execution_authorization_v4 import AUTH_SCHEMA, AUTH_SCHEMA_V1
 
 
-CLAIM_SCHEMA = "j1-qualification-r4-execution-claim:v1"
-ENTRY_GATE_SCHEMA = "j1-qualification-r4-execution-entry-gate:v1"
+CLAIM_SCHEMA_V1 = "j1-qualification-r4-execution-claim:v1"
+CLAIM_SCHEMA = "j1-qualification-r4-execution-claim:v2"
+ENTRY_GATE_SCHEMA_V1 = "j1-qualification-r4-execution-entry-gate:v1"
+ENTRY_GATE_SCHEMA = "j1-qualification-r4-execution-entry-gate:v2"
 CLAIM_BOUNDARY = {
     "atomic_claim_create_exclusive": True,
     "single_use_authorization_consumed": True,
@@ -45,8 +48,12 @@ def build_claim(
 ) -> dict[str, Any]:
     if _timestamp(claimed_at) is None:
         raise ValueError("r4 claim timestamp invalid")
+    authorization_schema = authorization.get("schema_version")
+    if authorization_schema not in {AUTH_SCHEMA_V1, AUTH_SCHEMA}:
+        raise ValueError("r4 claim authorization schema invalid")
+    material_bound = authorization_schema == AUTH_SCHEMA
     value = {
-        "schema_version": CLAIM_SCHEMA,
+        "schema_version": CLAIM_SCHEMA if material_bound else CLAIM_SCHEMA_V1,
         "state": "authorization_claimed_execution_must_close_out",
         "claimed_at": claimed_at,
         "claim_path": str(Path(claim_path).resolve()),
@@ -63,6 +70,15 @@ def build_claim(
             "claim_preflight": copy.deepcopy(claim_preflight_ref),
         },
         "execution_manifest_sha256": claim_preflight["execution_manifest_sha256"],
+        **(
+            {
+                "material_binding_sha256": authorization["material_bindings"][
+                    "material_binding_sha256"
+                ]
+            }
+            if material_bound
+            else {}
+        ),
         "execution_scope": copy.deepcopy(authorization["execution_scope"]),
         "budget": copy.deepcopy(authorization["budget"]),
         "controls": copy.deepcopy(authorization["controls"]),
@@ -89,8 +105,16 @@ def validate_claim(
 ) -> list[str]:
     claim = value if isinstance(value, dict) else {}
     failures: list[str] = []
+    authorization_schema = authorization.get("schema_version")
+    expected_schema = (
+        CLAIM_SCHEMA
+        if authorization_schema == AUTH_SCHEMA
+        else CLAIM_SCHEMA_V1
+        if authorization_schema == AUTH_SCHEMA_V1
+        else None
+    )
     if not (
-        claim.get("schema_version") == CLAIM_SCHEMA
+        claim.get("schema_version") == expected_schema
         and claim.get("state") == "authorization_claimed_execution_must_close_out"
         and _timestamp(claim.get("claimed_at")) is not None
         and claim.get("claim_path") == str(Path(claim_path).resolve())
@@ -112,9 +136,20 @@ def validate_claim(
         and owner["authorization_id"]
     ):
         failures.append("r4_claim_owner_authorization_invalid")
+    materials_valid = (
+        expected_schema == CLAIM_SCHEMA_V1
+        and "material_binding_sha256" not in claim
+        and "material_bindings" not in authorization
+        and "material_bindings" not in claim_preflight
+        or expected_schema == CLAIM_SCHEMA
+        and claim.get("material_binding_sha256")
+        == authorization.get("material_bindings", {}).get("material_binding_sha256")
+        == claim_preflight.get("material_bindings", {}).get("material_binding_sha256")
+    )
     if not (
         claim.get("execution_manifest_sha256")
         == claim_preflight.get("execution_manifest_sha256")
+        and materials_valid
         and claim.get("execution_scope") == authorization.get("execution_scope")
         and claim.get("budget") == authorization.get("budget")
         and claim.get("controls") == authorization.get("controls")
@@ -140,8 +175,11 @@ def build_entry_gate(
 ) -> dict[str, Any]:
     if _timestamp(checked_at) is None:
         raise ValueError("r4 entry Gate timestamp invalid")
+    material_bound = claim.get("schema_version") == CLAIM_SCHEMA
     value = {
-        "schema_version": ENTRY_GATE_SCHEMA,
+        "schema_version": (
+            ENTRY_GATE_SCHEMA if material_bound else ENTRY_GATE_SCHEMA_V1
+        ),
         "passed": True,
         "failure_reasons": [],
         "state": "atomic_claim_validated_bounded_execution_entry_allowed",
@@ -151,9 +189,19 @@ def build_entry_gate(
         "claim": copy.deepcopy(claim_ref),
         "inventory_snapshot": copy.deepcopy(inventory_snapshot),
         "execution_manifest_sha256": execution_manifest_sha256,
+        **(
+            {"material_binding_sha256": claim["material_binding_sha256"]}
+            if material_bound
+            else {}
+        ),
         "checks": {
             "atomic_claim_reloaded_and_validated": True,
             "authorization_consumed_exactly_once": True,
+            **(
+                {"execution_materials_preclaim_replayed": True}
+                if material_bound
+                else {}
+            ),
             "forty_activation_containers_still_stopped": True,
             "execution_and_post_run_roots_still_absent": True,
             "provider_credential_not_read": True,

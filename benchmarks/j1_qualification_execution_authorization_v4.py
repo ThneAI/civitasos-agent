@@ -23,6 +23,9 @@ from benchmarks.j1.qualification_execution_preflight_v4 import (
     issuance_authorization_statement,
     validate_execution_plan,
 )
+from benchmarks.j1.qualification_execution_materials_v4 import (
+    replay_material_bindings,
+)
 from benchmarks.j1.qualification_reviewer_identity import (
     validate_reviewer_identity_profile,
 )
@@ -64,16 +67,11 @@ def issue_authorization(
         plan_raw_sha256=hashlib.sha256(plan_raw).hexdigest(), plan=plan
     )
     if failures or not (
-        preflight.get("plan", {}).get("sha256")
-        == hashlib.sha256(plan_raw).hexdigest()
-        and preflight.get("plan", {}).get("canonical_sha256")
-        == plan["plan_sha256"]
-        and preflight.get("owner_authorization", {}).get(
-            "required_exact_statement"
-        )
+        preflight.get("plan", {}).get("sha256") == hashlib.sha256(plan_raw).hexdigest()
+        and preflight.get("plan", {}).get("canonical_sha256") == plan["plan_sha256"]
+        and preflight.get("owner_authorization", {}).get("required_exact_statement")
         == statement
-        and hashlib.sha256(statement.encode()).hexdigest()
-        == owner_statement_sha256
+        and hashlib.sha256(statement.encode()).hexdigest() == owner_statement_sha256
     ):
         raise ValueError("r4 authorization plan, preflight, or owner statement invalid")
     profile_failures = validate_reviewer_identity_profile(profile)
@@ -97,13 +95,15 @@ def issue_authorization(
         if Path(plan["controls"][name]).exists():
             raise ValueError(f"r4 authorization future path exists: {name}")
     _replay_sources(plan)
+    replay_material_bindings(plan["material_bindings"])
     contract_ref = plan["source_artifacts"]["execution_contract"]
     contract, _ = _read(Path(contract_ref["path"]))
     activation_ref = contract["source_artifacts"]["infrastructure_activation"]
     activation_path = Path(activation_ref["path"])
-    if hashlib.sha256(activation_path.read_bytes()).hexdigest() != activation_ref[
-        "sha256"
-    ]:
+    if (
+        hashlib.sha256(activation_path.read_bytes()).hexdigest()
+        != activation_ref["sha256"]
+    ):
         raise ValueError("r4 authorization activation source drift")
     activation, _ = _read(activation_path)
     inventory = activation_inventory(activation)
@@ -171,9 +171,7 @@ def issue_authorization(
         return {
             "authorization": authorization_ref,
             "issuance_gate": gate_ref,
-            "claim_preflight": _ref(
-                claim_path, claim_preflight["preflight_sha256"]
-            ),
+            "claim_preflight": _ref(claim_path, claim_preflight["preflight_sha256"]),
             "valid_from": authorization["valid_from"],
             "valid_until": authorization["valid_until"],
             "owner_claim_authorization": claim_preflight["owner_authorization"],

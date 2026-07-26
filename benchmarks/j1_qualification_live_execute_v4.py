@@ -17,6 +17,10 @@ from benchmarks.j1.qualification_container_runner_v4 import (
     ParticipantContainerClient,
     isolation_index,
 )
+from benchmarks.j1.qualification_execution_materials_v4 import (
+    replay_material_bindings,
+    validate_material_paths,
+)
 from benchmarks.j1.qualification_live_adapter_v4 import (
     LiveExecutionAdapter,
     load_live_materials,
@@ -59,14 +63,19 @@ def execute_claimed_run(
     boundary = failure_boundary if failure_boundary is not None else {}
     boundary.update(
         {
-            "provider_credential_read_count": 1,
+            "provider_credential_read_count": 0,
             "provider_api_call_count": 0,
             "participant_container_start_count": 0,
             "participant_signature_count": 0,
         }
     )
-    values = _provider_values(provider_env_path, contract)
-    api_key = values.pop("BETA6_EXTERNAL_AGENT_API_KEY")
+    validate_material_paths(
+        plan["material_bindings"],
+        task_source_path=task_source_path,
+        signed_advice_root=signed_advice_root,
+        participant_profiles_root=participant_profiles_root,
+    )
+    replay_material_bindings(plan["material_bindings"])
     design_path = Path(contract["source_artifacts"]["amended_design"]["path"])
     design = _read_object(design_path)
     assignment_path = Path(contract["source_artifacts"]["rebound_assignment"]["path"])
@@ -80,6 +89,9 @@ def execute_claimed_run(
         reviewed_assignment_path=assignment_path,
     )
     _validate_task_inputs(contract, materials.task_inputs)
+    boundary["provider_credential_read_count"] = 1
+    values = _provider_values(provider_env_path, contract)
+    api_key = values.pop("BETA6_EXTERNAL_AGENT_API_KEY")
     provider = OpenAICompatibleQualificationProvider(
         run_id=authorization["run_id"],
         api_key=api_key,
@@ -234,6 +246,9 @@ def main() -> int:
             issuance_gate_path=args.issuance_gate,
             claim_preflight_path=args.claim_preflight,
             reviewer_profile_path=args.reviewer_profile,
+            task_source_path=args.task_source,
+            signed_advice_root=args.signed_advice_root,
+            participant_profiles_root=args.participant_profiles_root,
             repository_root=args.repository_root,
         )
         # Secrets are read only after the persisted claim and entry Gate validate.

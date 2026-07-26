@@ -25,6 +25,10 @@ from benchmarks.j1.qualification_execution_entry_v4 import (
 from benchmarks.j1.qualification_execution_preflight_v4 import (
     validate_execution_plan,
 )
+from benchmarks.j1.qualification_execution_materials_v4 import (
+    replay_material_bindings,
+    validate_material_paths,
+)
 from benchmarks.j1.qualification_reviewer_identity import (
     validate_reviewer_identity_profile,
 )
@@ -43,6 +47,9 @@ def claim_and_build_entry_gate(
     issuance_gate_path: Path,
     claim_preflight_path: Path,
     reviewer_profile_path: Path,
+    task_source_path: Path,
+    signed_advice_root: Path,
+    participant_profiles_root: Path,
     repository_root: Path,
 ) -> dict[str, Any]:
     authorization, authorization_raw = _read_private(authorization_path)
@@ -87,6 +94,12 @@ def claim_and_build_entry_gate(
         activation=activation,
         repository_root=repository_root,
     )
+    validate_material_paths(
+        plan["material_bindings"],
+        task_source_path=task_source_path,
+        signed_advice_root=signed_advice_root,
+        participant_profiles_root=participant_profiles_root,
+    )
     authorization_ref = _ref(
         authorization_path, authorization["signature"]["signed_payload_sha256"]
     )
@@ -103,8 +116,8 @@ def claim_and_build_entry_gate(
             "issuance_gate": gate_ref,
             "plan_sha256": plan["plan_sha256"],
         }
-        and preflight.get("execution_manifest_sha256")
-        == execution_manifest_sha256
+        and preflight.get("execution_manifest_sha256") == execution_manifest_sha256
+        and preflight.get("material_bindings") == authorization["material_bindings"]
         and preflight.get("execution_scope") == authorization["execution_scope"]
         and preflight.get("budget") == authorization["budget"]
         and preflight.get("controls") == authorization["controls"]
@@ -121,8 +134,7 @@ def claim_and_build_entry_gate(
         owner_statement == expected_statement
         and preflight["owner_authorization"]["required_exact_statement"]
         == expected_statement
-        and preflight["owner_authorization"]["statement_sha256"]
-        == statement_sha256
+        and preflight["owner_authorization"]["statement_sha256"] == statement_sha256
     ):
         raise ValueError("r4 claim owner authorization mismatch")
     claim_path = Path(authorization["controls"]["authorization_claim_path"])
@@ -133,6 +145,7 @@ def claim_and_build_entry_gate(
     inventory = activation_inventory(activation)
     if inventory != preflight["inventory_snapshot"]:
         raise ValueError("r4 claim activation inventory drift")
+    replay_material_bindings(plan["material_bindings"])
     implementation = _implementation(repository_root)
     claim = build_claim(
         claimed_at=datetime.now(UTC).isoformat(),
@@ -269,17 +282,25 @@ def _validate_upstream(
     preflight_body = {
         key: item for key, item in preflight.items() if key != "preflight_sha256"
     }
-    if profile_failures or authorization_failures or not (
-        authorization_path.resolve()
-        == Path(gate["authorization"]["path"]).resolve()
-        and gate.get("report_sha256") == canonical_sha256(gate_body)
-        and gate.get("passed") is True
-        and gate.get("execution_boundary") == AUTH_BOUNDARY
-        and preflight.get("preflight_sha256") == canonical_sha256(preflight_body)
-        and preflight.get("source_binding", {}).get("authorization", {}).get("sha256")
-        == hashlib.sha256(authorization_path.read_bytes()).hexdigest()
-        and preflight.get("source_binding", {}).get("issuance_gate", {}).get("sha256")
-        == hashlib.sha256(gate_path.read_bytes()).hexdigest()
+    if (
+        profile_failures
+        or authorization_failures
+        or not (
+            authorization_path.resolve()
+            == Path(gate["authorization"]["path"]).resolve()
+            and gate.get("report_sha256") == canonical_sha256(gate_body)
+            and gate.get("passed") is True
+            and gate.get("execution_boundary") == AUTH_BOUNDARY
+            and preflight.get("preflight_sha256") == canonical_sha256(preflight_body)
+            and preflight.get("source_binding", {})
+            .get("authorization", {})
+            .get("sha256")
+            == hashlib.sha256(authorization_path.read_bytes()).hexdigest()
+            and preflight.get("source_binding", {})
+            .get("issuance_gate", {})
+            .get("sha256")
+            == hashlib.sha256(gate_path.read_bytes()).hexdigest()
+        )
     ):
         raise ValueError("r4 authorization, issuance Gate, or claim preflight invalid")
     if not (
@@ -303,7 +324,9 @@ def _implementation(root: Path) -> dict[str, str]:
     return {
         "source_revision": _git(root, "rev-parse", "HEAD"),
         "domain_source_sha256": hashlib.sha256(DOMAIN_SOURCE.read_bytes()).hexdigest(),
-        "operation_source_sha256": hashlib.sha256(OPERATION_SOURCE.read_bytes()).hexdigest(),
+        "operation_source_sha256": hashlib.sha256(
+            OPERATION_SOURCE.read_bytes()
+        ).hexdigest(),
     }
 
 
@@ -364,6 +387,9 @@ def main() -> int:
     parser.add_argument("--issuance-gate", type=Path, required=True)
     parser.add_argument("--claim-preflight", type=Path, required=True)
     parser.add_argument("--reviewer-profile", type=Path, required=True)
+    parser.add_argument("--task-source", type=Path, required=True)
+    parser.add_argument("--signed-advice-root", type=Path, required=True)
+    parser.add_argument("--participant-profiles-root", type=Path, required=True)
     parser.add_argument("--repository-root", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -374,6 +400,9 @@ def main() -> int:
             issuance_gate_path=args.issuance_gate,
             claim_preflight_path=args.claim_preflight,
             reviewer_profile_path=args.reviewer_profile,
+            task_source_path=args.task_source,
+            signed_advice_root=args.signed_advice_root,
+            participant_profiles_root=args.participant_profiles_root,
             repository_root=args.repository_root,
         )
     except AtomicClaimPersistedError as error:

@@ -5,11 +5,14 @@ import copy
 from nacl.signing import SigningKey
 
 from benchmarks.j1.qualification_execution_authorization_v4 import (
+    AUTH_SCHEMA_V1,
     AUTH_BOUNDARY,
     build_authorization,
     build_claim_preflight,
     validate_authorization,
 )
+from benchmarks.j1.qualification_execution_preflight_v4 import PLAN_SCHEMA_V1
+from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.tests.test_j1_qualification_execution_preflight_v4 import _plan
 
 
@@ -123,6 +126,7 @@ def test_claim_preflight_requires_separate_irreversible_claim_approval() -> None
     authorization = {
         "authorization_id": "r4-auth-r1",
         "run_id": plan["run_id"],
+        "material_bindings": plan["material_bindings"],
         "execution_scope": plan["execution_scope"],
         "budget": plan["budget"],
         "controls": plan["controls"],
@@ -146,3 +150,49 @@ def test_claim_preflight_requires_separate_irreversible_claim_approval() -> None
     assert "create-exclusive atomic claim" in statement
     assert "claim is irreversible" in statement
     assert preflight["readiness"]["atomic_claim_allowed_by_this_preflight"] is False
+
+
+def test_r4_authorization_keeps_historical_v1_replayable() -> None:
+    plan = _plan()
+    plan["schema_version"] = PLAN_SCHEMA_V1
+    del plan["material_bindings"]
+    plan["plan_sha256"] = canonical_sha256(
+        {key: item for key, item in plan.items() if key != "plan_sha256"}
+    )
+    signer = _Signer()
+    reviewer = {
+        "did": "did:civ:testnet:reviewer",
+        "public_key_hex": signer.public_key_hex,
+        "credential_version": 1,
+        "signer_kind": "pkcs11_ed25519",
+    }
+    implementation = {"source_revision": "c" * 40}
+    authorization = build_authorization(
+        authorization_id="r4-auth-v1",
+        owner_authorization_id="owner-v1",
+        owner_statement_sha256="f" * 64,
+        issued_at="2026-07-25T12:00:00+00:00",
+        plan_ref=_ref("plan"),
+        preflight_ref=_ref("preflight"),
+        plan=plan,
+        reviewer=reviewer,
+        reviewer_profile_sha256="1" * 64,
+        implementation=implementation,
+        signer=signer,
+    )
+
+    assert authorization["schema_version"] == AUTH_SCHEMA_V1
+    assert "material_bindings" not in authorization
+    assert (
+        validate_authorization(
+            authorization,
+            plan=plan,
+            expected_plan_ref=_ref("plan"),
+            expected_preflight_ref=_ref("preflight"),
+            expected_owner_statement_sha256="f" * 64,
+            expected_reviewer=reviewer,
+            expected_reviewer_profile_sha256="1" * 64,
+            expected_implementation=implementation,
+        )
+        == []
+    )

@@ -23,6 +23,10 @@ EXECUTION_SOURCE_PATHS = [
     "benchmarks/j1/qualification_container_runner_v4.py",
     "benchmarks/j1/qualification_execution_contract_v4.py",
     "benchmarks/j1/qualification_execution_entry_v4.py",
+    "benchmarks/j1/qualification_execution_materials_v4.py",
+    "benchmarks/j1/qualification_execution_preflight_v4.py",
+    "benchmarks/j1/qualification_execution_authorization_v4.py",
+    "benchmarks/j1/qualification_failed_execution_closeout_v4.py",
     "benchmarks/j1/qualification_orchestrator_v4.py",
     "benchmarks/j1/qualification_fault_matrix_v4.py",
     "benchmarks/j1/qualification_live_adapter_v4.py",
@@ -30,6 +34,9 @@ EXECUTION_SOURCE_PATHS = [
     "benchmarks/j1/qualification_live_evidence_v4.py",
     "benchmarks/j1_qualification_execution_contract_v4.py",
     "benchmarks/j1_qualification_execution_entry_v4.py",
+    "benchmarks/j1_qualification_execution_preflight_v4.py",
+    "benchmarks/j1_qualification_execution_authorization_v4.py",
+    "benchmarks/j1_qualification_failed_execution_closeout_v4.py",
     "benchmarks/j1_qualification_live_execute_v4.py",
     "benchmarks/j1_qualification_orchestrator_v4.py",
     "benchmarks/j1_qualification_fault_matrix_v4.py",
@@ -76,9 +83,7 @@ def generate_review_materials(
         },
     }
     artifacts = {
-        "execution_contract": _ref(
-            contract_path, contract["contract_sha256"]
-        ),
+        "execution_contract": _ref(contract_path, contract["contract_sha256"]),
         "offline_orchestrator_report": _ref(
             offline_report_path, offline["report_sha256"]
         ),
@@ -149,7 +154,8 @@ def _validate_evidence(
     if (
         contract.get("status") != "independent_review_required"
         or len(contract.get("task_executions", [])) != 320
-        or contract_hash != canonical_sha256(
+        or contract_hash
+        != canonical_sha256(
             {key: item for key, item in contract.items() if key != "contract_sha256"}
         )
     ):
@@ -218,7 +224,9 @@ def _read_object(path: Path) -> dict[str, Any]:
 
 def _require_clean(root: Path) -> None:
     if _git(root, "status", "--porcelain"):
-        raise ValueError("repository must be clean before r4 review material generation")
+        raise ValueError(
+            "repository must be clean before r4 review material generation"
+        )
 
 
 def _git(root: Path, *arguments: str) -> str:

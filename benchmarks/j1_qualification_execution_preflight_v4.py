@@ -15,6 +15,9 @@ from benchmarks.j1.qualification_execution_preflight_v4 import (
     build_execution_plan,
     build_preflight,
 )
+from benchmarks.j1.qualification_execution_materials_v4 import (
+    build_material_bindings,
+)
 from benchmarks.j1_qualification_runtime_inventory_v4 import activation_inventory
 
 
@@ -30,6 +33,9 @@ def generate_preflight(
     promotion_gate_path: Path,
     provider_receipt_path: Path,
     provider_gate_path: Path,
+    task_source_path: Path,
+    signed_advice_root: Path,
+    participant_profiles_root: Path,
     repository_root: Path,
     output_root: Path,
     execution_root: Path,
@@ -52,9 +58,7 @@ def generate_preflight(
         and promotion_gate.get("passed") is True
         and provider_receipt.get("status") == "admitted"
         and provider_gate.get("passed") is True
-        and provider_receipt.get("source_binding", {}).get(
-            "frozen_r4_stack_sha256"
-        )
+        and provider_receipt.get("source_binding", {}).get("frozen_r4_stack_sha256")
         == frozen["frozen_stack_sha256"]
     ):
         raise ValueError("r4 execution promoted stack or provider binding invalid")
@@ -77,11 +81,14 @@ def generate_preflight(
     activation = _read(Path(activation_ref["path"]))
     inventory = activation_inventory(activation)
     implementation = _implementation(repository_root)
+    material_bindings = build_material_bindings(
+        task_source_path=task_source_path,
+        signed_advice_root=signed_advice_root,
+        participant_profiles_root=participant_profiles_root,
+    )
     refs = {
         "frozen_r4_stack": _ref(frozen_stack_path, frozen["frozen_stack_sha256"]),
-        "r4_promotion_gate": _ref(
-            promotion_gate_path, promotion_gate["report_sha256"]
-        ),
+        "r4_promotion_gate": _ref(promotion_gate_path, promotion_gate["report_sha256"]),
         "execution_contract": _ref(contract_path, contract["contract_sha256"]),
         "provider_admission_receipt": _ref(
             provider_receipt_path, provider_receipt["receipt_sha256"]
@@ -97,7 +104,9 @@ def generate_preflight(
         "authorization_claim_path": str(authorization_claim_path.resolve()),
         "post_run_output_root": str(post_run_output_root.resolve()),
     }
-    if len(set(paths.values())) != 4 or any(Path(path).exists() for path in paths.values()):
+    if len(set(paths.values())) != 4 or any(
+        Path(path).exists() for path in paths.values()
+    ):
         raise ValueError("r4 future execution paths must be distinct and absent")
     plan = build_execution_plan(
         run_id=run_id,
@@ -109,6 +118,7 @@ def generate_preflight(
         evaluation_bundle_sha256=source["frozen_evaluation_closeout_bundle"][
             "canonical_sha256"
         ],
+        material_bindings=material_bindings,
         paths=paths,
         implementation=implementation,
     )
@@ -139,7 +149,9 @@ def _implementation(root: Path) -> dict[str, str]:
     return {
         "source_revision": _git(root, "rev-parse", "HEAD"),
         "domain_source_sha256": hashlib.sha256(DOMAIN_SOURCE.read_bytes()).hexdigest(),
-        "operation_source_sha256": hashlib.sha256(OPERATION_SOURCE.read_bytes()).hexdigest(),
+        "operation_source_sha256": hashlib.sha256(
+            OPERATION_SOURCE.read_bytes()
+        ).hexdigest(),
     }
 
 
@@ -178,6 +190,9 @@ def main() -> int:
     parser.add_argument("--promotion-gate", type=Path, required=True)
     parser.add_argument("--provider-receipt", type=Path, required=True)
     parser.add_argument("--provider-gate", type=Path, required=True)
+    parser.add_argument("--task-source", type=Path, required=True)
+    parser.add_argument("--signed-advice-root", type=Path, required=True)
+    parser.add_argument("--participant-profiles-root", type=Path, required=True)
     parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--execution-root", type=Path, required=True)
@@ -193,6 +208,9 @@ def main() -> int:
         promotion_gate_path=args.promotion_gate,
         provider_receipt_path=args.provider_receipt,
         provider_gate_path=args.provider_gate,
+        task_source_path=args.task_source,
+        signed_advice_root=args.signed_advice_root,
+        participant_profiles_root=args.participant_profiles_root,
         repository_root=args.repository_root,
         output_root=args.output_root,
         execution_root=args.execution_root,

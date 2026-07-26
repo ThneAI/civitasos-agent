@@ -8,10 +8,13 @@ from datetime import datetime
 from typing import Any
 
 from .controlled_comparison import canonical_sha256
+from .qualification_execution_materials_v4 import validate_material_bindings
 
 
-PLAN_SCHEMA = "j1-qualification-r4-execution-plan:v1"
-PREFLIGHT_SCHEMA = "j1-qualification-r4-execution-preflight:v1"
+PLAN_SCHEMA_V1 = "j1-qualification-r4-execution-plan:v1"
+PLAN_SCHEMA = "j1-qualification-r4-execution-plan:v2"
+PREFLIGHT_SCHEMA_V1 = "j1-qualification-r4-execution-preflight:v1"
+PREFLIGHT_SCHEMA = "j1-qualification-r4-execution-preflight:v2"
 TTL_SECONDS = 1800
 SOURCE_NAMES = {
     "frozen_r4_stack",
@@ -48,6 +51,7 @@ def build_execution_plan(
     contract_sha256: str,
     provider_receipt_sha256: str,
     evaluation_bundle_sha256: str,
+    material_bindings: dict[str, Any],
     paths: dict[str, str],
     implementation: dict[str, str],
 ) -> dict[str, Any]:
@@ -64,6 +68,7 @@ def build_execution_plan(
             "provider_admission_receipt_sha256": provider_receipt_sha256,
             "evaluation_closeout_bundle_sha256": evaluation_bundle_sha256,
         },
+        "material_bindings": copy.deepcopy(material_bindings),
         "execution_scope": {
             "participant_count": 40,
             "mentor_participant_count": 20,
@@ -112,14 +117,22 @@ def build_execution_plan(
 def validate_execution_plan(value: Any) -> list[str]:
     plan = value if isinstance(value, dict) else {}
     failures: list[str] = []
+    schema = plan.get("schema_version")
+    materials_valid = (
+        schema == PLAN_SCHEMA_V1
+        and "material_bindings" not in plan
+        or schema == PLAN_SCHEMA
+        and not validate_material_bindings(plan.get("material_bindings"))
+    )
     if not (
-        plan.get("schema_version") == PLAN_SCHEMA
+        schema in {PLAN_SCHEMA_V1, PLAN_SCHEMA}
         and plan.get("status") == "owner_authorization_required"
         and _text(plan.get("run_id"))
         and _rfc3339(plan.get("created_at"))
         and plan.get("ttl_seconds") == TTL_SECONDS
         and set(plan.get("source_artifacts", {})) == SOURCE_NAMES
         and all(_artifact_ref(item) for item in plan["source_artifacts"].values())
+        and materials_valid
     ):
         failures.append("r4_execution_plan_identity_or_sources_invalid")
     if plan.get("execution_scope") != {
@@ -181,8 +194,13 @@ def build_preflight(
     statement = issuance_authorization_statement(
         plan_raw_sha256=plan_raw_sha256, plan=plan
     )
+    material_bound = plan.get("schema_version") == PLAN_SCHEMA
     value = {
-        "schema_version": PREFLIGHT_SCHEMA,
+        "schema_version": (
+            PREFLIGHT_SCHEMA
+            if plan.get("schema_version") == PLAN_SCHEMA
+            else PREFLIGHT_SCHEMA_V1
+        ),
         "run_id": plan["run_id"],
         "passed": True,
         "failure_reasons": [],
@@ -199,6 +217,7 @@ def build_preflight(
             "live_provider_admission_bound": True,
             "frozen_evaluator_and_closeout_bound": True,
             "exact_320_task_manifest_bound": True,
+            **({"private_execution_materials_bound": True} if material_bound else {}),
             "recoverable_orchestrator_and_fault_matrix_bound": True,
             "budget_and_protocol_ceilings_bound": True,
             "forty_stopped_containers_verified": True,
@@ -226,6 +245,10 @@ def issuance_authorization_statement(
     *, plan_raw_sha256: str, plan: dict[str, Any]
 ) -> str:
     binding = plan["binding"]
+    material_clause = ""
+    if plan.get("schema_version") == PLAN_SCHEMA:
+        material_binding = plan["material_bindings"]["material_binding_sha256"]
+        material_clause = f"The execution material binding is {material_binding}. "
     return (
         "I authorize issuance of exactly one 1800-second single-use J1-D r4 "
         f"qualification execution authorization for run {plan['run_id']} from plan "
@@ -234,7 +257,8 @@ def issuance_authorization_statement(
         f"contract {binding['execution_contract_sha256']}, live provider-admission "
         f"receipt {binding['provider_admission_receipt_sha256']}, and frozen "
         f"evaluation/closeout bundle {binding['evaluation_closeout_bundle_sha256']}. "
-        "The scope is exactly 40 participants, 20 pairs, 320 task executions, and "
+        f"{material_clause}The scope is exactly "
+        "40 participants, 20 pairs, 320 task executions, and "
         "320 provider calls using openai_compatible / deepseek-v4-pro at temperature "
         "0. I acknowledge reservation of 800000 tokens and 487360 USD microunits, "
         "an absolute protocol ceiling of 4000000 USD microunits, atomic single-use "

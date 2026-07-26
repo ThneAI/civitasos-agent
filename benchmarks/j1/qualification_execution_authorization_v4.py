@@ -12,12 +12,19 @@ from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 
 from .controlled_comparison import canonical_sha256
-from .qualification_execution_preflight_v4 import TTL_SECONDS
+from .qualification_execution_preflight_v4 import (
+    PLAN_SCHEMA,
+    PLAN_SCHEMA_V1,
+    TTL_SECONDS,
+)
 
 
-AUTH_SCHEMA = "j1-qualification-r4-execution-authorization:v1"
-GATE_SCHEMA = "j1-qualification-r4-execution-authorization-gate:v1"
-CLAIM_PREFLIGHT_SCHEMA = "j1-qualification-r4-claim-preflight:v1"
+AUTH_SCHEMA_V1 = "j1-qualification-r4-execution-authorization:v1"
+AUTH_SCHEMA = "j1-qualification-r4-execution-authorization:v2"
+GATE_SCHEMA_V1 = "j1-qualification-r4-execution-authorization-gate:v1"
+GATE_SCHEMA = "j1-qualification-r4-execution-authorization-gate:v2"
+CLAIM_PREFLIGHT_SCHEMA_V1 = "j1-qualification-r4-claim-preflight:v1"
+CLAIM_PREFLIGHT_SCHEMA = "j1-qualification-r4-claim-preflight:v2"
 AUTH_BOUNDARY = {
     "authorization_issuance_only": True,
     "single_use_authorization_issued": True,
@@ -71,8 +78,9 @@ def build_authorization(
     issued = _timestamp(issued_at)
     if issued is None:
         raise ValueError("r4 authorization issued_at invalid")
+    material_bound = plan.get("schema_version") == PLAN_SCHEMA
     value = {
-        "schema_version": AUTH_SCHEMA,
+        "schema_version": AUTH_SCHEMA if material_bound else AUTH_SCHEMA_V1,
         "authorization_id": authorization_id,
         "run_id": plan["run_id"],
         "decision": "authorize_once",
@@ -89,11 +97,14 @@ def build_authorization(
         "source_binding": {
             "plan": copy.deepcopy(plan_ref),
             "preflight": copy.deepcopy(preflight_ref),
-            "source_artifact_set_sha256": canonical_sha256(
-                plan["source_artifacts"]
-            ),
+            "source_artifact_set_sha256": canonical_sha256(plan["source_artifacts"]),
         },
         "binding": copy.deepcopy(plan["binding"]),
+        **(
+            {"material_bindings": copy.deepcopy(plan["material_bindings"])}
+            if material_bound
+            else {}
+        ),
         "execution_scope": copy.deepcopy(plan["execution_scope"]),
         "budget": copy.deepcopy(plan["budget"]),
         "controls": copy.deepcopy(plan["controls"]),
@@ -146,8 +157,16 @@ def validate_authorization(
     issued = _timestamp(authorization.get("issued_at"))
     valid_from = _timestamp(authorization.get("valid_from"))
     valid_until = _timestamp(authorization.get("valid_until"))
+    plan_schema = plan.get("schema_version")
+    expected_schema = (
+        AUTH_SCHEMA
+        if plan_schema == PLAN_SCHEMA
+        else AUTH_SCHEMA_V1
+        if plan_schema == PLAN_SCHEMA_V1
+        else None
+    )
     if not (
-        authorization.get("schema_version") == AUTH_SCHEMA
+        authorization.get("schema_version") == expected_schema
         and authorization.get("run_id") == plan.get("run_id")
         and authorization.get("decision") == "authorize_once"
         and issued is not None
@@ -162,16 +181,22 @@ def validate_authorization(
             failures.append("r4_authorization_not_current")
     if authorization.get("owner_authorization", {}).get(
         "statement_sha256"
-    ) != expected_owner_statement_sha256 or authorization.get(
-        "source_binding"
-    ) != {
+    ) != expected_owner_statement_sha256 or authorization.get("source_binding") != {
         "plan": expected_plan_ref,
         "preflight": expected_preflight_ref,
         "source_artifact_set_sha256": canonical_sha256(plan["source_artifacts"]),
     }:
         failures.append("r4_authorization_owner_or_source_invalid")
+    materials_valid = (
+        expected_schema == AUTH_SCHEMA_V1
+        and "material_bindings" not in authorization
+        and "material_bindings" not in plan
+        or expected_schema == AUTH_SCHEMA
+        and authorization.get("material_bindings") == plan.get("material_bindings")
+    )
     if not (
         authorization.get("binding") == plan.get("binding")
+        and materials_valid
         and authorization.get("execution_scope") == plan.get("execution_scope")
         and authorization.get("budget") == plan.get("budget")
         and authorization.get("controls") == plan.get("controls")
@@ -188,9 +213,7 @@ def validate_authorization(
     ):
         failures.append("r4_authorization_reviewer_or_boundary_invalid")
     signature = authorization.get("signature", {})
-    unsigned = {
-        key: item for key, item in authorization.items() if key != "signature"
-    }
+    unsigned = {key: item for key, item in authorization.items() if key != "signature"}
     payload = _payload(unsigned)
     try:
         VerifyKey(bytes.fromhex(expected_reviewer["public_key_hex"])).verify(
@@ -212,8 +235,9 @@ def build_issuance_gate(
     preflight: dict[str, Any],
     inventory_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
+    material_bound = authorization.get("schema_version") == AUTH_SCHEMA
     value = {
-        "schema_version": GATE_SCHEMA,
+        "schema_version": GATE_SCHEMA if material_bound else GATE_SCHEMA_V1,
         "passed": True,
         "failure_reasons": [],
         "state": "r4_authorization_issued_claim_preflight_required",
@@ -229,6 +253,7 @@ def build_issuance_gate(
             "owner_statement_bound": True,
             "frozen_r4_stack_and_provider_admission_bound": True,
             "execution_scope_and_budget_bound": True,
+            **({"private_execution_materials_bound": True} if material_bound else {}),
             "forty_stopped_containers_revalidated": True,
             "authorization_unconsumed": True,
             "future_execution_paths_absent": True,
@@ -265,8 +290,11 @@ def build_claim_preflight(
         authorization=authorization,
         execution_manifest_sha256=execution_manifest_sha256,
     )
+    material_bound = authorization.get("schema_version") == AUTH_SCHEMA
     value = {
-        "schema_version": CLAIM_PREFLIGHT_SCHEMA,
+        "schema_version": (
+            CLAIM_PREFLIGHT_SCHEMA if material_bound else CLAIM_PREFLIGHT_SCHEMA_V1
+        ),
         "run_id": authorization["run_id"],
         "state": "r4_claim_preflight_passed_owner_authorization_required",
         "checked_at": checked_at,
@@ -277,6 +305,11 @@ def build_claim_preflight(
         },
         "inventory_snapshot": copy.deepcopy(inventory_snapshot),
         "execution_manifest_sha256": execution_manifest_sha256,
+        **(
+            {"material_bindings": copy.deepcopy(authorization["material_bindings"])}
+            if material_bound
+            else {}
+        ),
         "execution_scope": copy.deepcopy(authorization["execution_scope"]),
         "budget": copy.deepcopy(authorization["budget"]),
         "controls": copy.deepcopy(authorization["controls"]),
@@ -293,6 +326,9 @@ def build_claim_preflight(
             "execution_and_post_run_paths_absent": True,
             "forty_stopped_containers_revalidated": True,
             "exact_320_task_manifest_bound": True,
+            **(
+                {"private_execution_materials_replayed": True} if material_bound else {}
+            ),
             "provider_admission_and_signed_closeout_bound": True,
             "no_execution_side_effect_performed": True,
         },
@@ -315,6 +351,12 @@ def claim_authorization_statement(
     authorization: dict[str, Any],
     execution_manifest_sha256: str,
 ) -> str:
+    material_clause = ""
+    if authorization.get("schema_version") == AUTH_SCHEMA:
+        material_clause = (
+            " and execution material binding "
+            f"{authorization['material_bindings']['material_binding_sha256']}"
+        )
     return (
         "I authorize exactly one create-exclusive atomic claim of J1-D r4 "
         f"authorization {authorization['authorization_id']} raw SHA-256 "
@@ -322,7 +364,8 @@ def claim_authorization_statement(
         f"{authorization_ref['canonical_sha256']}, issuance Gate canonical SHA-256 "
         f"{issuance_gate_ref['canonical_sha256']}, for run "
         f"{authorization['run_id']} and execution manifest "
-        f"{execution_manifest_sha256}. After that claim validates, I authorize "
+        f"{execution_manifest_sha256}{material_clause}. After that "
+        "claim validates, I authorize "
         "exactly one bounded execution covering 40 participants, 20 pairs, 320 task "
         "executions, and 320 provider calls using openai_compatible / "
         "deepseek-v4-pro at temperature 0. I acknowledge reservation of 800000 "
