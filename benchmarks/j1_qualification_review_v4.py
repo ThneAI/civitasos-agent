@@ -32,6 +32,7 @@ EXECUTION_SOURCE_PATHS = [
     "benchmarks/j1/qualification_live_adapter_v4.py",
     "benchmarks/j1/qualification_live_boundaries_v4.py",
     "benchmarks/j1/qualification_live_evidence_v4.py",
+    "benchmarks/j1/qualification_provider_broker.py",
     "benchmarks/j1_qualification_execution_contract_v4.py",
     "benchmarks/j1_qualification_execution_entry_v4.py",
     "benchmarks/j1_qualification_execution_preflight_v4.py",

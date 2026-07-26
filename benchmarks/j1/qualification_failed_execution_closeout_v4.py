@@ -14,11 +14,17 @@ from nacl.signing import VerifyKey
 from .controlled_comparison import canonical_sha256
 
 
-PREFLIGHT_SCHEMA = "j1-qualification-r4-failed-execution-closeout-preflight:v1"
-POST_RUN_SCHEMA = "j1-qualification-r4-failed-post-run-receipt:v1"
-EVALUATION_SCHEMA = "j1-qualification-r4-failed-evaluation-report:v1"
-CLOSEOUT_SCHEMA = "j1-qualification-r4-failed-operator-closeout:v1"
-GATE_SCHEMA = "j1-qualification-r4-failed-closeout-gate:v1"
+PREFLIGHT_SCHEMA_V1 = "j1-qualification-r4-failed-execution-closeout-preflight:v1"
+POST_RUN_SCHEMA_V1 = "j1-qualification-r4-failed-post-run-receipt:v1"
+EVALUATION_SCHEMA_V1 = "j1-qualification-r4-failed-evaluation-report:v1"
+CLOSEOUT_SCHEMA_V1 = "j1-qualification-r4-failed-operator-closeout:v1"
+GATE_SCHEMA_V1 = "j1-qualification-r4-failed-closeout-gate:v1"
+
+PREFLIGHT_SCHEMA = "j1-qualification-r4-failed-execution-closeout-preflight:v2"
+POST_RUN_SCHEMA = "j1-qualification-r4-failed-post-run-receipt:v2"
+EVALUATION_SCHEMA = "j1-qualification-r4-failed-evaluation-report:v2"
+CLOSEOUT_SCHEMA = "j1-qualification-r4-failed-operator-closeout:v2"
+GATE_SCHEMA = "j1-qualification-r4-failed-closeout-gate:v2"
 
 PREFLIGHT_BOUNDARY = {
     "failed_closeout_preparation_only": True,
@@ -57,6 +63,22 @@ def owner_closeout_statement(preflight: dict[str, Any]) -> str:
         if "provider_credential_read_count" in execution
         else ""
     )
+    if preflight.get("schema_version") == PREFLIGHT_SCHEMA_V1:
+        budget_statement = (
+            f"{budget['actual_tokens']} actual tokens, and "
+            f"{budget['actual_cost_microunits']} actual USD microunits."
+        )
+    else:
+        budget_statement = (
+            f"{budget['actual_tokens']} known actual tokens, "
+            f"{budget['actual_cost_microunits']} known actual USD microunits, and "
+            f"{budget['provider_outcome_unknown_call_count']} provider outcome "
+            f"unknown retaining {budget['unknown_reserved_tokens']} reserved tokens "
+            f"and {budget['unknown_reserved_cost_microunits']} reserved USD "
+            f"microunits (conservative upper bound "
+            f"{budget['chargeable_token_upper_bound']} tokens and "
+            f"{budget['chargeable_cost_upper_bound_microunits']} USD microunits)."
+        )
     return (
         "I authorize exactly one signed J1-D r4 partial-failure closeout for run "
         f"{preflight['run_id']}, consumed authorization "
@@ -71,9 +93,7 @@ def owner_closeout_statement(preflight: dict[str, Any]) -> str:
         f"{execution['unattempted_task_count']} unattempted task executions, "
         f"{execution['provider_call_count']} provider calls, "
         f"{execution['participant_signature_count']} participant signatures, "
-        f"{credential_read}"
-        f"{budget['actual_tokens']} actual tokens, and "
-        f"{budget['actual_cost_microunits']} actual USD microunits. The terminal "
+        f"{credential_read}{budget_statement} The terminal "
         f"failure is {failure['state']} caused by {failure['reason']}, with provider "
         f"dispatch performed={str(failure['provider_call_performed']).lower()}. I "
         "acknowledge that the claim remains immutable and consumed, no task or provider "
@@ -142,7 +162,7 @@ def validate_preflight(value: Any) -> list[str]:
     inventory = preflight.get("terminal_inventory", {})
     pre_orchestrator = failure.get("state") == "pre_orchestrator_error"
     if not (
-        preflight.get("schema_version") == PREFLIGHT_SCHEMA
+        preflight.get("schema_version") in {PREFLIGHT_SCHEMA_V1, PREFLIGHT_SCHEMA}
         and preflight.get("state")
         == "r4_failed_execution_closeout_ready_owner_authorization_required"
         and _rfc3339(preflight.get("checked_at"))
@@ -150,6 +170,12 @@ def validate_preflight(value: Any) -> list[str]:
         and _text(preflight.get("authorization_id"))
     ):
         failures.append("failed_closeout_preflight_identity_invalid")
+    accounted_provider_calls = budget.get("reconciled_provider_call_count", 0)
+    if preflight.get("schema_version") == PREFLIGHT_SCHEMA:
+        accounted_provider_calls += (
+            budget.get("overrun_provider_call_count", 0)
+            + budget.get("provider_outcome_unknown_call_count", 0)
+        )
     partial_execution_valid = (
         execution.get("authorized_task_count") == 320
         and execution.get("committed_task_count", -1) >= 0
@@ -160,7 +186,7 @@ def validate_preflight(value: Any) -> list[str]:
         + execution.get("unattempted_task_count")
         == 320
         and execution.get("provider_call_count")
-        == budget.get("reconciled_provider_call_count")
+        == accounted_provider_calls
         and execution.get("participant_signature_count")
         == execution.get("committed_task_count")
     )
@@ -199,21 +225,54 @@ def validate_preflight(value: Any) -> list[str]:
         )
     ):
         failures.append("failed_closeout_failure_invalid")
-    if not (
-        all(
+    budget_valid = all(
+        isinstance(budget.get(name), int) and budget[name] >= 0
+        for name in (
+            "reconciled_provider_call_count",
+            "reserved_tokens",
+            "reserved_cost_microunits",
+            "actual_tokens",
+            "actual_cost_microunits",
+        )
+    )
+    if preflight.get("schema_version") == PREFLIGHT_SCHEMA:
+        budget_valid = budget_valid and all(
             isinstance(budget.get(name), int) and budget[name] >= 0
             for name in (
-                "reconciled_provider_call_count",
-                "reserved_tokens",
-                "reserved_cost_microunits",
-                "actual_tokens",
-                "actual_cost_microunits",
+                "overrun_provider_call_count",
+                "provider_outcome_unknown_call_count",
+                "unknown_reserved_tokens",
+                "unknown_reserved_cost_microunits",
+                "chargeable_token_upper_bound",
+                "chargeable_cost_upper_bound_microunits",
             )
         )
-        and budget.get("actual_tokens") <= budget.get("reserved_tokens")
-        and budget.get("actual_cost_microunits")
-        <= budget.get("reserved_cost_microunits")
-    ):
+        budget_valid = bool(
+            budget_valid
+            and budget.get("chargeable_token_upper_bound")
+            == budget.get("actual_tokens") + budget.get("unknown_reserved_tokens")
+            and budget.get("chargeable_cost_upper_bound_microunits")
+            == budget.get("actual_cost_microunits")
+            + budget.get("unknown_reserved_cost_microunits")
+            and budget.get("provider_outcome_unknown_call_count")
+            == (1 if failure.get("state") == "provider_outcome_unknown" else 0)
+            and budget.get("unknown_reserved_tokens")
+            <= budget.get("reserved_tokens")
+            and budget.get("unknown_reserved_cost_microunits")
+            <= budget.get("reserved_cost_microunits")
+            and (
+                failure.get("state") != "provider_outcome_unknown"
+                or failure.get("provider_call_performed") is True
+            )
+        )
+    else:
+        budget_valid = bool(
+            budget_valid
+            and budget.get("actual_tokens") <= budget.get("reserved_tokens")
+            and budget.get("actual_cost_microunits")
+            <= budget.get("reserved_cost_microunits")
+        )
+    if not budget_valid:
         failures.append("failed_closeout_budget_summary_invalid")
     if not (
         inventory.get("participant_container_count") == 40
@@ -274,8 +333,9 @@ def build_closeout_artifacts(
         "terminal_inventory": copy.deepcopy(preflight["terminal_inventory"]),
         "implementation": copy.deepcopy(implementation),
     }
+    historical_v1 = preflight.get("schema_version") == PREFLIGHT_SCHEMA_V1
     post_run = {
-        "schema_version": POST_RUN_SCHEMA,
+        "schema_version": POST_RUN_SCHEMA_V1 if historical_v1 else POST_RUN_SCHEMA,
         "status": "failed",
         **copy.deepcopy(common),
         "partial_results_promotable": False,
@@ -283,7 +343,7 @@ def build_closeout_artifacts(
     }
     post_run["receipt_sha256"] = canonical_sha256(post_run)
     evaluation = {
-        "schema_version": EVALUATION_SCHEMA,
+        "schema_version": EVALUATION_SCHEMA_V1 if historical_v1 else EVALUATION_SCHEMA,
         "status": "ineligible_failed_run",
         **copy.deepcopy(common),
         "post_run_receipt_sha256": post_run["receipt_sha256"],
@@ -294,7 +354,7 @@ def build_closeout_artifacts(
     }
     evaluation["report_sha256"] = canonical_sha256(evaluation)
     closeout = {
-        "schema_version": CLOSEOUT_SCHEMA,
+        "schema_version": CLOSEOUT_SCHEMA_V1 if historical_v1 else CLOSEOUT_SCHEMA,
         "decision": "record_failed_run",
         **copy.deepcopy(common),
         "post_run_receipt_sha256": post_run["receipt_sha256"],
@@ -351,8 +411,14 @@ def validate_closeout_artifacts(
     evaluation = values.get("evaluation_report", {})
     closeout = values.get("operator_closeout", {})
     failures: list[str] = []
+    historical_v1 = preflight.get("schema_version") == PREFLIGHT_SCHEMA_V1
+    expected_post_run_schema = POST_RUN_SCHEMA_V1 if historical_v1 else POST_RUN_SCHEMA
+    expected_evaluation_schema = (
+        EVALUATION_SCHEMA_V1 if historical_v1 else EVALUATION_SCHEMA
+    )
+    expected_closeout_schema = CLOSEOUT_SCHEMA_V1 if historical_v1 else CLOSEOUT_SCHEMA
     if not (
-        post_run.get("schema_version") == POST_RUN_SCHEMA
+        post_run.get("schema_version") == expected_post_run_schema
         and post_run.get("status") == "failed"
         and post_run.get("preflight") == preflight_ref
         and post_run.get("receipt_sha256")
@@ -364,7 +430,7 @@ def validate_closeout_artifacts(
     ):
         failures.append("failed_closeout_post_run_receipt_invalid")
     if not (
-        evaluation.get("schema_version") == EVALUATION_SCHEMA
+        evaluation.get("schema_version") == expected_evaluation_schema
         and evaluation.get("status") == "ineligible_failed_run"
         and evaluation.get("post_run_receipt_sha256") == post_run.get("receipt_sha256")
         and evaluation.get("report_sha256")
@@ -384,7 +450,7 @@ def validate_closeout_artifacts(
     except (BadSignatureError, ValueError):
         failures.append("failed_closeout_signature_invalid")
     if not (
-        closeout.get("schema_version") == CLOSEOUT_SCHEMA
+        closeout.get("schema_version") == expected_closeout_schema
         and closeout.get("decision") == "record_failed_run"
         and closeout.get("preflight") == preflight_ref
         and closeout.get("post_run_receipt_sha256") == post_run.get("receipt_sha256")
@@ -414,8 +480,9 @@ def build_closeout_gate(
     pre_orchestrator = (
         preflight.get("failure", {}).get("state") == "pre_orchestrator_error"
     )
+    historical_v1 = preflight.get("schema_version") == PREFLIGHT_SCHEMA_V1
     value = {
-        "schema_version": GATE_SCHEMA,
+        "schema_version": GATE_SCHEMA_V1 if historical_v1 else GATE_SCHEMA,
         "passed": True,
         "failure_reasons": [],
         "state": "r4_failed_run_closed_no_promotion_new_stack_required",
@@ -427,7 +494,11 @@ def build_closeout_gate(
             "claim_remains_consumed": True,
             "partial_execution_bound": not pre_orchestrator,
             "pre_orchestrator_failure_bound": pre_orchestrator,
-            "journal_and_budget_reconciled": not pre_orchestrator,
+            (
+                "journal_and_budget_reconciled"
+                if historical_v1
+                else "journal_and_budget_terminally_accounted"
+            ): not pre_orchestrator,
             "journal_and_budget_absence_verified": pre_orchestrator,
             "terminal_inventory_running_zero": True,
             "operator_signature_valid": True,

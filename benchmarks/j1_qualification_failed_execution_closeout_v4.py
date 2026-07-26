@@ -31,6 +31,7 @@ from benchmarks.j1.qualification_failed_execution_closeout_v4 import (
     validate_closeout_artifacts,
     validate_preflight,
 )
+from benchmarks.j1.qualification_review_v4 import validate_review_bundle
 from benchmarks.j1.qualification_reviewer_identity import (
     validate_reviewer_identity_profile,
 )
@@ -54,6 +55,7 @@ def generate_preflight(
     reviewer_profile_path: Path,
     live_report_path: Path,
     execution_root: Path,
+    closeout_implementation_gate_path: Path,
     output_root: Path,
     repository_root: Path,
 ) -> dict[str, Any]:
@@ -68,6 +70,7 @@ def generate_preflight(
         reviewer_profile_path=reviewer_profile_path,
         live_report_path=live_report_path,
         execution_root=execution_root,
+        closeout_implementation_gate_path=closeout_implementation_gate_path,
         repository_root=repository_root,
     )
     target = Path(context["authorization"]["controls"]["post_run_output_root"])
@@ -107,6 +110,7 @@ def perform_closeout(
     reviewer_profile_path: Path,
     live_report_path: Path,
     execution_root: Path,
+    closeout_implementation_gate_path: Path,
     closeout_preflight_path: Path,
     owner_authorization_id: str,
     owner_statement: str,
@@ -129,6 +133,7 @@ def perform_closeout(
         reviewer_profile_path=reviewer_profile_path,
         live_report_path=live_report_path,
         execution_root=execution_root,
+        closeout_implementation_gate_path=closeout_implementation_gate_path,
         repository_root=repository_root,
     )
     preflight, preflight_raw = _read_private(closeout_preflight_path)
@@ -201,6 +206,7 @@ def _context(
     reviewer_profile_path: Path,
     live_report_path: Path,
     execution_root: Path,
+    closeout_implementation_gate_path: Path,
     repository_root: Path,
 ) -> dict[str, Any]:
     authorization, authorization_raw = _read_private(authorization_path)
@@ -358,7 +364,11 @@ def _context(
         if not (
             committed + failed + unattempted == 320
             and execution_scope["provider_call_count"]
-            == budget["reconciled_provider_call_count"]
+            == (
+                budget["reconciled_provider_call_count"]
+                + budget["overrun_provider_call_count"]
+                + budget["provider_outcome_unknown_call_count"]
+            )
             and execution_scope["participant_signature_count"] == committed
         ):
             raise ValueError("failed closeout execution or budget counts invalid")
@@ -416,6 +426,11 @@ def _context(
     if "record_failed_run" not in allowed:
         raise ValueError("frozen closeout contract forbids record_failed_run")
     implementation = _implementation(repository_root)
+    closeout_review_refs = _validate_closeout_implementation_gate(
+        closeout_implementation_gate_path,
+        repository_root=repository_root,
+        implementation=implementation,
+    )
     source_binding = {
         "authorization": authorization_ref,
         "issuance_gate": issuance_ref,
@@ -423,6 +438,7 @@ def _context(
         "claim": claim_ref,
         "entry_gate": entry_ref,
         "live_report": report_ref,
+        **closeout_review_refs,
         **frozen_refs,
     }
     if journal is not None:
@@ -496,10 +512,16 @@ def _pre_orchestrator_failure_state(
         },
         "budget_summary": {
             "reconciled_provider_call_count": 0,
+            "overrun_provider_call_count": 0,
+            "provider_outcome_unknown_call_count": 0,
             "reserved_tokens": 0,
             "reserved_cost_microunits": 0,
             "actual_tokens": 0,
             "actual_cost_microunits": 0,
+            "unknown_reserved_tokens": 0,
+            "unknown_reserved_cost_microunits": 0,
+            "chargeable_token_upper_bound": 0,
+            "chargeable_cost_upper_bound_microunits": 0,
         },
     }
 
@@ -597,7 +619,18 @@ def _budget_summary(path: Path) -> dict[str, int]:
               COALESCE(SUM(reserved_microunits), 0),
               COALESCE(SUM(actual_tokens), 0),
               COALESCE(SUM(actual_microunits), 0),
-              SUM(CASE WHEN status = 'reconciled' THEN 1 ELSE 0 END)
+              SUM(CASE WHEN status = 'reconciled' THEN 1 ELSE 0 END),
+              SUM(CASE WHEN status = 'overrun' THEN 1 ELSE 0 END),
+              SUM(CASE WHEN status IN ('failed', 'provider_outcome_unknown')
+                       THEN 1 ELSE 0 END),
+              COALESCE(SUM(
+                CASE WHEN status IN ('failed', 'provider_outcome_unknown')
+                     THEN reserved_tokens ELSE 0 END
+              ), 0),
+              COALESCE(SUM(
+                CASE WHEN status IN ('failed', 'provider_outcome_unknown')
+                     THEN reserved_microunits ELSE 0 END
+              ), 0)
             FROM reservations
             """
         ).fetchone()
@@ -606,14 +639,89 @@ def _budget_summary(path: Path) -> dict[str, int]:
         ).fetchall()
     finally:
         connection.close()
-    if {item[0] for item in statuses} != {"reconciled"}:
-        raise ValueError("failed closeout provider budget is not fully reconciled")
+    observed_statuses = {str(item[0]) for item in statuses}
+    terminal_statuses = {
+        "reconciled",
+        "overrun",
+        "failed",
+        "provider_outcome_unknown",
+    }
+    if not observed_statuses <= terminal_statuses:
+        raise ValueError("failed closeout provider budget is not terminally accounted")
+    actual_tokens = int(row[3])
+    actual_cost = int(row[4])
+    unknown_reserved_tokens = int(row[8])
+    unknown_reserved_cost = int(row[9])
     return {
         "reconciled_provider_call_count": int(row[5]),
+        "overrun_provider_call_count": int(row[6]),
+        "provider_outcome_unknown_call_count": int(row[7]),
         "reserved_tokens": int(row[1]),
         "reserved_cost_microunits": int(row[2]),
-        "actual_tokens": int(row[3]),
-        "actual_cost_microunits": int(row[4]),
+        "actual_tokens": actual_tokens,
+        "actual_cost_microunits": actual_cost,
+        "unknown_reserved_tokens": unknown_reserved_tokens,
+        "unknown_reserved_cost_microunits": unknown_reserved_cost,
+        "chargeable_token_upper_bound": actual_tokens + unknown_reserved_tokens,
+        "chargeable_cost_upper_bound_microunits": (
+            actual_cost + unknown_reserved_cost
+        ),
+    }
+
+
+def _validate_closeout_implementation_gate(
+    path: Path,
+    *,
+    repository_root: Path,
+    implementation: dict[str, str],
+) -> dict[str, dict[str, str]]:
+    gate, gate_raw = _read_private(path)
+    bundle_ref = gate.get("review_bundle", {})
+    if not (
+        gate.get("schema_version") == "j1-qualification-r4-review-promotion-gate:v1"
+        and gate.get("passed") is True
+        and gate.get("signature_valid") is True
+        and gate.get("report_sha256")
+        == canonical_sha256(
+            {key: item for key, item in gate.items() if key != "report_sha256"}
+        )
+        and isinstance(bundle_ref, dict)
+    ):
+        raise ValueError("failed closeout implementation review Gate invalid")
+    bundle_path = Path(str(bundle_ref.get("path", "")))
+    bundle, bundle_raw = _read_private(bundle_path)
+    if (
+        hashlib.sha256(bundle_raw).hexdigest() != bundle_ref.get("sha256")
+        or bundle.get("bundle_sha256") != bundle_ref.get("canonical_sha256")
+        or validate_review_bundle(bundle)
+    ):
+        raise ValueError("failed closeout implementation review bundle invalid")
+    source = bundle.get("source_implementation", {})
+    source_files = source.get("source_files", {})
+    expected_files = {
+        "benchmarks/j1/qualification_failed_execution_closeout_v4.py": (
+            implementation["domain_source_sha256"]
+        ),
+        "benchmarks/j1_qualification_provider_broker.py": hashlib.sha256(
+            (repository_root / "benchmarks/j1/qualification_provider_broker.py")
+            .read_bytes()
+        ).hexdigest(),
+        "benchmarks/j1_qualification_failed_execution_closeout_v4.py": (
+            implementation["operation_source_sha256"]
+        ),
+    }
+    if not (
+        source.get("review_material_revision") == implementation["source_revision"]
+        and all(source_files.get(name) == digest for name, digest in expected_files.items())
+    ):
+        raise ValueError("failed closeout implementation is not independently reviewed")
+    return {
+        "closeout_implementation_review_gate": _ref(
+            path, gate["report_sha256"], raw=gate_raw
+        ),
+        "closeout_implementation_review_bundle": _ref(
+            bundle_path, bundle["bundle_sha256"], raw=bundle_raw
+        ),
     }
 
 
@@ -821,6 +929,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reviewer-profile", type=Path, required=True)
     parser.add_argument("--live-report", type=Path, required=True)
     parser.add_argument("--execution-root", type=Path, required=True)
+    parser.add_argument("--closeout-implementation-gate", type=Path, required=True)
     parser.add_argument("--repository-root", type=Path, required=True)
 
 
@@ -851,6 +960,7 @@ def main() -> int:
         "reviewer_profile_path": args.reviewer_profile,
         "live_report_path": args.live_report,
         "execution_root": args.execution_root,
+        "closeout_implementation_gate_path": args.closeout_implementation_gate,
         "repository_root": args.repository_root,
     }
     if args.operation == "preflight":

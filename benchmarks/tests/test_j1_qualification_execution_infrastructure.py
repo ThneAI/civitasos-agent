@@ -284,7 +284,7 @@ def test_provider_broker_persists_overrun_and_failure(tmp_path: Path) -> None:
         execute_provider_call(
             call_id="call-failed", provider_call=failed_transport, **common
         )
-    assert store.status("call-failed") == "failed"
+    assert store.status("call-failed") == "provider_outcome_unknown"
 
 
 def test_provider_broker_rejects_oversize_prompt_before_reservation(

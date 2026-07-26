@@ -123,11 +123,14 @@ class QualificationBudgetStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             changed = connection.execute(
-                "UPDATE reservations SET status = 'failed' WHERE call_id = ? AND status = 'reserved'",
+                "UPDATE reservations SET status = 'provider_outcome_unknown' "
+                "WHERE call_id = ? AND status = 'reserved'",
                 (call_id,),
             ).rowcount
             if changed != 1:
-                raise ValueError("provider reservation cannot transition to failed")
+                raise ValueError(
+                    "provider reservation cannot transition to outcome unknown"
+                )
 
     def status(self, call_id: str) -> str | None:
         with self._connect() as connection:

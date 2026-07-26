@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import sqlite3
 
 from nacl.signing import SigningKey
 
@@ -12,6 +13,7 @@ from benchmarks.j1.qualification_failed_execution_closeout_v4 import (
     validate_preflight,
 )
 from benchmarks.j1_qualification_failed_execution_closeout_v4 import (
+    _budget_summary,
     _journal_matches_report,
     _pre_orchestrator_failure_state,
 )
@@ -69,10 +71,16 @@ def _preflight() -> dict:
         },
         budget_summary={
             "reconciled_provider_call_count": 4,
+            "overrun_provider_call_count": 0,
+            "provider_outcome_unknown_call_count": 0,
             "reserved_tokens": 10000,
             "reserved_cost_microunits": 6092,
             "actual_tokens": 2135,
             "actual_cost_microunits": 1688,
+            "unknown_reserved_tokens": 0,
+            "unknown_reserved_cost_microunits": 0,
+            "chargeable_token_upper_bound": 2135,
+            "chargeable_cost_upper_bound_microunits": 1688,
         },
         terminal_inventory={
             "participant_container_count": 40,
@@ -149,6 +157,101 @@ def test_failed_execution_closeout_rejects_count_and_signature_tamper() -> None:
 
     assert "failed_closeout_execution_summary_invalid" in failures
     assert "failed_closeout_preflight_hash_invalid" in failures
+
+
+def test_failed_execution_closeout_accounts_for_unknown_provider_outcome() -> None:
+    preflight = _preflight()
+    preflight["execution_summary"].update(
+        {
+            "committed_task_count": 3,
+            "unattempted_task_count": 316,
+            "participant_signature_count": 3,
+        }
+    )
+    preflight["failure"].update(
+        {
+            "state": "provider_outcome_unknown",
+            "reason": "TimeoutError",
+            "provider_call_performed": True,
+        }
+    )
+    preflight["budget_summary"].update(
+        {
+            "reconciled_provider_call_count": 3,
+            "provider_outcome_unknown_call_count": 1,
+            "actual_tokens": 1256,
+            "actual_cost_microunits": 966,
+            "unknown_reserved_tokens": 2500,
+            "unknown_reserved_cost_microunits": 1523,
+            "chargeable_token_upper_bound": 3756,
+            "chargeable_cost_upper_bound_microunits": 2489,
+        }
+    )
+    preflight.pop("owner_authorization")
+    preflight.pop("preflight_sha256")
+    rebuilt = build_preflight(
+        checked_at=preflight["checked_at"],
+        run_id=preflight["run_id"],
+        authorization_id=preflight["authorization_id"],
+        source_binding=preflight["source_binding"],
+        execution_summary=preflight["execution_summary"],
+        failure=preflight["failure"],
+        budget_summary=preflight["budget_summary"],
+        terminal_inventory=preflight["terminal_inventory"],
+        output_root=preflight["output_root"],
+        implementation=preflight["implementation"],
+    )
+
+    assert validate_preflight(rebuilt) == []
+    statement = rebuilt["owner_authorization"]["required_exact_statement"]
+    assert "1 provider outcome unknown retaining 2500 reserved tokens" in statement
+    assert "conservative upper bound 3756 tokens and 2489 USD microunits" in statement
+
+
+def test_budget_summary_retains_unknown_provider_reservation(tmp_path) -> None:
+    path = tmp_path / "budget.sqlite3"
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE reservations (
+                call_id TEXT PRIMARY KEY,
+                participant_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                reserved_tokens INTEGER NOT NULL,
+                reserved_microunits INTEGER NOT NULL,
+                actual_tokens INTEGER,
+                actual_microunits INTEGER,
+                status TEXT NOT NULL
+            )
+            """
+        )
+        rows = [
+            ("c1", "p1", "t1", 2500, 1523, 334, 251, "reconciled"),
+            ("c2", "p2", "t2", 2500, 1523, 467, 363, "reconciled"),
+            ("c3", "p3", "t3", 2500, 1523, 455, 352, "reconciled"),
+            ("c4", "p4", "t4", 2500, 1523, None, None, "failed"),
+        ]
+        connection.executemany(
+            "INSERT INTO reservations VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    assert _budget_summary(path) == {
+        "reconciled_provider_call_count": 3,
+        "overrun_provider_call_count": 0,
+        "provider_outcome_unknown_call_count": 1,
+        "reserved_tokens": 10000,
+        "reserved_cost_microunits": 6092,
+        "actual_tokens": 1256,
+        "actual_cost_microunits": 966,
+        "unknown_reserved_tokens": 2500,
+        "unknown_reserved_cost_microunits": 1523,
+        "chargeable_token_upper_bound": 3756,
+        "chargeable_cost_upper_bound_microunits": 2489,
+    }
 
 
 def test_failed_closeout_compares_logical_and_raw_journal_hashes_separately() -> None:
