@@ -596,8 +596,9 @@ def _journal_summary(path: Path) -> dict[str, Any]:
             "reason": str(payload.get("reason") or failed["event_type"]),
             "task_execution_id": failed["task_execution_id"],
             "call_id": failed["call_id"],
-            "provider_call_performed": bool(
-                payload.get("provider_call_performed", False)
+            "provider_call_performed": _provider_call_performed(
+                state=failed["to_state"],
+                payload=payload,
             ),
             "provider_retry_performed": bool(
                 payload.get("provider_retry_performed", False)
@@ -611,6 +612,12 @@ def _journal_summary(path: Path) -> dict[str, Any]:
         "failure": failure,
         "raw_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
+
+
+def _provider_call_performed(*, state: str, payload: dict[str, Any]) -> bool:
+    return state in {"task_failed_after_response", "provider_outcome_unknown"} or bool(
+        payload.get("provider_call_performed", False)
+    )
 
 
 def _budget_summary(path: Path) -> dict[str, int]:

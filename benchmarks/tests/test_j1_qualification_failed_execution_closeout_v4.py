@@ -8,6 +8,7 @@ from pathlib import Path
 
 from nacl.signing import SigningKey
 
+from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_failed_execution_closeout_v4 import (
     build_closeout_artifacts,
     build_closeout_gate,
@@ -22,6 +23,7 @@ from benchmarks.j1.qualification_failed_closeout_review_v4 import (
 from benchmarks.j1_qualification_failed_execution_closeout_v4 import (
     _budget_summary,
     _journal_matches_report,
+    _journal_summary,
     _pre_orchestrator_failure_state,
     _validate_closeout_implementation_gate,
 )
@@ -371,6 +373,75 @@ def test_failed_closeout_compares_logical_and_raw_journal_hashes_separately() ->
 
     report["journal_artifact_sha256"] = "d" * 64
     assert not _journal_matches_report(journal, report)
+
+
+def test_failed_closeout_replays_legacy_unknown_dispatch_as_performed(tmp_path) -> None:
+    path = tmp_path / "journal.sqlite3"
+    payload_json = '{"provider_retry_performed":false,"reason":"ValueError"}'
+    payload_sha256 = hashlib.sha256(payload_json.encode()).hexdigest()
+    body = {
+        "sequence": 1,
+        "task_execution_id": "task-4",
+        "call_id": "call-4",
+        "from_state": "provider_dispatch_intent",
+        "to_state": "provider_outcome_unknown",
+        "event_type": "provider_outcome_unknown",
+        "occurred_at": "2026-07-26T06:00:00+00:00",
+        "payload_sha256": payload_sha256,
+        "previous_event_sha256": None,
+    }
+    event_sha256 = canonical_sha256(body)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE events (
+                sequence INTEGER,
+                task_execution_id TEXT,
+                call_id TEXT,
+                from_state TEXT,
+                to_state TEXT,
+                event_type TEXT,
+                occurred_at TEXT,
+                payload_json TEXT,
+                payload_sha256 TEXT,
+                previous_event_sha256 TEXT,
+                event_sha256 TEXT
+            )
+            """
+        )
+        connection.execute("CREATE TABLE task_states (state TEXT, count INTEGER)")
+        connection.execute("CREATE TABLE reservations (status TEXT, count INTEGER)")
+        connection.execute(
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                "task-4",
+                "call-4",
+                "provider_dispatch_intent",
+                "provider_outcome_unknown",
+                "provider_outcome_unknown",
+                "2026-07-26T06:00:00+00:00",
+                payload_json,
+                payload_sha256,
+                None,
+                event_sha256,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO task_states VALUES ('provider_outcome_unknown', 1)"
+        )
+        connection.execute(
+            "INSERT INTO reservations VALUES ('provider_outcome_unknown', 1)"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    journal = _journal_summary(path)
+
+    assert journal["failure"]["state"] == "provider_outcome_unknown"
+    assert journal["failure"]["provider_call_performed"] is True
 
 
 def test_failed_closeout_binds_pre_orchestrator_failure(tmp_path) -> None:
