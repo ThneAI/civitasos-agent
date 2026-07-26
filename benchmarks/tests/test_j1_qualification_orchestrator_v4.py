@@ -9,6 +9,7 @@ from benchmarks.j1.qualification_orchestrator_v4 import (
     OfflineAdapter,
     run_offline_orchestrator,
 )
+from benchmarks.j1.qualification_provider_broker import SanitizedProviderFailure
 from benchmarks.tests.test_j1_qualification_execution_contract_v4 import _contract
 
 
@@ -103,6 +104,52 @@ def test_resume_after_dispatch_intent_never_retries_provider(tmp_path: Path) -> 
     assert report["failure_reason"] == "provider_outcome_unknown"
     assert adapter.provider_calls == 0
     assert report["journal"]["budget_states"] == {"provider_outcome_unknown": 1}
+
+
+def test_post_dispatch_failure_records_sanitized_stage_and_never_retries(
+    tmp_path: Path,
+) -> None:
+    contract, _ = _contract()
+    root = tmp_path / "run"
+
+    class FailingAdapter(OfflineAdapter):
+        def provider_call(self, task: dict, request: dict) -> dict:
+            del task, request
+            self.provider_calls += 1
+            raise SanitizedProviderFailure(
+                category="parse",
+                stage="response_json_parse",
+                source_exception_type="JSONDecodeError",
+            )
+
+    adapter = FailingAdapter()
+    report = run_offline_orchestrator(
+        contract=contract,
+        run_id="offline-r4",
+        root=root,
+        adapter=adapter,
+        task_limit=1,
+    )
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "provider_outcome_unknown"
+    assert report["failure_diagnostic"] == {
+        "reason": "SanitizedProviderFailure",
+        "failure_category": "parse",
+        "failure_stage": "response_json_parse",
+        "source_exception_type": "JSONDecodeError",
+    }
+    assert adapter.provider_calls == 1
+
+    replay = run_offline_orchestrator(
+        contract=contract,
+        run_id="offline-r4",
+        root=root,
+        adapter=adapter,
+        task_limit=1,
+    )
+    assert replay["failure_diagnostic"] == report["failure_diagnostic"]
+    assert adapter.provider_calls == 1
 
 
 def test_resume_after_response_commit_does_not_call_provider_twice(

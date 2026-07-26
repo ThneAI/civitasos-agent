@@ -20,6 +20,7 @@ from benchmarks.j1.qualification_execution_infrastructure import (
 )
 from benchmarks.j1.qualification_provider_broker import (
     QualificationBudgetStore,
+    SanitizedProviderFailure,
     execute_provider_call,
 )
 from benchmarks.tests.test_j1_qualification_execution_design import _design
@@ -266,7 +267,7 @@ def test_provider_broker_persists_overrun_and_failure(tmp_path: Path) -> None:
         "budget_store": store,
     }
 
-    with pytest.raises(ValueError, match="exceeded per-call reservation"):
+    with pytest.raises(SanitizedProviderFailure) as overrun:
         execute_provider_call(
             call_id="call-overrun",
             provider_call=lambda **_: {
@@ -275,15 +276,25 @@ def test_provider_broker_persists_overrun_and_failure(tmp_path: Path) -> None:
             },
             **common,
         )
+    assert overrun.value.failure_category == "usage"
+    assert overrun.value.failure_stage == "budget_reconciliation"
     assert store.status("call-overrun") == "overrun"
 
+    dispatch_count = 0
+
     def failed_transport(**_: object) -> dict:
+        nonlocal dispatch_count
+        dispatch_count += 1
         raise RuntimeError("provider unavailable")
 
-    with pytest.raises(RuntimeError, match="provider unavailable"):
+    with pytest.raises(SanitizedProviderFailure) as transport:
         execute_provider_call(
             call_id="call-failed", provider_call=failed_transport, **common
         )
+    assert transport.value.failure_category == "http"
+    assert transport.value.failure_stage == "http_transport"
+    assert transport.value.source_exception_type == "RuntimeError"
+    assert dispatch_count == 1
     assert store.status("call-failed") == "provider_outcome_unknown"
 
 

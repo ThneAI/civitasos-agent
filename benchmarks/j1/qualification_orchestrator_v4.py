@@ -17,6 +17,7 @@ from .qualification_execution_contract_v4 import (
     ALLOWED_TRANSITIONS,
     TASK_TERMINAL_STATES,
 )
+from .qualification_provider_broker import PROVIDER_FAILURE_STAGES
 
 
 REPORT_SCHEMA = "j1-qualification-r4-offline-orchestrator-report:v1"
@@ -190,14 +191,19 @@ class PrivateWorkspace:
             _fsync_directory(self.root)
 
     def _path(self, task_id: str, name: str) -> Path:
-        if not task_id or "/" in task_id or name not in {
-            "request",
-            "response",
-            "decision",
-            "signature",
-            "event_receipts",
-            "event_trace",
-        }:
+        if (
+            not task_id
+            or "/" in task_id
+            or name
+            not in {
+                "request",
+                "response",
+                "decision",
+                "signature",
+                "event_receipts",
+                "event_trace",
+            }
+        ):
             raise ValueError("invalid private workspace key")
         return self.root / task_id / f"{name}.json"
 
@@ -287,6 +293,55 @@ class ExecutionJournal:
         if row is None:
             raise ValueError(f"task is not journaled: {task_execution_id}")
         return str(row["state"])
+
+    def failure_diagnostic(self, task_execution_id: str) -> dict[str, str] | None:
+        row = self.connection.execute(
+            """
+            SELECT to_state, payload_json
+            FROM events
+            WHERE task_execution_id = ?
+              AND to_state IN (
+                'task_failed_before_dispatch',
+                'task_failed_after_response',
+                'provider_outcome_unknown'
+              )
+            ORDER BY sequence DESC
+            LIMIT 1
+            """,
+            (task_execution_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row["payload_json"])
+        reason = payload.get("reason")
+        category = payload.get("failure_category")
+        stage = payload.get("failure_stage")
+        source = payload.get("source_exception_type")
+        if (
+            isinstance(reason, str)
+            and isinstance(category, str)
+            and isinstance(stage, str)
+            and stage in PROVIDER_FAILURE_STAGES.get(category, set())
+            and isinstance(source, str)
+        ):
+            return {
+                "reason": reason,
+                "failure_category": category,
+                "failure_stage": stage,
+                "source_exception_type": source,
+            }
+        if isinstance(reason, str):
+            return {
+                "reason": reason,
+                "failure_category": "internal",
+                "failure_stage": (
+                    "pre_dispatch_unclassified"
+                    if row["to_state"] == "task_failed_before_dispatch"
+                    else "legacy_unclassified_post_dispatch"
+                ),
+                "source_exception_type": reason,
+            }
+        return None
 
     def transition(
         self,
@@ -594,28 +649,44 @@ def _run_orchestrator(
     live: bool,
 ) -> dict[str, Any]:
     actual_adapter = adapter
-    journal = ExecutionJournal(root / "execution-journal.sqlite3", contract["contract_sha256"])
+    journal = ExecutionJournal(
+        root / "execution-journal.sqlite3", contract["contract_sha256"]
+    )
     workspace = PrivateWorkspace(root / "workspace")
     tasks = contract["task_executions"]
     tasks = tasks[:task_limit] if task_limit is not None else tasks
     journal.initialize_tasks(tasks)
     run_failure: str | None = None
+    failure_diagnostic: dict[str, str] | None = None
     try:
         for task in tasks:
             state = journal.state(task["task_execution_id"])
             if state == "dispatch_intent_committed":
+                failure_diagnostic = {
+                    "reason": "ProcessRecovery",
+                    "failure_category": "internal",
+                    "failure_stage": "recovery_after_dispatch_intent",
+                    "source_exception_type": "ProcessRecovery",
+                }
                 journal.mark_unknown(task)
                 journal.transition(
                     task,
                     "provider_outcome_unknown",
                     "recovery_provider_outcome_unknown",
-                    {"provider_retry_performed": False},
+                    {
+                        **failure_diagnostic,
+                        "provider_call_performed": True,
+                        "provider_retry_performed": False,
+                    },
                 )
                 run_failure = "provider_outcome_unknown"
                 break
             if state in TASK_TERMINAL_STATES:
                 if state != "task_committed":
                     run_failure = state
+                    failure_diagnostic = journal.failure_diagnostic(
+                        task["task_execution_id"]
+                    )
                     break
                 continue
             try:
@@ -630,14 +701,24 @@ def _run_orchestrator(
                 raise
             except Exception as error:
                 state = journal.state(task["task_execution_id"])
-                reason = type(error).__name__
+                failure_diagnostic = _sanitized_failure_diagnostic(
+                    error,
+                    fallback_stage=(
+                        "pre_dispatch_unclassified"
+                        if state in BEFORE_DISPATCH_STATES
+                        else "post_dispatch_unclassified"
+                    ),
+                )
                 if state in BEFORE_DISPATCH_STATES:
                     journal.mark_failed_before_dispatch(task)
                     journal.transition(
                         task,
                         "task_failed_before_dispatch",
                         "task_failed_before_dispatch",
-                        {"reason": reason, "provider_call_performed": False},
+                        {
+                            **failure_diagnostic,
+                            "provider_call_performed": False,
+                        },
                     )
                     run_failure = "task_failed_before_dispatch"
                 elif state == "dispatch_intent_committed":
@@ -646,7 +727,11 @@ def _run_orchestrator(
                         task,
                         "provider_outcome_unknown",
                         "provider_outcome_unknown",
-                        {"reason": reason, "provider_retry_performed": False},
+                        {
+                            **failure_diagnostic,
+                            "provider_call_performed": True,
+                            "provider_retry_performed": False,
+                        },
                     )
                     run_failure = "provider_outcome_unknown"
                 elif state in AFTER_RESPONSE_STATES:
@@ -654,7 +739,11 @@ def _run_orchestrator(
                         task,
                         "task_failed_after_response",
                         "task_failed_after_response",
-                        {"reason": reason, "provider_retry_performed": False},
+                        {
+                            **failure_diagnostic,
+                            "provider_call_performed": True,
+                            "provider_retry_performed": False,
+                        },
                     )
                     run_failure = "task_failed_after_response"
                 else:
@@ -689,6 +778,7 @@ def _run_orchestrator(
         "execution_scope" if live else "offline_scope": scope,
         "journal": summary,
         "failure_reason": run_failure,
+        "failure_diagnostic": failure_diagnostic,
         "validation_failures": journal_failures,
         "execution_boundary": (
             actual_adapter.execution_boundary()
@@ -972,6 +1062,33 @@ def _transition_allowed(source: str, target: str) -> bool:
     if source == "dispatch_intent_committed" and target == "provider_outcome_unknown":
         return True
     return source in AFTER_RESPONSE_STATES and target == "task_failed_after_response"
+
+
+def _sanitized_failure_diagnostic(
+    error: Exception, *, fallback_stage: str
+) -> dict[str, str]:
+    category = getattr(error, "failure_category", None)
+    stage = getattr(error, "failure_stage", None)
+    source_exception_type = getattr(error, "source_exception_type", None)
+    if (
+        isinstance(category, str)
+        and isinstance(stage, str)
+        and stage in PROVIDER_FAILURE_STAGES.get(category, set())
+        and isinstance(source_exception_type, str)
+        and source_exception_type.isidentifier()
+    ):
+        return {
+            "reason": type(error).__name__,
+            "failure_category": category,
+            "failure_stage": stage,
+            "source_exception_type": source_exception_type,
+        }
+    return {
+        "reason": type(error).__name__,
+        "failure_category": "internal",
+        "failure_stage": fallback_stage,
+        "source_exception_type": type(error).__name__,
+    }
 
 
 def _checkpoint(

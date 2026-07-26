@@ -442,6 +442,9 @@ def test_failed_closeout_replays_legacy_unknown_dispatch_as_performed(tmp_path) 
 
     assert journal["failure"]["state"] == "provider_outcome_unknown"
     assert journal["failure"]["provider_call_performed"] is True
+    assert journal["failure"]["failure_category"] == "internal"
+    assert journal["failure"]["failure_stage"] == "legacy_unclassified_post_dispatch"
+    assert journal["failure"]["source_exception_type"] == "ValueError"
 
 
 def test_failed_closeout_binds_pre_orchestrator_failure(tmp_path) -> None:

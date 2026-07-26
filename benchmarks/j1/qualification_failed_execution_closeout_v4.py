@@ -12,6 +12,7 @@ from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 
 from .controlled_comparison import canonical_sha256
+from .qualification_provider_broker import PROVIDER_FAILURE_STAGES
 
 
 PREFLIGHT_SCHEMA_V1 = "j1-qualification-r4-failed-execution-closeout-preflight:v1"
@@ -79,6 +80,13 @@ def owner_closeout_statement(preflight: dict[str, Any]) -> str:
             f"{budget['chargeable_token_upper_bound']} tokens and "
             f"{budget['chargeable_cost_upper_bound_microunits']} USD microunits)."
         )
+    diagnostic_statement = ""
+    if failure.get("failure_stage"):
+        diagnostic_statement = (
+            f" at sanitized {failure['failure_category']}/"
+            f"{failure['failure_stage']} "
+            f"(source type {failure['source_exception_type']})"
+        )
     return (
         "I authorize exactly one signed J1-D r4 partial-failure closeout for run "
         f"{preflight['run_id']}, consumed authorization "
@@ -94,7 +102,8 @@ def owner_closeout_statement(preflight: dict[str, Any]) -> str:
         f"{execution['provider_call_count']} provider calls, "
         f"{execution['participant_signature_count']} participant signatures, "
         f"{credential_read}{budget_statement} The terminal "
-        f"failure is {failure['state']} caused by {failure['reason']}, with provider "
+        f"failure is {failure['state']} caused by {failure['reason']}"
+        f"{diagnostic_statement}, with provider "
         f"dispatch performed={str(failure['provider_call_performed']).lower()}. I "
         "acknowledge that the claim remains immutable and consumed, no task or provider "
         "call may be retried in this run, partial results are not promotable, no "
@@ -172,10 +181,9 @@ def validate_preflight(value: Any) -> list[str]:
         failures.append("failed_closeout_preflight_identity_invalid")
     accounted_provider_calls = budget.get("reconciled_provider_call_count", 0)
     if preflight.get("schema_version") == PREFLIGHT_SCHEMA:
-        accounted_provider_calls += (
-            budget.get("overrun_provider_call_count", 0)
-            + budget.get("provider_outcome_unknown_call_count", 0)
-        )
+        accounted_provider_calls += budget.get(
+            "overrun_provider_call_count", 0
+        ) + budget.get("provider_outcome_unknown_call_count", 0)
     partial_execution_valid = (
         execution.get("authorized_task_count") == 320
         and execution.get("committed_task_count", -1) >= 0
@@ -185,8 +193,7 @@ def validate_preflight(value: Any) -> list[str]:
         + execution.get("failed_task_count")
         + execution.get("unattempted_task_count")
         == 320
-        and execution.get("provider_call_count")
-        == accounted_provider_calls
+        and execution.get("provider_call_count") == accounted_provider_calls
         and execution.get("participant_signature_count")
         == execution.get("committed_task_count")
     )
@@ -225,6 +232,19 @@ def validate_preflight(value: Any) -> list[str]:
         )
     ):
         failures.append("failed_closeout_failure_invalid")
+    diagnostic_fields = {
+        "failure_category",
+        "failure_stage",
+        "source_exception_type",
+    }
+    present_diagnostic_fields = diagnostic_fields.intersection(failure)
+    if present_diagnostic_fields and not (
+        present_diagnostic_fields == diagnostic_fields
+        and failure["failure_stage"]
+        in PROVIDER_FAILURE_STAGES.get(failure["failure_category"], set())
+        and _text(failure["source_exception_type"])
+    ):
+        failures.append("failed_closeout_failure_diagnostic_invalid")
     budget_valid = all(
         isinstance(budget.get(name), int) and budget[name] >= 0
         for name in (
@@ -256,8 +276,7 @@ def validate_preflight(value: Any) -> list[str]:
             + budget.get("unknown_reserved_cost_microunits")
             and budget.get("provider_outcome_unknown_call_count")
             == (1 if failure.get("state") == "provider_outcome_unknown" else 0)
-            and budget.get("unknown_reserved_tokens")
-            <= budget.get("reserved_tokens")
+            and budget.get("unknown_reserved_tokens") <= budget.get("reserved_tokens")
             and budget.get("unknown_reserved_cost_microunits")
             <= budget.get("reserved_cost_microunits")
             and (

@@ -19,6 +19,7 @@ from benchmarks.j1_qualification_participant_runner import (
 from .controlled_comparison import canonical_sha256
 from .qualification_container_runner_v4 import ParticipantContainerClient
 from .qualification_live_evidence_v4 import build_live_trace, build_task_evidence
+from .qualification_provider_broker import sanitized_provider_failure
 from .qualification_verifier import verify_task
 
 
@@ -132,7 +133,11 @@ class LiveExecutionAdapter:
                 }
             )
         ):
-            raise ValueError("live provider result is invalid")
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="broker_result_shape",
+                source_exception_type="LiveProviderResultValidationError",
+            )
         self._provider_results[task["task_execution_id"]] = result
         return {
             "content": result["decision"],

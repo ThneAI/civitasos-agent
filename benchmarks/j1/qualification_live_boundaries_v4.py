@@ -15,6 +15,7 @@ from benchmarks.j1_qualification_provider_admission_probe import _https_post_onc
 from .qualification_provider_broker import (
     QualificationBudgetStore,
     execute_provider_call,
+    sanitized_provider_failure,
 )
 
 
@@ -32,9 +33,7 @@ class Pkcs11ParticipantSigner:
         )
         return bytes(private_key.sign(payload, mechanism=pkcs11.Mechanism.EDDSA))
 
-    def verify(
-        self, *, participant_id: str, payload: bytes, signature: bytes
-    ) -> bool:
+    def verify(self, *, participant_id: str, payload: bytes, signature: bytes) -> bool:
         profile = self._profile(participant_id)
         try:
             VerifyKey(bytes.fromhex(profile["participant"]["public_key_hex"])).verify(
@@ -69,9 +68,7 @@ class OpenAICompatibleQualificationProvider:
         self.design = _normalized_design(amended_design)
         self.budget = QualificationBudgetStore(budget_path)
 
-    def call(
-        self, *, task: dict[str, Any], request: dict[str, Any]
-    ) -> dict[str, Any]:
+    def call(self, *, task: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         prompt = json.dumps(
             {"system": request["system"], "user": request["user"]},
             ensure_ascii=False,
@@ -110,7 +107,14 @@ class OpenAICompatibleQualificationProvider:
         max_tokens: int,
         temperature: int,
     ) -> dict[str, Any]:
-        messages = json.loads(prompt)
+        try:
+            messages = json.loads(prompt)
+        except json.JSONDecodeError as error:
+            raise sanitized_provider_failure(
+                category="parse",
+                stage="request_parse",
+                error=error,
+            ) from None
         body = {
             "model": model,
             "messages": [
@@ -121,17 +125,42 @@ class OpenAICompatibleQualificationProvider:
             "max_tokens": max_tokens,
             "stream": False,
         }
-        status, raw = _https_post_once(
-            f"{base_url.rstrip('/')}/chat/completions", api_key, body
-        )
+        try:
+            status, raw = _https_post_once(
+                f"{base_url.rstrip('/')}/chat/completions", api_key, body
+            )
+        except Exception as error:
+            raise sanitized_provider_failure(
+                category="http",
+                stage="http_transport",
+                error=error,
+            ) from None
+        if status != 200:
+            raise sanitized_provider_failure(
+                category="http",
+                stage="http_status",
+                source_exception_type="ProviderHttpStatusError",
+            )
         try:
             response = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValueError("provider response is not valid JSON") from error
-        if not isinstance(response, dict) or status != 200:
-            raise ValueError("provider response status or shape invalid")
+            raise sanitized_provider_failure(
+                category="parse",
+                stage="response_json_parse",
+                error=error,
+            ) from None
+        if not isinstance(response, dict):
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="response_shape",
+                source_exception_type="ProviderResponseShapeError",
+            )
         if response.get("model") != model:
-            raise ValueError("provider response model mismatch")
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="response_model",
+                source_exception_type="ProviderModelMismatchError",
+            )
         choices = response.get("choices")
         if not (
             isinstance(choices, list)
@@ -141,8 +170,19 @@ class OpenAICompatibleQualificationProvider:
             and isinstance(choices[0]["message"].get("content"), str)
             and choices[0]["message"]["content"]
         ):
-            raise ValueError("provider response decision missing")
-        usage = _normalize_wire_usage(response.get("usage"))
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="response_decision",
+                source_exception_type="ProviderDecisionShapeError",
+            )
+        try:
+            usage = _normalize_wire_usage(response.get("usage"))
+        except ValueError as error:
+            raise sanitized_provider_failure(
+                category="usage",
+                stage="response_usage",
+                error=error,
+            ) from None
         return {
             "content": choices[0]["message"]["content"],
             "usage": usage,
@@ -164,8 +204,7 @@ def load_participant_profiles(root: Path) -> dict[str, dict[str, Any]]:
 
 def _normalized_design(value: dict[str, Any]) -> dict[str, Any]:
     return {
-        "provider_call": value.get("provider_call")
-        or value["preserved_provider_call"],
+        "provider_call": value.get("provider_call") or value["preserved_provider_call"],
         "budget_reservation": value.get("budget_reservation")
         or value["preserved_budget_reservation"],
         "pricing": value.get("pricing") or value["preserved_pricing"],

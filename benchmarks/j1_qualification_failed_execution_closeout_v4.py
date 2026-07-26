@@ -605,6 +605,25 @@ def _journal_summary(path: Path) -> dict[str, Any]:
             ),
             "event_sha256": failed["event_sha256"],
         }
+        for field in (
+            "failure_category",
+            "failure_stage",
+            "source_exception_type",
+        ):
+            if isinstance(payload.get(field), str):
+                failure[field] = payload[field]
+        if "failure_stage" not in failure:
+            failure.update(
+                {
+                    "failure_category": "internal",
+                    "failure_stage": (
+                        "pre_dispatch_unclassified"
+                        if failed["to_state"] == "task_failed_before_dispatch"
+                        else "legacy_unclassified_post_dispatch"
+                    ),
+                    "source_exception_type": failure["reason"],
+                }
+            )
     finally:
         connection.close()
     return {
@@ -675,9 +694,7 @@ def _budget_summary(path: Path) -> dict[str, int]:
         "unknown_reserved_tokens": unknown_reserved_tokens,
         "unknown_reserved_cost_microunits": unknown_reserved_cost,
         "chargeable_token_upper_bound": actual_tokens + unknown_reserved_tokens,
-        "chargeable_cost_upper_bound_microunits": (
-            actual_cost + unknown_reserved_cost
-        ),
+        "chargeable_cost_upper_bound_microunits": (actual_cost + unknown_reserved_cost),
     }
 
 
@@ -725,8 +742,9 @@ def _validate_closeout_implementation_gate(
             implementation["domain_source_sha256"]
         ),
         "benchmarks/j1/qualification_provider_broker.py": hashlib.sha256(
-            (repository_root / "benchmarks/j1/qualification_provider_broker.py")
-            .read_bytes()
+            (
+                repository_root / "benchmarks/j1/qualification_provider_broker.py"
+            ).read_bytes()
         ).hexdigest(),
         "benchmarks/j1_qualification_failed_execution_closeout_v4.py": (
             implementation["operation_source_sha256"]
@@ -739,7 +757,9 @@ def _validate_closeout_implementation_gate(
     )
     if not (
         reviewed_revision == implementation["source_revision"]
-        and all(source_files.get(name) == digest for name, digest in expected_files.items())
+        and all(
+            source_files.get(name) == digest for name, digest in expected_files.items()
+        )
     ):
         raise ValueError("failed closeout implementation is not independently reviewed")
     return {

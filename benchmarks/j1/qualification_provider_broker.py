@@ -16,6 +16,58 @@ from .controlled_comparison import canonical_sha256
 RECEIPT_SCHEMA = "j1-qualification-provider-receipt:v1"
 ProviderCall = Callable[..., dict[str, Any]]
 
+PROVIDER_FAILURE_STAGES = {
+    "http": {"http_transport", "http_status"},
+    "parse": {"request_parse", "response_json_parse"},
+    "schema": {
+        "response_shape",
+        "response_model",
+        "response_decision",
+        "broker_result_shape",
+        "receipt_validation",
+    },
+    "usage": {"response_usage", "broker_usage", "budget_reconciliation"},
+    "internal": {
+        "pre_dispatch_unclassified",
+        "post_dispatch_unclassified",
+        "legacy_unclassified_post_dispatch",
+        "recovery_after_dispatch_intent",
+    },
+}
+
+
+class SanitizedProviderFailure(ValueError):
+    """Provider failure carrying only reviewed, non-content diagnostics."""
+
+    def __init__(
+        self,
+        *,
+        category: str,
+        stage: str,
+        source_exception_type: str,
+    ) -> None:
+        if stage not in PROVIDER_FAILURE_STAGES.get(category, set()):
+            raise ValueError("provider failure category or stage is not reviewed")
+        self.failure_category = category
+        self.failure_stage = stage
+        self.source_exception_type = source_exception_type
+        super().__init__(f"sanitized provider failure at {category}/{stage}")
+
+
+def sanitized_provider_failure(
+    *,
+    category: str,
+    stage: str,
+    error: BaseException | None = None,
+    source_exception_type: str | None = None,
+) -> SanitizedProviderFailure:
+    return SanitizedProviderFailure(
+        category=category,
+        stage=stage,
+        source_exception_type=source_exception_type
+        or (type(error).__name__ if error is not None else "ProviderBoundaryError"),
+    )
+
 
 class QualificationBudgetStore:
     def __init__(self, path: Path) -> None:
@@ -197,29 +249,64 @@ def execute_provider_call(
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
     }
     try:
-        response = provider_call(
-            base_url=provider["base_url"],
-            api_key=api_key,
-            model=provider["model_id"],
-            prompt=prompt,
-            max_tokens=provider["max_output_tokens"],
-            temperature=provider["temperature"],
-        )
-        content = str(response["content"])
-        usage = normalize_usage(response.get("usage"))
-        actual_tokens = sum(usage.values())
-        actual_cost = calculate_cost_microunits(
-            usage=usage, pricing=reviewed_design["pricing"]
-        )
-        budget_store.reconcile(
-            call_id=call_id,
-            actual_tokens=actual_tokens,
-            actual_microunits=actual_cost,
-        )
+        try:
+            response = provider_call(
+                base_url=provider["base_url"],
+                api_key=api_key,
+                model=provider["model_id"],
+                prompt=prompt,
+                max_tokens=provider["max_output_tokens"],
+                temperature=provider["temperature"],
+            )
+        except SanitizedProviderFailure:
+            raise
+        except Exception as error:
+            raise sanitized_provider_failure(
+                category="http",
+                stage="http_transport",
+                error=error,
+            ) from None
+        if not (
+            isinstance(response, dict)
+            and isinstance(response.get("content"), str)
+            and bool(response["content"])
+        ):
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="broker_result_shape",
+                source_exception_type="ProviderResultShapeError",
+            )
+        content = response["content"]
+        try:
+            usage = normalize_usage(response.get("usage"))
+            actual_tokens = sum(usage.values())
+            actual_cost = calculate_cost_microunits(
+                usage=usage, pricing=reviewed_design["pricing"]
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise sanitized_provider_failure(
+                category="usage",
+                stage="broker_usage",
+                error=error,
+            ) from None
     except Exception:
         if budget_store.status(call_id) == "reserved":
             budget_store.fail(call_id=call_id)
         raise
+    if actual_tokens > reservation["tokens"] or actual_cost > reservation["microunits"]:
+        try:
+            budget_store.reconcile(
+                call_id=call_id,
+                actual_tokens=actual_tokens,
+                actual_microunits=actual_cost,
+            )
+        except ValueError as error:
+            raise sanitized_provider_failure(
+                category="usage",
+                stage="budget_reconciliation",
+                error=error,
+            ) from None
+        raise AssertionError("provider overrun must fail reconciliation")
     receipt = {
         "schema_version": RECEIPT_SCHEMA,
         "call_id": call_id,
@@ -248,7 +335,7 @@ def execute_provider_call(
         "actual": {"tokens": actual_tokens, "microunits": actual_cost},
         "budget_store": {
             "path_sha256": hashlib.sha256(str(budget_store.path).encode()).hexdigest(),
-            "status": budget_store.status(call_id),
+            "status": "reconciled",
         },
         "execution_boundary": {
             "host_broker_only": True,
@@ -263,7 +350,27 @@ def execute_provider_call(
     receipt["receipt_sha256"] = canonical_sha256(receipt)
     failures = validate_provider_receipt(receipt, reviewed_design=reviewed_design)
     if failures:
-        raise ValueError(f"provider receipt invalid: {failures}")
+        if budget_store.status(call_id) == "reserved":
+            budget_store.fail(call_id=call_id)
+        raise sanitized_provider_failure(
+            category="schema",
+            stage="receipt_validation",
+            source_exception_type="ProviderReceiptValidationError",
+        )
+    try:
+        budget_store.reconcile(
+            call_id=call_id,
+            actual_tokens=actual_tokens,
+            actual_microunits=actual_cost,
+        )
+    except ValueError as error:
+        if budget_store.status(call_id) == "reserved":
+            budget_store.fail(call_id=call_id)
+        raise sanitized_provider_failure(
+            category="usage",
+            stage="budget_reconciliation",
+            error=error,
+        ) from None
     return {"decision": content, "receipt": receipt}
 
 
