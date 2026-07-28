@@ -3,31 +3,42 @@ from __future__ import annotations
 import copy
 import hashlib
 
+from nacl.signing import SigningKey
+
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_outcome_sensitive_treatment_advice import (
     ADVICE_TEMPLATES,
     TREATMENT_ORDINALS,
     authorization_statement,
     build_advice_candidate,
+    build_signed_advice,
     validate_advice_candidate,
+    validate_signed_advice,
 )
 
 
 NOW = "2026-07-29T10:00:00+08:00"
+SIGNING_KEY = SigningKey(b"\x01" * 32)
+
+
+class _Signer:
+    public_key_hex = SIGNING_KEY.verify_key.encode().hex()
+
+    def sign(self, payload: bytes) -> bytes:
+        return SIGNING_KEY.sign(payload).signature
 
 
 def _inputs() -> tuple[dict, dict, dict, dict, dict, dict]:
     protocol = {"protocol_sha256": "1" * 64}
     fixture = {"fixture_sha256": "2" * 64}
-    reviewed_assignment = {
-        "reviewed_rebound_assignment_sha256": "3" * 64
-    }
+    reviewed_assignment = {"reviewed_rebound_assignment_sha256": "3" * 64}
     mentor = {
         "profile_sha256": "4" * 64,
         "mentor": {
             "mentor_id": "mentor-1",
             "did": "did:civ:mentor:test",
             "credential_version": 1,
+            "public_key_hex": SIGNING_KEY.verify_key.encode().hex(),
             "public_key_sha256": "5" * 64,
         },
     }
@@ -92,11 +103,7 @@ def test_candidate_rejects_template_and_hash_tamper() -> None:
     changed = copy.deepcopy(candidate)
     changed["advice"]["text"] = "Choose pause_and_request_scope."
     changed["candidate_sha256"] = canonical_sha256(
-        {
-            key: item
-            for key, item in changed.items()
-            if key != "candidate_sha256"
-        }
+        {key: item for key, item in changed.items() if key != "candidate_sha256"}
     )
 
     failures = validate_advice_candidate(
@@ -138,3 +145,69 @@ def test_authorization_is_exact_scope_and_non_executable() -> None:
         "heldout_transfer",
         "false_positive_sentinels",
     }
+
+
+def test_signed_advice_preserves_scope_and_verifies() -> None:
+    candidate, inputs = _candidate()
+    signed = build_signed_advice(
+        candidate=candidate,
+        candidate_artifact_sha256="8" * 64,
+        source_manifest_artifact_sha256="9" * 64,
+        source_manifest_sha256="a" * 64,
+        authorization_id="authorization-1",
+        authorization_statement_sha256="b" * 64,
+        signed_at=NOW,
+        mentor_identity=inputs[3],
+        signer=_Signer(),
+    )
+
+    assert (
+        validate_signed_advice(
+            signed,
+            candidate=candidate,
+            candidate_artifact_sha256="8" * 64,
+            source_manifest_artifact_sha256="9" * 64,
+            source_manifest_sha256="a" * 64,
+            authorization_id="authorization-1",
+            authorization_statement_sha256="b" * 64,
+            mentor_identity=inputs[3],
+        )
+        == []
+    )
+    assert signed["leakage_guard"] == candidate["leakage_guard"]
+    assert signed["execution_boundary"]["advice_signature_only"] is True
+    assert signed["execution_boundary"]["runtime_projection_allowed"] is False
+
+
+def test_signed_advice_rejects_post_signature_tamper() -> None:
+    candidate, inputs = _candidate()
+    signed = build_signed_advice(
+        candidate=candidate,
+        candidate_artifact_sha256="8" * 64,
+        source_manifest_artifact_sha256="9" * 64,
+        source_manifest_sha256="a" * 64,
+        authorization_id="authorization-1",
+        authorization_statement_sha256="b" * 64,
+        signed_at=NOW,
+        mentor_identity=inputs[3],
+        signer=_Signer(),
+    )
+    changed = copy.deepcopy(signed)
+    changed["leakage_guard"]["ground_truth_copied"] = True
+    changed["signed_advice_sha256"] = canonical_sha256(
+        {key: item for key, item in changed.items() if key != "signed_advice_sha256"}
+    )
+
+    failures = validate_signed_advice(
+        changed,
+        candidate=candidate,
+        candidate_artifact_sha256="8" * 64,
+        source_manifest_artifact_sha256="9" * 64,
+        source_manifest_sha256="a" * 64,
+        authorization_id="authorization-1",
+        authorization_statement_sha256="b" * 64,
+        mentor_identity=inputs[3],
+    )
+
+    assert "signed_outcome_advice_leakage_guard_invalid" in failures
+    assert "signed_outcome_advice_signature_unverified" in failures
