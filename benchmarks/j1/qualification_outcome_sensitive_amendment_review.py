@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from typing import Any
+from typing import Protocol
+
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
 
 from .controlled_comparison import canonical_sha256
 from .qualification_outcome_sensitive_amendment import (
@@ -16,6 +21,11 @@ from .qualification_outcome_sensitive_amendment import (
 
 REVIEW_REQUEST_SCHEMA = "j1-qualification-outcome-sensitive-amendment-review-request:v1"
 REVIEW_HANDOFF_SCHEMA = "j1-qualification-outcome-sensitive-amendment-review-handoff:v1"
+REVIEW_RECEIPT_SCHEMA = "j1-qualification-outcome-sensitive-amendment-review-receipt:v1"
+FROZEN_REVIEW_SCHEMA = "j1-qualification-outcome-sensitive-amendment-frozen:v1"
+PROMOTION_GATE_SCHEMA = (
+    "j1-qualification-outcome-sensitive-amendment-promotion-gate:v1"
+)
 ALLOWED_DECISION = "approve_outcome_sensitive_amendment_materials"
 CHECKLIST = {
     "all_six_copy_on_write_materials_read_and_hash_verified",
@@ -31,6 +41,28 @@ CHECKLIST = {
     "provider_model_identity_unchanged_but_fresh_admission_required",
     "execution_effectiveness_claim_and_si13_upgrade_remain_blocked",
 }
+RECEIPT_BOUNDARY = {
+    **BOUNDARY,
+    "independent_review_approved": True,
+    "copy_on_write_promotion_allowed": True,
+}
+PROMOTION_BOUNDARY = {
+    **BOUNDARY,
+    "amendment_material_generation_only": False,
+    "task_fixture_promoted": True,
+    "statistical_plan_promoted": True,
+    "protocol_amendment_material_promoted": True,
+    "evaluator_amendment_material_promoted": True,
+    "consent_impact_promoted": True,
+    "copy_on_write_promotion_performed": True,
+}
+
+
+class ReviewSigner(Protocol):
+    @property
+    def public_key_hex(self) -> str: ...
+
+    def sign(self, message: bytes) -> bytes: ...
 
 
 def build_review_request(
@@ -207,6 +239,233 @@ def build_review_handoff(
     return value
 
 
+def build_signed_review_receipt(
+    *,
+    review_id: str,
+    reviewed_at: str,
+    request_ref: dict[str, str],
+    bundle_ref: dict[str, str],
+    preflight_ref: dict[str, str],
+    materials: dict[str, dict[str, str]],
+    approval_statement_sha256: str,
+    reviewer: dict[str, Any],
+    reviewer_profile_sha256: str,
+    implementation: dict[str, str],
+    signer: ReviewSigner,
+) -> dict[str, Any]:
+    value = {
+        "schema_version": REVIEW_RECEIPT_SCHEMA,
+        "review_id": review_id,
+        "reviewed_at": reviewed_at,
+        "decision": ALLOWED_DECISION,
+        "request": copy.deepcopy(request_ref),
+        "reviewed_bundle": copy.deepcopy(bundle_ref),
+        "owner_approval_preflight": copy.deepcopy(preflight_ref),
+        "reviewed_materials": copy.deepcopy(materials),
+        "approval_statement_sha256": approval_statement_sha256,
+        "reviewer": {
+            "did": reviewer["did"],
+            "public_key_hex": reviewer["public_key_hex"],
+            "credential_version": reviewer["credential_version"],
+            "signer_kind": reviewer["signer_kind"],
+            "identity_profile_sha256": reviewer_profile_sha256,
+        },
+        "independence": {
+            "conflicts_disclosed": True,
+            "independent_from_candidate_authoring": True,
+            "human_review_completed": True,
+        },
+        "checklist": {item: True for item in sorted(CHECKLIST)},
+        "implementation": copy.deepcopy(implementation),
+        "execution_boundary": copy.deepcopy(RECEIPT_BOUNDARY),
+    }
+    payload = _signature_payload(value)
+    signature = signer.sign(payload)
+    if len(signature) != 64:
+        raise ValueError("amendment review signature must be 64 bytes")
+    value["signature"] = {
+        "algorithm": "ed25519",
+        "public_key_hex": signer.public_key_hex,
+        "signed_payload_sha256": hashlib.sha256(payload).hexdigest(),
+        "signature_hex": signature.hex(),
+    }
+    value["receipt_sha256"] = canonical_sha256(value)
+    failures = validate_signed_review_receipt(
+        value,
+        expected_request_ref=request_ref,
+        expected_bundle_ref=bundle_ref,
+        expected_preflight_ref=preflight_ref,
+        expected_materials=materials,
+        expected_approval_statement_sha256=approval_statement_sha256,
+        expected_reviewer=reviewer,
+        expected_reviewer_profile_sha256=reviewer_profile_sha256,
+        expected_implementation=implementation,
+    )
+    if failures:
+        raise ValueError(f"signed amendment review receipt invalid: {failures}")
+    return value
+
+
+def validate_signed_review_receipt(
+    value: Any,
+    *,
+    expected_request_ref: dict[str, str],
+    expected_bundle_ref: dict[str, str],
+    expected_preflight_ref: dict[str, str],
+    expected_materials: dict[str, dict[str, str]],
+    expected_approval_statement_sha256: str,
+    expected_reviewer: dict[str, Any],
+    expected_reviewer_profile_sha256: str,
+    expected_implementation: dict[str, str],
+) -> list[str]:
+    receipt = value if isinstance(value, dict) else {}
+    failures: list[str] = []
+    _require(
+        receipt.get("schema_version") == REVIEW_RECEIPT_SCHEMA
+        and receipt.get("decision") == ALLOWED_DECISION
+        and receipt.get("request") == expected_request_ref
+        and receipt.get("reviewed_bundle") == expected_bundle_ref
+        and receipt.get("owner_approval_preflight") == expected_preflight_ref
+        and receipt.get("reviewed_materials") == expected_materials
+        and receipt.get("approval_statement_sha256")
+        == expected_approval_statement_sha256,
+        "amendment_review_receipt_binding_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("reviewer")
+        == {
+            "did": expected_reviewer.get("did"),
+            "public_key_hex": expected_reviewer.get("public_key_hex"),
+            "credential_version": expected_reviewer.get("credential_version"),
+            "signer_kind": expected_reviewer.get("signer_kind"),
+            "identity_profile_sha256": expected_reviewer_profile_sha256,
+        },
+        "amendment_review_receipt_reviewer_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("independence")
+        == {
+            "conflicts_disclosed": True,
+            "independent_from_candidate_authoring": True,
+            "human_review_completed": True,
+        }
+        and receipt.get("checklist") == {item: True for item in sorted(CHECKLIST)},
+        "amendment_review_receipt_independence_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("implementation") == expected_implementation
+        and receipt.get("execution_boundary") == RECEIPT_BOUNDARY,
+        "amendment_review_receipt_boundary_invalid",
+        failures,
+    )
+    signature = receipt.get("signature")
+    signature = signature if isinstance(signature, dict) else {}
+    unsigned = {
+        key: item
+        for key, item in receipt.items()
+        if key not in {"signature", "receipt_sha256"}
+    }
+    payload = _signature_payload(unsigned)
+    _require(
+        signature.get("algorithm") == "ed25519"
+        and signature.get("public_key_hex") == expected_reviewer.get("public_key_hex")
+        and signature.get("signed_payload_sha256")
+        == hashlib.sha256(payload).hexdigest(),
+        "amendment_review_receipt_signature_metadata_invalid",
+        failures,
+    )
+    try:
+        VerifyKey(
+            bytes.fromhex(str(expected_reviewer.get("public_key_hex", "")))
+        ).verify(payload, bytes.fromhex(str(signature.get("signature_hex", ""))))
+    except (BadSignatureError, ValueError):
+        failures.append("amendment_review_receipt_signature_invalid")
+    _require(
+        _self_hash(receipt, "receipt_sha256"),
+        "amendment_review_receipt_hash_invalid",
+        failures,
+    )
+    return list(dict.fromkeys(failures))
+
+
+def build_frozen_review(
+    *,
+    frozen_id: str,
+    promoted_at: str,
+    source_materials: dict[str, dict[str, str]],
+    frozen_materials: dict[str, dict[str, str]],
+    source_bundle_ref: dict[str, str],
+    review_receipt_ref: dict[str, str],
+    reviewer_did: str,
+    implementation: dict[str, str],
+) -> dict[str, Any]:
+    value = {
+        "schema_version": FROZEN_REVIEW_SCHEMA,
+        "frozen_id": frozen_id,
+        "promoted_at": promoted_at,
+        "status": "operator_reviewed_frozen",
+        "source_bundle": copy.deepcopy(source_bundle_ref),
+        "source_materials": copy.deepcopy(source_materials),
+        "frozen_source_copies": copy.deepcopy(frozen_materials),
+        "operator_review": {
+            "reviewer_did": reviewer_did,
+            "review_receipt": copy.deepcopy(review_receipt_ref),
+            "decision": ALLOWED_DECISION,
+        },
+        "readiness": {
+            "protocol_amendment_material_frozen": True,
+            "evaluator_amendment_material_frozen": True,
+            "task_fixture_frozen": True,
+            "statistical_plan_frozen": True,
+            "consent_impact_frozen": True,
+            "participant_consent_extensions_complete": False,
+            "participant_consent_extension_count": 0,
+            "participant_consent_extension_required_count": 40,
+            "downstream_bindings_refreshed": False,
+            "execution_preflight_allowed": False,
+            "provider_or_model_execution_allowed": False,
+            "si13_maturity_upgrade_allowed": False,
+        },
+        "implementation": copy.deepcopy(implementation),
+        "execution_boundary": copy.deepcopy(PROMOTION_BOUNDARY),
+    }
+    value["frozen_review_sha256"] = canonical_sha256(value)
+    return value
+
+
+def build_promotion_gate(
+    *,
+    request_ref: dict[str, str],
+    handoff_ref: dict[str, str],
+    receipt_ref: dict[str, str],
+    frozen_review_ref: dict[str, str],
+    frozen_review: dict[str, Any],
+) -> dict[str, Any]:
+    value = {
+        "schema_version": PROMOTION_GATE_SCHEMA,
+        "passed": True,
+        "failure_reasons": [],
+        "state": (
+            "outcome_sensitive_amendment_materials_reviewed_frozen_"
+            "40_of_40_consent_required_execution_blocked"
+        ),
+        "review_request": copy.deepcopy(request_ref),
+        "review_handoff": copy.deepcopy(handoff_ref),
+        "review_receipt": copy.deepcopy(receipt_ref),
+        "frozen_review": copy.deepcopy(frozen_review_ref),
+        "signature_valid": True,
+        "pin_recorded": False,
+        "private_key_exported": False,
+        "readiness": copy.deepcopy(frozen_review["readiness"]),
+        "execution_boundary": copy.deepcopy(PROMOTION_BOUNDARY),
+    }
+    value["report_sha256"] = canonical_sha256(value)
+    return value
+
+
 def _empty_decision() -> dict[str, Any]:
     return {
         "decision": None,
@@ -217,6 +476,15 @@ def _empty_decision() -> dict[str, Any]:
         "human_review_completed": None,
         "checklist": {name: None for name in sorted(CHECKLIST)},
     }
+
+
+def _signature_payload(value: dict[str, Any]) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
 
 
 def _self_hash(value: Any, field: str) -> bool:
