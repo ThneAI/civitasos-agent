@@ -4,16 +4,26 @@ import copy
 import hashlib
 import json
 
+from nacl.signing import SigningKey
+
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_outcome_sensitive_roster_assignment_rebind import (
     REQUIRED_REVIEW_CHECKS,
 )
 from benchmarks.j1.qualification_outcome_sensitive_roster_assignment_rebind_review import (
     APPROVAL_DECISION,
+    PROMOTION_BOUNDARY,
     approval_review_declaration,
+    build_review_receipt,
     build_review_decision_template,
     build_review_request,
+    build_reviewed_rebound_assignment,
+    build_reviewed_rebound_roster,
+    validate_completed_review_decision,
+    validate_review_receipt,
     validate_review_request,
+    validate_reviewed_rebound_assignment,
+    validate_reviewed_rebound_roster,
 )
 from benchmarks.tests.test_j1_qualification_outcome_sensitive_roster_assignment_rebind import (
     _candidates,
@@ -25,6 +35,19 @@ STATEMENT_SHA256 = "a" * 64
 IMPLEMENTATION = {"source_revision": "b" * 40, "source_sha256": "c" * 64}
 PLAN_PATH = "/private/outcome-rebind-plan.json"
 PREFLIGHT_PATH = "/private/outcome-rebind-preflight.json"
+PROFILE_SHA256 = "9" * 64
+
+
+class _Signer:
+    def __init__(self) -> None:
+        self._key = SigningKey.generate()
+
+    @property
+    def public_key_hex(self) -> str:
+        return self._key.verify_key.encode().hex()
+
+    def sign(self, message: bytes) -> bytes:
+        return self._key.sign(message).signature
 
 
 def _bundle() -> tuple[dict, bytes, dict, bytes, dict]:
@@ -135,3 +158,125 @@ def test_reviewer_declaration_is_exactly_request_bound_and_non_executable() -> N
     assert "does not reassign or substitute any participant" in declaration
     assert "upgrade SI-13 maturity" in declaration
     assert hashlib.sha256(declaration.encode()).hexdigest()
+
+
+def _approved_decision(request: dict, signer: _Signer) -> dict:
+    return {
+        "schema_version": (
+            "j1-qualification-outcome-sensitive-"
+            "roster-assignment-review-decision:v1"
+        ),
+        "review_id": "j1d-outcome-rebind-independent-review-r1",
+        "review_request_sha256": request["request_sha256"],
+        "decision": APPROVAL_DECISION,
+        "reviewed_at": NOW,
+        "reviewer": {
+            "did": "did:civ:testnet:reviewer",
+            "public_key_hex": signer.public_key_hex,
+            "credential_version": 1,
+            "signer_kind": "pkcs11_ed25519",
+            "custody_provenance_sha256": PROFILE_SHA256,
+            "signer_attestation_sha256": PROFILE_SHA256,
+        },
+        "independence": {
+            "conflicts_disclosed": True,
+            "independent_from_candidate_authoring": True,
+            "human_review_completed": True,
+        },
+        "checklist": {
+            check: True for check in sorted(REQUIRED_REVIEW_CHECKS)
+        },
+    }
+
+
+def _receipt() -> tuple[dict, dict]:
+    request = _bundle()[4]
+    signer = _Signer()
+    decision = _approved_decision(request, signer)
+    declaration_sha256 = hashlib.sha256(
+        approval_review_declaration(request, "f" * 64).encode()
+    ).hexdigest()
+    receipt = build_review_receipt(
+        request=request,
+        decision=decision,
+        review_declaration_sha256=declaration_sha256,
+        reviewer_profile_sha256=PROFILE_SHA256,
+        implementation=IMPLEMENTATION,
+        signer=signer,
+    )
+    assert validate_completed_review_decision(decision, request=request) == []
+    assert (
+        validate_review_receipt(
+            receipt,
+            request=request,
+            expected_review_declaration_sha256=declaration_sha256,
+            expected_reviewer_profile_sha256=PROFILE_SHA256,
+            expected_implementation=IMPLEMENTATION,
+        )
+        == []
+    )
+    return request, receipt
+
+
+def test_signed_receipt_rejects_scope_tamper() -> None:
+    request, receipt = _receipt()
+    changed = copy.deepcopy(receipt)
+    changed["review_scope"]["inventory"]["total_decision_count"] = 479
+
+    failures = validate_review_receipt(
+        changed,
+        request=request,
+        expected_review_declaration_sha256=receipt[
+            "review_declaration_sha256"
+        ],
+        expected_reviewer_profile_sha256=PROFILE_SHA256,
+        expected_implementation=IMPLEMENTATION,
+    )
+
+    assert "outcome_rebind_review_receipt_scope_invalid" in failures
+    assert "outcome_rebind_review_signature_invalid" in failures
+
+
+def test_promotion_is_copy_on_write_and_preserves_execution_blocks() -> None:
+    _, receipt = _receipt()
+    candidate_roster, candidate_assignment, _ = _candidates()
+    candidate_roster_before = copy.deepcopy(candidate_roster)
+    candidate_assignment_before = copy.deepcopy(candidate_assignment)
+    receipt_sha256 = "8" * 64
+
+    reviewed_roster = build_reviewed_rebound_roster(
+        candidate=candidate_roster,
+        receipt=receipt,
+        receipt_artifact_sha256=receipt_sha256,
+    )
+    reviewed_assignment = build_reviewed_rebound_assignment(
+        candidate=candidate_assignment,
+        reviewed_roster=reviewed_roster,
+        receipt=receipt,
+        receipt_artifact_sha256=receipt_sha256,
+    )
+
+    assert candidate_roster == candidate_roster_before
+    assert candidate_assignment == candidate_assignment_before
+    assert reviewed_roster["execution_boundary"] == PROMOTION_BOUNDARY
+    assert reviewed_assignment["execution_boundary"] == PROMOTION_BOUNDARY
+    assert reviewed_roster["execution_boundary"]["mentor_advice_signed"] is False
+    assert (
+        validate_reviewed_rebound_roster(
+            reviewed_roster,
+            candidate=candidate_roster,
+            receipt=receipt,
+            receipt_artifact_sha256=receipt_sha256,
+        )
+        == []
+    )
+    assert (
+        validate_reviewed_rebound_assignment(
+            reviewed_assignment,
+            candidate=candidate_assignment,
+            reviewed_roster=reviewed_roster,
+            receipt=receipt,
+            receipt_artifact_sha256=receipt_sha256,
+        )
+        == []
+    )
