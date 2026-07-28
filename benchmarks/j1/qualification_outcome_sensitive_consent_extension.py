@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from typing import Any
+import json
+from datetime import datetime
+from typing import Any, Protocol
+
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
 
 from .controlled_comparison import canonical_sha256
+from .qualification_participant_provisioning import participant_did, participant_id
 
 
 PLAN_SCHEMA = "j1-qualification-outcome-sensitive-consent-extension-plan:v1"
@@ -309,6 +315,356 @@ def authorization_statement(plan: dict[str, Any], raw_sha256: str) -> str:
     )
 
 
+class ExtensionSigner(Protocol):
+    @property
+    def public_key_hex(self) -> str: ...
+
+    def sign(self, message: bytes) -> bytes: ...
+
+
+def signature_payload(value: dict[str, Any]) -> bytes:
+    """Return the canonical participant-signed payload."""
+    body = {
+        key: item
+        for key, item in value.items()
+        if key not in {"signature", "extension_sha256"}
+    }
+    return json.dumps(
+        body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode()
+
+
+def build_consent_extension(
+    *,
+    extension_id: str,
+    signed_at: str,
+    target: dict[str, Any],
+    identity: dict[str, Any],
+    public_key_hex: str,
+    plan: dict[str, Any],
+    plan_artifact_sha256: str,
+    preflight_artifact_sha256: str,
+    authorization_id: str,
+    authorization_statement_sha256: str,
+    nonce: bytes,
+    signer: ExtensionSigner,
+) -> dict[str, Any]:
+    """Build one participant-scoped outcome-sensitive consent extension."""
+    if signer.public_key_hex.lower() != public_key_hex.lower():
+        raise ValueError("outcome consent signer does not match participant identity")
+    source = plan["source_binding"]
+    materials = source["frozen_materials"]
+    value = {
+        "schema_version": EXTENSION_SCHEMA,
+        "extension_id": extension_id,
+        "signed_at": signed_at,
+        "public_only": True,
+        "secret_material_included": False,
+        "participant": {
+            "participant_id": target["participant_id"],
+            "execution_did": target["execution_did"],
+            "credential_version": 1,
+            "participant_profile_artifact_sha256": target[
+                "participant_profile_artifact_sha256"
+            ],
+            "participant_profile_sha256": target["participant_profile_sha256"],
+            "public_key_hex": public_key_hex,
+            "public_key_sha256": identity["public_key_sha256"],
+        },
+        "cohort_binding": {
+            "pair_id": target["pair_id"],
+            "cohort": target["cohort"],
+            "reviewed_assignment_artifact_sha256": source["reviewed_assignment"][
+                "sha256"
+            ],
+            "reviewed_assignment_sha256": source["reviewed_assignment"][
+                "canonical_sha256"
+            ],
+            "assignment_commitment_sha256": target[
+                "assignment_commitment_sha256"
+            ],
+        },
+        "material_binding": {
+            "promotion_gate_artifact_sha256": source["promotion_gate"]["sha256"],
+            "promotion_gate_sha256": source["promotion_gate"]["canonical_sha256"],
+            "frozen_review_artifact_sha256": source["frozen_review"]["sha256"],
+            "frozen_review_sha256": source["frozen_review"]["canonical_sha256"],
+            "frozen_materials": {
+                name: {
+                    "artifact_sha256": materials[name]["sha256"],
+                    "canonical_sha256": materials[name]["canonical_sha256"],
+                }
+                for name in sorted(materials)
+            },
+        },
+        "scope_binding": {
+            "consent_scope": copy.deepcopy(CONSENT_SCOPE),
+            "consent_scope_sha256": canonical_sha256(CONSENT_SCOPE),
+            "consent_statement_sha256": hashlib.sha256(
+                CONSENT_STATEMENT.encode()
+            ).hexdigest(),
+        },
+        "prior_consent": {
+            "artifact_sha256": target["prior_consent_artifact_sha256"],
+            "canonical_sha256": target["prior_consent_sha256"],
+            "inherited": False,
+            "immutable_parent_evidence": True,
+        },
+        "authorization": {
+            "authorization_id": authorization_id,
+            "statement_sha256": authorization_statement_sha256,
+            "plan_artifact_sha256": plan_artifact_sha256,
+            "plan_sha256": plan["plan_sha256"],
+            "preflight_artifact_sha256": preflight_artifact_sha256,
+        },
+        "consent_nonce_hex": nonce.hex(),
+        "consent_statement": CONSENT_STATEMENT,
+        "participant_consent_extended": True,
+        "model_execution_authorized": False,
+        "downstream_rebind_authorized": False,
+        "effectiveness_claim_authorized": False,
+        "si13_maturity_upgrade_authorized": False,
+    }
+    payload = signature_payload(value)
+    signature = signer.sign(payload)
+    if len(signature) != 64:
+        raise ValueError("Ed25519 signature must be 64 bytes")
+    value["signature"] = {
+        "algorithm": "Ed25519",
+        "signed_payload_sha256": hashlib.sha256(payload).hexdigest(),
+        "signature_hex": signature.hex(),
+    }
+    value["extension_sha256"] = canonical_sha256(value)
+    failures = validate_consent_extension(value)
+    if failures:
+        raise ValueError(f"outcome consent extension invalid: {failures}")
+    return value
+
+
+def validate_consent_extension(value: Any) -> list[str]:
+    """Validate one participant signature and every outcome-sensitive binding."""
+    extension = value if isinstance(value, dict) else {}
+    failures: list[str] = []
+    expected_fields = {
+        "schema_version",
+        "extension_id",
+        "signed_at",
+        "public_only",
+        "secret_material_included",
+        "participant",
+        "cohort_binding",
+        "material_binding",
+        "scope_binding",
+        "prior_consent",
+        "authorization",
+        "consent_nonce_hex",
+        "consent_statement",
+        "participant_consent_extended",
+        "model_execution_authorized",
+        "downstream_rebind_authorized",
+        "effectiveness_claim_authorized",
+        "si13_maturity_upgrade_authorized",
+        "signature",
+        "extension_sha256",
+    }
+    _require(
+        set(extension) == expected_fields,
+        "outcome_consent_extension_fields_invalid",
+        failures,
+    )
+    _require(
+        extension.get("schema_version") == EXTENSION_SCHEMA
+        and _text(extension.get("extension_id"))
+        and _rfc3339(extension.get("signed_at")),
+        "outcome_consent_extension_identity_invalid",
+        failures,
+    )
+    _require(
+        extension.get("public_only") is True
+        and extension.get("secret_material_included") is False,
+        "outcome_consent_extension_public_boundary_invalid",
+        failures,
+    )
+    participant = _object(extension.get("participant"))
+    public_key_hex = str(participant.get("public_key_hex", ""))
+    _require(
+        set(participant)
+        == {
+            "participant_id",
+            "execution_did",
+            "credential_version",
+            "participant_profile_artifact_sha256",
+            "participant_profile_sha256",
+            "public_key_hex",
+            "public_key_sha256",
+        }
+        and participant.get("credential_version") == 1
+        and _hex(public_key_hex, expected_bytes=32)
+        and participant.get("participant_id") == participant_id(public_key_hex)
+        and participant.get("execution_did") == participant_did(public_key_hex)
+        and participant.get("public_key_sha256")
+        == hashlib.sha256(bytes.fromhex(public_key_hex)).hexdigest()
+        and _sha256(participant.get("participant_profile_artifact_sha256"))
+        and _sha256(participant.get("participant_profile_sha256")),
+        "outcome_consent_extension_participant_invalid",
+        failures,
+    )
+    cohort = _object(extension.get("cohort_binding"))
+    _require(
+        set(cohort)
+        == {
+            "pair_id",
+            "cohort",
+            "reviewed_assignment_artifact_sha256",
+            "reviewed_assignment_sha256",
+            "assignment_commitment_sha256",
+        }
+        and _text(cohort.get("pair_id"))
+        and cohort.get("cohort") in {"mentor", "control"}
+        and all(
+            _sha256(cohort.get(field))
+            for field in (
+                "reviewed_assignment_artifact_sha256",
+                "reviewed_assignment_sha256",
+                "assignment_commitment_sha256",
+            )
+        ),
+        "outcome_consent_extension_cohort_invalid",
+        failures,
+    )
+    material = _object(extension.get("material_binding"))
+    frozen_materials = _object(material.get("frozen_materials"))
+    _require(
+        set(material)
+        == {
+            "promotion_gate_artifact_sha256",
+            "promotion_gate_sha256",
+            "frozen_review_artifact_sha256",
+            "frozen_review_sha256",
+            "frozen_materials",
+        }
+        and all(
+            _sha256(material.get(field))
+            for field in (
+                "promotion_gate_artifact_sha256",
+                "promotion_gate_sha256",
+                "frozen_review_artifact_sha256",
+                "frozen_review_sha256",
+            )
+        )
+        and set(frozen_materials) == REQUIRED_MATERIALS
+        and all(
+            set(item) == {"artifact_sha256", "canonical_sha256"}
+            and _sha256(item.get("artifact_sha256"))
+            and _sha256(item.get("canonical_sha256"))
+            for item in frozen_materials.values()
+            if isinstance(item, dict)
+        )
+        and len(frozen_materials) == len(REQUIRED_MATERIALS),
+        "outcome_consent_extension_material_invalid",
+        failures,
+    )
+    scope = _object(extension.get("scope_binding"))
+    _require(
+        scope
+        == {
+            "consent_scope": CONSENT_SCOPE,
+            "consent_scope_sha256": canonical_sha256(CONSENT_SCOPE),
+            "consent_statement_sha256": hashlib.sha256(
+                CONSENT_STATEMENT.encode()
+            ).hexdigest(),
+        },
+        "outcome_consent_extension_scope_invalid",
+        failures,
+    )
+    prior = _object(extension.get("prior_consent"))
+    _require(
+        set(prior)
+        == {
+            "artifact_sha256",
+            "canonical_sha256",
+            "inherited",
+            "immutable_parent_evidence",
+        }
+        and _sha256(prior.get("artifact_sha256"))
+        and _sha256(prior.get("canonical_sha256"))
+        and prior.get("inherited") is False
+        and prior.get("immutable_parent_evidence") is True,
+        "outcome_consent_extension_prior_invalid",
+        failures,
+    )
+    authorization = _object(extension.get("authorization"))
+    _require(
+        set(authorization)
+        == {
+            "authorization_id",
+            "statement_sha256",
+            "plan_artifact_sha256",
+            "plan_sha256",
+            "preflight_artifact_sha256",
+        }
+        and _text(authorization.get("authorization_id"))
+        and all(
+            _sha256(authorization.get(field))
+            for field in (
+                "statement_sha256",
+                "plan_artifact_sha256",
+                "plan_sha256",
+                "preflight_artifact_sha256",
+            )
+        ),
+        "outcome_consent_extension_authorization_invalid",
+        failures,
+    )
+    _require(
+        _hex(extension.get("consent_nonce_hex"), expected_bytes=32),
+        "outcome_consent_extension_nonce_invalid",
+        failures,
+    )
+    _require(
+        extension.get("consent_statement") == CONSENT_STATEMENT,
+        "outcome_consent_extension_statement_invalid",
+        failures,
+    )
+    _require(
+        extension.get("participant_consent_extended") is True
+        and extension.get("model_execution_authorized") is False
+        and extension.get("downstream_rebind_authorized") is False
+        and extension.get("effectiveness_claim_authorized") is False
+        and extension.get("si13_maturity_upgrade_authorized") is False,
+        "outcome_consent_extension_execution_boundary_invalid",
+        failures,
+    )
+    signature = _object(extension.get("signature"))
+    payload = signature_payload(extension)
+    _require(
+        set(signature) == {"algorithm", "signed_payload_sha256", "signature_hex"}
+        and signature.get("algorithm") == "Ed25519"
+        and signature.get("signed_payload_sha256")
+        == hashlib.sha256(payload).hexdigest()
+        and _hex(signature.get("signature_hex"), expected_bytes=64),
+        "outcome_consent_extension_signature_metadata_invalid",
+        failures,
+    )
+    try:
+        VerifyKey(bytes.fromhex(public_key_hex)).verify(
+            payload, bytes.fromhex(str(signature.get("signature_hex", "")))
+        )
+    except (BadSignatureError, ValueError, TypeError):
+        _require(
+            False,
+            "outcome_consent_extension_signature_invalid",
+            failures,
+        )
+    body = {key: item for key, item in extension.items() if key != "extension_sha256"}
+    _require(
+        extension.get("extension_sha256") == canonical_sha256(body),
+        "outcome_consent_extension_hash_invalid",
+        failures,
+    )
+    return list(dict.fromkeys(failures))
+
+
 def _source_binding_valid(value: Any) -> bool:
     source = value if isinstance(value, dict) else {}
     expected = {
@@ -429,6 +785,20 @@ def _list(value: Any) -> list[dict[str, Any]]:
 
 def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _rfc3339(value: Any) -> bool:
+    try:
+        return (
+            datetime.fromisoformat(str(value).replace("Z", "+00:00")).tzinfo
+            is not None
+        )
+    except ValueError:
+        return False
+
+
+def _object(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _sha256(value: Any) -> bool:
