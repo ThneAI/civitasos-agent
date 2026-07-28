@@ -296,10 +296,14 @@ def build_review_decision_template(
     }
 
 
-def approval_review_declaration(request: dict[str, Any]) -> str:
+def approval_review_declaration(
+    request: dict[str, Any],
+    request_artifact_sha256: str,
+) -> str:
     return (
         "I have independently reviewed J1-D outcome-sensitive "
         "roster/assignment rebind review request raw SHA-256 "
+        f"{request_artifact_sha256}, canonical SHA-256 "
         f"{request['request_sha256']} and choose {APPROVAL_DECISION}. I confirm "
         "all 10 required checklist items, disclose all conflicts, affirm that I "
         "am independent from candidate authoring and have completed human "

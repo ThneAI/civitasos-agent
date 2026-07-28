@@ -128,7 +128,12 @@ def prepare_review_handoff(
         write_private_json(
             decision_path, build_review_decision_template(request)
         )
-        declaration = approval_review_declaration(request)
+        request_artifact_sha256 = hashlib.sha256(
+            request_path.read_bytes()
+        ).hexdigest()
+        declaration = approval_review_declaration(
+            request, request_artifact_sha256
+        )
         report = {
             "schema_version": REPORT_SCHEMA,
             "passed": True,

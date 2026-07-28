@@ -125,8 +125,10 @@ def test_request_rejects_candidate_path_or_hash_drift() -> None:
 
 def test_reviewer_declaration_is_exactly_request_bound_and_non_executable() -> None:
     request = _bundle()[4]
-    declaration = approval_review_declaration(request)
+    raw_sha256 = "f" * 64
+    declaration = approval_review_declaration(request, raw_sha256)
 
+    assert raw_sha256 in declaration
     assert request["request_sha256"] in declaration
     assert APPROVAL_DECISION in declaration
     assert "all 10 required checklist items" in declaration
