@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from typing import Any
+from typing import Protocol
+
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
 
 from .controlled_comparison import canonical_sha256
 from .qualification_null_result_postmortem import (
@@ -16,6 +21,11 @@ from .qualification_null_result_postmortem import (
 
 REVIEW_REQUEST_SCHEMA = "j1-qualification-null-result-postmortem-review-request:v1"
 REVIEW_HANDOFF_SCHEMA = "j1-qualification-null-result-postmortem-review-handoff:v1"
+REVIEW_RECEIPT_SCHEMA = "j1-qualification-null-result-postmortem-review-receipt:v1"
+FROZEN_REVIEW_SCHEMA = "j1-qualification-null-result-postmortem-review-frozen:v1"
+PROMOTION_GATE_SCHEMA = (
+    "j1-qualification-null-result-postmortem-review-promotion-gate:v1"
+)
 ALLOWED_DECISION = "approve_null_result_postmortem_and_amendment_candidate"
 EXPECTED_GATE_STATE = (
     "null_result_root_cause_replayed_amendment_candidate_review_required_"
@@ -52,6 +62,26 @@ BOUNDARY = {
     "effectiveness_claim_authorized": False,
     "maturity_upgrade_authorized": False,
 }
+RECEIPT_BOUNDARY = {
+    **BOUNDARY,
+    "independent_review_approved": True,
+    "copy_on_write_promotion_allowed": True,
+}
+PROMOTION_BOUNDARY = {
+    **BOUNDARY,
+    "independent_review_materials_only": False,
+    "postmortem_promoted": True,
+    "amendment_candidate_promoted": True,
+    "review_promotion_only": True,
+    "copy_on_write_promotion_performed": True,
+}
+
+
+class ReviewSigner(Protocol):
+    @property
+    def public_key_hex(self) -> str: ...
+
+    def sign(self, message: bytes) -> bytes: ...
 
 
 def build_review_request(
@@ -341,6 +371,249 @@ def build_review_handoff(
     return handoff
 
 
+def build_signed_review_receipt(
+    *,
+    review_id: str,
+    reviewed_at: str,
+    request_ref: dict[str, str],
+    postmortem_ref: dict[str, str],
+    candidate_ref: dict[str, str],
+    owner_gate_ref: dict[str, str],
+    approval_statement_sha256: str,
+    reviewer: dict[str, Any],
+    reviewer_profile_sha256: str,
+    implementation: dict[str, str],
+    signer: ReviewSigner,
+) -> dict[str, Any]:
+    """Sign the completed independent-review decision."""
+    value = {
+        "schema_version": REVIEW_RECEIPT_SCHEMA,
+        "review_id": review_id,
+        "reviewed_at": reviewed_at,
+        "decision": ALLOWED_DECISION,
+        "request": copy.deepcopy(request_ref),
+        "reviewed_materials": {
+            "postmortem": copy.deepcopy(postmortem_ref),
+            "amendment_candidate": copy.deepcopy(candidate_ref),
+            "owner_approval_gate": copy.deepcopy(owner_gate_ref),
+        },
+        "approval_statement_sha256": approval_statement_sha256,
+        "reviewer": {
+            "did": reviewer["did"],
+            "public_key_hex": reviewer["public_key_hex"],
+            "credential_version": reviewer["credential_version"],
+            "signer_kind": reviewer["signer_kind"],
+            "identity_profile_sha256": reviewer_profile_sha256,
+        },
+        "independence": {
+            "conflicts_disclosed": True,
+            "independent_from_candidate_authoring": True,
+            "human_review_completed": True,
+        },
+        "checklist": {item: True for item in sorted(CHECKLIST)},
+        "implementation": copy.deepcopy(implementation),
+        "execution_boundary": copy.deepcopy(RECEIPT_BOUNDARY),
+    }
+    payload = _signature_payload(value)
+    signature = signer.sign(payload)
+    if len(signature) != 64:
+        raise ValueError("null-result review signature must be 64 bytes")
+    value["signature"] = {
+        "algorithm": "ed25519",
+        "public_key_hex": signer.public_key_hex,
+        "signed_payload_sha256": hashlib.sha256(payload).hexdigest(),
+        "signature_hex": signature.hex(),
+    }
+    value["receipt_sha256"] = canonical_sha256(value)
+    failures = validate_signed_review_receipt(
+        value,
+        expected_request_ref=request_ref,
+        expected_postmortem_ref=postmortem_ref,
+        expected_candidate_ref=candidate_ref,
+        expected_owner_gate_ref=owner_gate_ref,
+        expected_approval_statement_sha256=approval_statement_sha256,
+        expected_reviewer=reviewer,
+        expected_reviewer_profile_sha256=reviewer_profile_sha256,
+        expected_implementation=implementation,
+    )
+    if failures:
+        raise ValueError(f"null-result signed review receipt invalid: {failures}")
+    return value
+
+
+def validate_signed_review_receipt(
+    value: Any,
+    *,
+    expected_request_ref: dict[str, str],
+    expected_postmortem_ref: dict[str, str],
+    expected_candidate_ref: dict[str, str],
+    expected_owner_gate_ref: dict[str, str],
+    expected_approval_statement_sha256: str,
+    expected_reviewer: dict[str, Any],
+    expected_reviewer_profile_sha256: str,
+    expected_implementation: dict[str, str],
+) -> list[str]:
+    """Validate receipt bindings, reviewer independence, and signature."""
+    receipt = value if isinstance(value, dict) else {}
+    failures: list[str] = []
+    _require(
+        receipt.get("schema_version") == REVIEW_RECEIPT_SCHEMA
+        and _text(receipt.get("review_id"))
+        and _text(receipt.get("reviewed_at"))
+        and receipt.get("decision") == ALLOWED_DECISION
+        and receipt.get("request") == expected_request_ref
+        and receipt.get("reviewed_materials")
+        == {
+            "postmortem": expected_postmortem_ref,
+            "amendment_candidate": expected_candidate_ref,
+            "owner_approval_gate": expected_owner_gate_ref,
+        }
+        and receipt.get("approval_statement_sha256")
+        == expected_approval_statement_sha256,
+        "null_result_review_receipt_binding_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("reviewer")
+        == {
+            "did": expected_reviewer.get("did"),
+            "public_key_hex": expected_reviewer.get("public_key_hex"),
+            "credential_version": expected_reviewer.get("credential_version"),
+            "signer_kind": expected_reviewer.get("signer_kind"),
+            "identity_profile_sha256": expected_reviewer_profile_sha256,
+        },
+        "null_result_review_receipt_reviewer_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("independence")
+        == {
+            "conflicts_disclosed": True,
+            "independent_from_candidate_authoring": True,
+            "human_review_completed": True,
+        }
+        and receipt.get("checklist") == {item: True for item in sorted(CHECKLIST)},
+        "null_result_review_receipt_independence_invalid",
+        failures,
+    )
+    _require(
+        receipt.get("implementation") == expected_implementation
+        and receipt.get("execution_boundary") == RECEIPT_BOUNDARY,
+        "null_result_review_receipt_boundary_invalid",
+        failures,
+    )
+    signature = _object(receipt.get("signature"))
+    unsigned = {
+        key: item
+        for key, item in receipt.items()
+        if key not in {"signature", "receipt_sha256"}
+    }
+    payload = _signature_payload(unsigned)
+    _require(
+        signature.get("algorithm") == "ed25519"
+        and signature.get("public_key_hex") == expected_reviewer.get("public_key_hex")
+        and signature.get("signed_payload_sha256")
+        == hashlib.sha256(payload).hexdigest(),
+        "null_result_review_receipt_signature_metadata_invalid",
+        failures,
+    )
+    try:
+        VerifyKey(
+            bytes.fromhex(str(expected_reviewer.get("public_key_hex", "")))
+        ).verify(payload, bytes.fromhex(str(signature.get("signature_hex", ""))))
+    except (BadSignatureError, ValueError):
+        failures.append("null_result_review_receipt_signature_invalid")
+    body = {key: item for key, item in receipt.items() if key != "receipt_sha256"}
+    _require(
+        receipt.get("receipt_sha256") == canonical_sha256(body),
+        "null_result_review_receipt_hash_invalid",
+        failures,
+    )
+    return list(dict.fromkeys(failures))
+
+
+def build_frozen_review(
+    *,
+    frozen_id: str,
+    promoted_at: str,
+    source_postmortem_ref: dict[str, str],
+    source_candidate_ref: dict[str, str],
+    frozen_postmortem_ref: dict[str, str],
+    frozen_candidate_ref: dict[str, str],
+    review_receipt_ref: dict[str, str],
+    reviewer_did: str,
+    implementation: dict[str, str],
+) -> dict[str, Any]:
+    """Build a reviewed wrapper without mutating either source artifact."""
+    value = {
+        "schema_version": FROZEN_REVIEW_SCHEMA,
+        "frozen_id": frozen_id,
+        "promoted_at": promoted_at,
+        "status": "operator_reviewed_frozen",
+        "source_materials": {
+            "postmortem": copy.deepcopy(source_postmortem_ref),
+            "amendment_candidate": copy.deepcopy(source_candidate_ref),
+        },
+        "frozen_source_copies": {
+            "postmortem": copy.deepcopy(frozen_postmortem_ref),
+            "amendment_candidate": copy.deepcopy(frozen_candidate_ref),
+        },
+        "operator_review": {
+            "reviewer_did": reviewer_did,
+            "review_receipt": copy.deepcopy(review_receipt_ref),
+            "decision": ALLOWED_DECISION,
+        },
+        "readiness": {
+            "null_result_postmortem_frozen": True,
+            "outcome_sensitive_amendment_candidate_frozen": True,
+            "protocol_amendment_review_required": True,
+            "evaluator_amendment_review_required": True,
+            "task_fixture_review_required": True,
+            "statistical_estimand_review_required": True,
+            "participant_consent_impact_review_required": True,
+            "participant_consent_migrated": False,
+            "execution_preflight_allowed": False,
+            "provider_or_model_execution_allowed": False,
+            "si13_maturity_upgrade_allowed": False,
+        },
+        "implementation": copy.deepcopy(implementation),
+        "execution_boundary": copy.deepcopy(PROMOTION_BOUNDARY),
+    }
+    value["frozen_review_sha256"] = canonical_sha256(value)
+    return value
+
+
+def build_promotion_gate(
+    *,
+    request_ref: dict[str, str],
+    handoff_ref: dict[str, str],
+    receipt_ref: dict[str, str],
+    frozen_review_ref: dict[str, str],
+    frozen_review: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the terminal Gate for review-only copy-on-write promotion."""
+    value = {
+        "schema_version": PROMOTION_GATE_SCHEMA,
+        "passed": True,
+        "failure_reasons": [],
+        "state": (
+            "null_result_postmortem_and_amendment_candidate_reviewed_frozen_"
+            "protocol_amendment_required_execution_blocked"
+        ),
+        "review_request": copy.deepcopy(request_ref),
+        "review_handoff": copy.deepcopy(handoff_ref),
+        "review_receipt": copy.deepcopy(receipt_ref),
+        "frozen_review": copy.deepcopy(frozen_review_ref),
+        "signature_valid": True,
+        "pin_recorded": False,
+        "private_key_exported": False,
+        "readiness": copy.deepcopy(frozen_review["readiness"]),
+        "execution_boundary": copy.deepcopy(PROMOTION_BOUNDARY),
+    }
+    value["report_sha256"] = canonical_sha256(value)
+    return value
+
+
 def _empty_decision_template() -> dict[str, Any]:
     return {
         "decision": None,
@@ -351,6 +624,15 @@ def _empty_decision_template() -> dict[str, Any]:
         "human_review_completed": None,
         "checklist": {key: None for key in sorted(CHECKLIST)},
     }
+
+
+def _signature_payload(value: dict[str, Any]) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
 
 
 def _valid_ref(value: Any, *, expected_canonical: Any) -> bool:

@@ -4,6 +4,7 @@ import copy
 import hashlib
 
 import pytest
+from nacl.signing import SigningKey
 
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_null_result_postmortem import (
@@ -16,10 +17,15 @@ from benchmarks.j1.qualification_null_result_postmortem_review import (
     ALLOWED_DECISION,
     BOUNDARY,
     CHECKLIST,
+    PROMOTION_BOUNDARY,
     build_review_handoff,
+    build_frozen_review,
+    build_promotion_gate,
     build_review_request,
+    build_signed_review_receipt,
     reviewer_approval_statement,
     validate_review_request,
+    validate_signed_review_receipt,
 )
 
 
@@ -30,6 +36,19 @@ IMPLEMENTATION = {
     "domain_source_sha256": "b" * 64,
     "operation_source_sha256": "c" * 64,
 }
+REVIEWER_PROFILE_SHA256 = "d" * 64
+
+
+class _Signer:
+    def __init__(self) -> None:
+        self._key = SigningKey.generate()
+
+    @property
+    def public_key_hex(self) -> str:
+        return self._key.verify_key.encode().hex()
+
+    def sign(self, message: bytes) -> bytes:
+        return self._key.sign(message).signature
 
 
 def _self_hashed(
@@ -262,3 +281,114 @@ def test_handoff_preserves_empty_decision_and_exact_statement() -> None:
     assert f"all {len(CHECKLIST)} required checklist items" in statement
     assert ALLOWED_DECISION in statement
     assert handoff["execution_boundary"] == BOUNDARY
+
+
+def test_builds_and_verifies_signed_review_receipt() -> None:
+    request, sources = _request()
+    _, postmortem_ref, _, candidate_ref, _, gate_ref = sources
+    signer = _Signer()
+    reviewer = {
+        "did": "did:civ:testnet:reviewer",
+        "public_key_hex": signer.public_key_hex,
+        "credential_version": 1,
+        "signer_kind": "pkcs11_ed25519",
+    }
+    request_ref = {
+        "path": "/private/request.json",
+        "sha256": "4" * 64,
+        "canonical_sha256": request["request_sha256"],
+    }
+    receipt = build_signed_review_receipt(
+        review_id="review-r1",
+        reviewed_at="2026-07-28T00:10:00+00:00",
+        request_ref=request_ref,
+        postmortem_ref=postmortem_ref,
+        candidate_ref=candidate_ref,
+        owner_gate_ref=gate_ref,
+        approval_statement_sha256="5" * 64,
+        reviewer=reviewer,
+        reviewer_profile_sha256=REVIEWER_PROFILE_SHA256,
+        implementation=IMPLEMENTATION,
+        signer=signer,
+    )
+    assert (
+        validate_signed_review_receipt(
+            receipt,
+            expected_request_ref=request_ref,
+            expected_postmortem_ref=postmortem_ref,
+            expected_candidate_ref=candidate_ref,
+            expected_owner_gate_ref=gate_ref,
+            expected_approval_statement_sha256="5" * 64,
+            expected_reviewer=reviewer,
+            expected_reviewer_profile_sha256=REVIEWER_PROFILE_SHA256,
+            expected_implementation=IMPLEMENTATION,
+        )
+        == []
+    )
+    changed = copy.deepcopy(receipt)
+    changed["checklist"][sorted(CHECKLIST)[0]] = False
+    failures = validate_signed_review_receipt(
+        changed,
+        expected_request_ref=request_ref,
+        expected_postmortem_ref=postmortem_ref,
+        expected_candidate_ref=candidate_ref,
+        expected_owner_gate_ref=gate_ref,
+        expected_approval_statement_sha256="5" * 64,
+        expected_reviewer=reviewer,
+        expected_reviewer_profile_sha256=REVIEWER_PROFILE_SHA256,
+        expected_implementation=IMPLEMENTATION,
+    )
+    assert "null_result_review_receipt_independence_invalid" in failures
+    assert "null_result_review_receipt_signature_invalid" in failures
+
+
+def test_frozen_wrapper_and_gate_keep_execution_blocked() -> None:
+    request, sources = _request()
+    _, postmortem_ref, _, candidate_ref, _, _ = sources
+    receipt_ref = {
+        "path": "/private/receipt.json",
+        "sha256": "5" * 64,
+        "canonical_sha256": "6" * 64,
+    }
+    frozen = build_frozen_review(
+        frozen_id="frozen-r1",
+        promoted_at="2026-07-28T00:10:00+00:00",
+        source_postmortem_ref=postmortem_ref,
+        source_candidate_ref=candidate_ref,
+        frozen_postmortem_ref={
+            **postmortem_ref,
+            "path": "/frozen/postmortem.json",
+        },
+        frozen_candidate_ref={
+            **candidate_ref,
+            "path": "/frozen/candidate.json",
+        },
+        review_receipt_ref=receipt_ref,
+        reviewer_did="did:civ:testnet:reviewer",
+        implementation=IMPLEMENTATION,
+    )
+    frozen_ref = {
+        "path": "/private/frozen.json",
+        "sha256": "7" * 64,
+        "canonical_sha256": frozen["frozen_review_sha256"],
+    }
+    gate = build_promotion_gate(
+        request_ref={
+            "path": "/private/request.json",
+            "sha256": "4" * 64,
+            "canonical_sha256": request["request_sha256"],
+        },
+        handoff_ref={
+            "path": "/private/handoff.json",
+            "sha256": "8" * 64,
+            "canonical_sha256": "9" * 64,
+        },
+        receipt_ref=receipt_ref,
+        frozen_review_ref=frozen_ref,
+        frozen_review=frozen,
+    )
+    assert frozen["status"] == "operator_reviewed_frozen"
+    assert frozen["readiness"]["execution_preflight_allowed"] is False
+    assert frozen["readiness"]["participant_consent_migrated"] is False
+    assert gate["passed"] is True
+    assert gate["execution_boundary"] == PROMOTION_BOUNDARY
