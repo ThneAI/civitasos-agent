@@ -153,6 +153,8 @@ def test_builds_review_only_plan_for_complete_exited_set() -> None:
 
     assert _validate(plan, values) == []
     assert plan["inventory"]["participant_count"] == 40
+    assert plan["inventory"]["parent_container_stopped_count"] == 40
+    assert plan["inventory"]["parent_container_created_count"] == 0
     assert plan["inventory"]["parent_container_exited_count"] == 40
     assert plan["inventory"]["parent_container_running_count"] == 0
     assert plan["inventory"]["mentor_signed_advice_count"] == 180
@@ -196,7 +198,8 @@ def test_approval_statement_does_not_authorize_container_effects() -> None:
         plan_artifact_sha256="raw-plan",
     )
 
-    assert "exactly 40 present exited source containers" in statement
+    assert "exactly 40 present stopped source containers" in statement
+    assert "(0 created and 40 exited)" in statement
     assert "40 absent replacement target names" in statement
     assert "source-container deletion is not authorized" in statement
     assert "does not create, start, rename, or remove any container" in statement

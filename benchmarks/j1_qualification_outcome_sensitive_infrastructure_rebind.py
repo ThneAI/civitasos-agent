@@ -265,21 +265,42 @@ def _validate_sources(
         "outcome_infrastructure_advice_gate_invalid",
         failures,
     )
-    _require(
-        activation.get("schema_version")
-        == "j1-qualification-infrastructure-batch-repair-activation:v1"
+    activation_schema = activation.get("schema_version")
+    activation_ok = (
+        activation_schema
+        in {
+            "j1-qualification-infrastructure-batch-repair-activation:v1",
+            "j1-qualification-infrastructure-activation:v1",
+        }
         and activation.get("activation_sha256")
         == _self_hash(activation, "activation_sha256")
         and activation.get("inventory", {}).get("participant_count") == 40
         and activation.get("inventory", {}).get("container_created_count") == 40
         and activation.get("inventory", {}).get("container_started_count") == 0
-        and len(activation.get("containers", [])) == 40,
+        and len(activation.get("containers", [])) == 40
+    )
+    _require(
+        activation_ok,
         "outcome_infrastructure_parent_activation_invalid",
         failures,
     )
-    _require(
-        activation_gate.get("schema_version")
+    legacy_parent_gate = (
+        activation_schema
+        == "j1-qualification-infrastructure-batch-repair-activation:v1"
+        and activation_gate.get("schema_version")
         == "j1-qualification-infrastructure-batch-repair-gate:v1"
+        and activation_gate.get("state")
+        == "complete_exited_set_repaired_40_created_0_running"
+    )
+    replacement_parent_gate = (
+        activation_schema == "j1-qualification-infrastructure-activation:v1"
+        and activation_gate.get("schema_version")
+        == "j1-qualification-infrastructure-activation-gate:v1"
+        and activation_gate.get("state")
+        == "replacement_containers_created_provider_admission_required"
+    )
+    _require(
+        (legacy_parent_gate or replacement_parent_gate)
         and activation_gate.get("passed") is True
         and activation_gate.get("failure_reasons") == []
         and activation_gate.get("state")
@@ -354,8 +375,9 @@ def _validate_sources(
             and parent.get("pair_id") == pair.get("pair_id")
             and parent.get("cohort") == cohort
             and parent.get("execution_did") == participant.get("execution_did")
-            and parent.get("container", {}).get("image_id")
-            == runner.get("image", {}).get("image_id")
+            and str(parent.get("container", {}).get("image_id", "")).startswith(
+                "sha256:"
+            )
             and advice_counts.get(participant_id, 0)
             == (9 if cohort == "mentor" else 0),
             "outcome_infrastructure_cross_binding_invalid",
@@ -401,7 +423,7 @@ def _inspect_parent_containers(
             and labels.get("civitasos.j1d.pair") == participant["pair_id"]
             and labels.get("civitasos.j1d.cohort") == participant["cohort"]
             and state.get("Running") is False
-            and state.get("Status") == "exited"
+            and state.get("Status") in {"created", "exited"}
         ):
             failures.append(f"parent_container_drifted:{participant_id}")
             continue

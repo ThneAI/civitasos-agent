@@ -11,7 +11,7 @@ from .controlled_comparison import canonical_sha256
 from .qualification_participant_runner_image import RUNTIME_BOUNDARY
 
 
-PLAN_SCHEMA = "j1-qualification-outcome-sensitive-infrastructure-rebind-plan:v1"
+PLAN_SCHEMA = "j1-qualification-outcome-sensitive-infrastructure-rebind-plan:v2"
 REQUIRED_REVIEW_CHECKS = {
     "outcome_sensitive_roster_assignment_reviewed",
     "mentor_advice_180_signature_gate_reviewed",
@@ -70,6 +70,12 @@ def build_rebind_plan(
         participant_id = item["participant_id"]
         advice_counts[participant_id] = advice_counts.get(participant_id, 0) + 1
     parents = {item["participant_id"]: item for item in parent_activation["containers"]}
+    parent_created_count = sum(
+        item.get("status") == "created" for item in observed_sources.values()
+    )
+    parent_exited_count = sum(
+        item.get("status") == "exited" for item in observed_sources.values()
+    )
     isolations = []
     for participant_id in sorted(roster):
         participant = roster[participant_id]
@@ -139,7 +145,9 @@ def build_rebind_plan(
             "mentor_signed_advice_count": 180,
             "parent_container_count": 40,
             "parent_container_present_count": 40,
-            "parent_container_exited_count": 40,
+            "parent_container_stopped_count": 40,
+            "parent_container_created_count": parent_created_count,
+            "parent_container_exited_count": parent_exited_count,
             "parent_container_running_count": 0,
             "replacement_candidate_count": 40,
             "target_name_conflict_count": 0,
@@ -355,7 +363,15 @@ def validate_rebind_plan(
             "mentor_signed_advice_count": 180,
             "parent_container_count": 40,
             "parent_container_present_count": 40,
-            "parent_container_exited_count": 40,
+            "parent_container_stopped_count": 40,
+            "parent_container_created_count": sum(
+                item.get("status") == "created"
+                for item in observed_sources.values()
+            ),
+            "parent_container_exited_count": sum(
+                item.get("status") == "exited"
+                for item in observed_sources.values()
+            ),
             "parent_container_running_count": 0,
             "replacement_candidate_count": 40,
             "target_name_conflict_count": 0,
@@ -422,8 +438,10 @@ def approval_statement(
         f"Gate {sources['mentor_advice_gate']['canonical_sha256']}, immutable parent "
         f"activation {sources['parent_activation']['canonical_sha256']}, and "
         f"content-addressed runner image {plan['runner_image']['image_id']}. The "
-        "plan covers exactly 40 present exited source containers, 0 running source "
-        "containers, and 40 absent replacement target names for the same 40 "
+        "plan covers exactly 40 present stopped source containers "
+        f"({plan['inventory']['parent_container_created_count']} created and "
+        f"{plan['inventory']['parent_container_exited_count']} exited), 0 running "
+        "source containers, and 40 absent replacement target names for the same 40 "
         "participants in 20 unchanged pairs. I acknowledge that all source "
         "containers and historical Evidence remain immutable, source-container "
         "deletion is not authorized, participant substitution and cohort "
