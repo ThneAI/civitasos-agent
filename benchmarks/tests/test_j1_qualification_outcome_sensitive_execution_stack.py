@@ -27,6 +27,17 @@ from benchmarks.j1.qualification_outcome_sensitive_execution_promotion import (
     validate_frozen_stack,
     validate_signed_review_receipt,
 )
+from benchmarks.j1.qualification_outcome_sensitive_execution_materials import (
+    build_material_bindings,
+    replay_material_bindings,
+)
+from benchmarks.j1.qualification_outcome_sensitive_execution_preflight import (
+    SOURCE_NAMES as PREFLIGHT_SOURCE_NAMES,
+    build_execution_plan,
+    build_preflight,
+    issuance_authorization_statement,
+    validate_execution_plan,
+)
 from benchmarks.j1.qualification_outcome_sensitive_orchestrator import (
     REPORT_SCHEMA,
     run_offline_orchestrator,
@@ -418,3 +429,78 @@ def test_signed_review_receipt_and_frozen_stack_validate() -> None:
         implementation=implementation,
     )
     assert validate_frozen_stack(stack) == []
+
+
+def test_outcome_preflight_binds_480_scope_and_private_materials(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text('{"fixture":"test"}', encoding="utf-8")
+    fixture.chmod(0o600)
+    advice = tmp_path / "advice"
+    profiles = tmp_path / "profiles"
+    advice.mkdir(mode=0o700)
+    profiles.mkdir(mode=0o700)
+    for index in range(180):
+        path = advice / f"advice-{index:03d}.json"
+        path.write_text(f'{{"index":{index}}}', encoding="utf-8")
+        path.chmod(0o600)
+    for index in range(40):
+        path = profiles / f"profile-{index:02d}.json"
+        path.write_text(f'{{"index":{index}}}', encoding="utf-8")
+        path.chmod(0o600)
+    materials = build_material_bindings(
+        task_fixture_path=fixture,
+        signed_advice_root=advice,
+        participant_profiles_root=profiles,
+    )
+    replay_material_bindings(materials)
+    source_ref = {
+        "path": "/private/source.json",
+        "sha256": "1" * 64,
+        "canonical_sha256": "2" * 64,
+    }
+    plan = build_execution_plan(
+        run_id="outcome-run-test",
+        created_at="2026-07-29T00:00:00+00:00",
+        source_artifacts={
+            name: source_ref for name in PREFLIGHT_SOURCE_NAMES
+        },
+        frozen_stack_sha256="3" * 64,
+        contract_sha256="4" * 64,
+        provider_receipt_sha256="5" * 64,
+        evaluator_sha256="6" * 64,
+        statistical_plan_sha256="7" * 64,
+        material_bindings=materials,
+        paths={
+            "execution_root": "/private/execution",
+            "authorization_output_root": "/private/authorization",
+            "authorization_claim_path": "/private/claim.json",
+            "post_run_output_root": "/private/post-run",
+        },
+        implementation={
+            "source_revision": "8" * 40,
+            "domain_source_sha256": "9" * 64,
+            "operation_source_sha256": "a" * 64,
+        },
+    )
+    assert validate_execution_plan(plan) == []
+    preflight = build_preflight(
+        plan_path="/private/plan.json",
+        plan_raw_sha256="b" * 64,
+        plan=plan,
+        created_at="2026-07-29T00:00:00+00:00",
+        inventory_snapshot={
+            "participant_container_count": 40,
+            "created_count": 40,
+            "running_count": 0,
+        },
+    )
+    statement = issuance_authorization_statement(
+        plan_raw_sha256="b" * 64,
+        plan=plan,
+    )
+    assert preflight["passed"] is True
+    assert preflight["owner_authorization"]["required_exact_statement"] == statement
+    assert "480 structured participant decisions" in statement
+    assert "1200000 tokens and 731040 USD microunits" in statement
