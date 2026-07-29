@@ -89,6 +89,8 @@ def test_authorization_statement_binds_artifacts_image_and_create_only_scope() -
     assert f"sha256:{'5' * 64}" in statement
     assert "does not permit starting any container" in statement
     assert "bounded rollback removal of only containers" in statement
+    assert "all reviewed source containers remain untouched" in statement
+    assert "no historical container or image pruning is authorized" in statement
 
 
 def test_docker_create_command_has_frozen_hardening_and_no_start() -> None:
@@ -199,6 +201,53 @@ def test_activation_source_requires_promoted_zero_container_gate() -> None:
         gate=tampered,
     )
     assert "activation_promotion_gate_invalid" in failures
+
+
+def test_activation_source_accepts_outcome_sensitive_promoted_gate() -> None:
+    reviewed = {
+        "schema_version": (
+            "j1-qualification-outcome-sensitive-"
+            "infrastructure-rebind:operator-reviewed:v1"
+        ),
+        "status": "operator_reviewed",
+        "isolations": [
+            {"participant_id": f"participant-{index}"} for index in range(40)
+        ],
+    }
+    reviewed["reviewed_infrastructure_rebind_sha256"] = canonical_sha256(reviewed)
+    reviewed_raw = json.dumps(reviewed, sort_keys=True).encode()
+    gate = {
+        "passed": True,
+        "failure_reasons": [],
+        "state": (
+            "outcome_sensitive_infrastructure_artifact_promoted_"
+            "replacement_container_authorization_required"
+        ),
+        "reviewed_artifact": {
+            "sha256": hashlib.sha256(reviewed_raw).hexdigest(),
+            "canonical_sha256": reviewed["reviewed_infrastructure_rebind_sha256"],
+        },
+        "readiness": {
+            "participant_containers_created": 0,
+            "participant_containers_started": 0,
+        },
+        "disk_safety": {
+            "historical_container_cleanup_authorized": False,
+            "implicit_container_prune_authorized": False,
+            "implicit_image_prune_authorized": False,
+            "source_container_removal_authorized": False,
+        },
+    }
+    gate["report_sha256"] = canonical_sha256(gate)
+
+    assert (
+        validate_reviewed_activation_source(
+            reviewed=reviewed,
+            reviewed_raw=reviewed_raw,
+            gate=gate,
+        )
+        == []
+    )
 
 
 def test_rollback_removes_only_recorded_ids_and_empty_created_directories(

@@ -29,6 +29,9 @@ from benchmarks.j1_qualification_infrastructure_rebind import (
     _require_target_names_absent,
     _validate_runner_image_local,
 )
+from benchmarks.j1_qualification_outcome_sensitive_infrastructure_rebind import (
+    _inspect_parent_containers,
+)
 
 
 DOMAIN_SOURCE = (
@@ -80,16 +83,22 @@ def activate_infrastructure(
         runner_manifest,
         expected_implementation=runner_manifest.get("implementation", {}),
     )
+    runner_source = reviewed.get("source_binding", {}).get("runner_manifest")
+    runner_raw_binding = (
+        runner_source.get("sha256")
+        if isinstance(runner_source, dict)
+        else reviewed.get("source_binding", {}).get("runner_manifest_artifact_sha256")
+    )
     if not (
         not manifest_failures
-        and hashlib.sha256(runner_manifest_raw).hexdigest()
-        == reviewed.get("source_binding", {}).get("runner_manifest_artifact_sha256")
+        and hashlib.sha256(runner_manifest_raw).hexdigest() == runner_raw_binding
         and runner_manifest.get("image", {}).get("image_id") == image_id
         and runner_manifest.get("manifest_sha256")
         == reviewed.get("runner_image", {}).get("manifest_sha256")
     ):
         raise ValueError("activation runner manifest binding invalid")
     _validate_runner_image_local(runner_manifest)
+    _validate_outcome_source_containers(reviewed)
     isolations = reviewed["isolations"]
     names = [item["target_isolation"]["container_name"] for item in isolations]
     _require_target_names_absent(names)
@@ -158,9 +167,7 @@ def activate_infrastructure(
                     "execution_did": isolation["execution_did"],
                     "pair_id": isolation["pair_id"],
                     "cohort": isolation["cohort"],
-                    "assignment_commitment_sha256": isolation[
-                        "assignment_commitment_sha256"
-                    ],
+                    "assignment_commitment_sha256": _assignment_commitment(isolation),
                     "expected_container_config_sha256": target[
                         "container_config_sha256"
                     ],
@@ -305,6 +312,40 @@ def _validate_target_paths(isolations: list[dict[str, Any]]) -> None:
         raise ValueError("activation target paths must be 80 unique paths")
 
 
+def _validate_outcome_source_containers(reviewed: dict[str, Any]) -> None:
+    if reviewed.get("schema_version") != (
+        "j1-qualification-outcome-sensitive-infrastructure-rebind:operator-reviewed:v1"
+    ):
+        return
+    source_binding = reviewed["source_binding"]
+    parent_activation, _ = _read_private(
+        Path(source_binding["parent_activation"]["path"])
+    )
+    reviewed_roster, _ = _read_private(Path(source_binding["reviewed_roster"]["path"]))
+    current = _inspect_parent_containers(
+        parent_activation=parent_activation,
+        reviewed_roster=reviewed_roster,
+    )
+    expected = {
+        item["participant_id"]: item["source_isolation"]["observed_state"]
+        for item in reviewed["isolations"]
+    }
+    if current != expected:
+        raise ValueError(
+            "outcome activation source container state changed after promotion"
+        )
+
+
+def _assignment_commitment(isolation: dict[str, Any]) -> str:
+    value = isolation.get(
+        "assignment_commitment_sha256",
+        isolation.get("assignment_rebind_commitment_sha256"),
+    )
+    if not isinstance(value, str) or not value:
+        raise ValueError("activation assignment commitment missing")
+    return value
+
+
 def _create_private_directories(
     paths: list[Path], created_directories: list[Path]
 ) -> None:
@@ -436,8 +477,15 @@ def _implementation(repository_root: Path) -> dict[str, str]:
     root = repository_root.resolve()
     if _git(root, "status", "--porcelain").strip():
         raise ValueError("repository must be clean before infrastructure activation")
+    revision = _git(root, "rev-parse", "HEAD").strip()
+    if subprocess.run(
+        ["git", "merge-base", "--is-ancestor", revision, "@{upstream}"],
+        cwd=root,
+        check=False,
+    ).returncode:
+        raise ValueError("infrastructure activation revision is not pushed")
     return {
-        "source_revision": _git(root, "rev-parse", "HEAD").strip(),
+        "source_revision": revision,
         "domain_source_sha256": hashlib.sha256(DOMAIN_SOURCE.read_bytes()).hexdigest(),
         "operation_source_sha256": hashlib.sha256(
             OPERATION_SOURCE.read_bytes()

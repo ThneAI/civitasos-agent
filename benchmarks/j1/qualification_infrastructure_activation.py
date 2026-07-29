@@ -55,11 +55,12 @@ def creation_authorization_statement(
         "the required participant-scoped local input/output directories and bounded "
         "rollback removal of only containers and empty directories created by this "
         "operation if the Gate fails. I acknowledge that historical isolation "
-        "Evidence remains immutable and participant substitution is forbidden. This "
-        "authorization does not permit starting any container, provider admission "
-        "refresh, provider or model calls, Agent execution, participant task "
-        "execution, Backend Fact append, Ledger append, or execution authorization "
-        "issuance or consumption."
+        "Evidence remains immutable, all reviewed source containers remain untouched, "
+        "participant substitution is forbidden, and no historical container or image "
+        "pruning is authorized. This authorization does not permit starting any "
+        "container, provider admission refresh, provider or model calls, Agent "
+        "execution, participant task execution, Backend Fact append, Ledger append, "
+        "or execution authorization issuance or consumption."
     )
 
 
@@ -259,9 +260,19 @@ def validate_reviewed_activation_source(
         if key != "reviewed_infrastructure_rebind_sha256"
     }
     gate_body = {key: item for key, item in gate.items() if key != "report_sha256"}
+    schema = reviewed.get("schema_version")
+    outcome_sensitive = schema == (
+        "j1-qualification-outcome-sensitive-infrastructure-rebind:operator-reviewed:v1"
+    )
     _require(
-        reviewed.get("schema_version")
-        == "j1-qualification-infrastructure-rebind:operator-reviewed:v1"
+        schema
+        in {
+            "j1-qualification-infrastructure-rebind:operator-reviewed:v1",
+            (
+                "j1-qualification-outcome-sensitive-"
+                "infrastructure-rebind:operator-reviewed:v1"
+            ),
+        }
         and reviewed.get("status") == "operator_reviewed"
         and reviewed.get("reviewed_infrastructure_rebind_sha256")
         == canonical_sha256(reviewed_body)
@@ -269,21 +280,36 @@ def validate_reviewed_activation_source(
         "activation_reviewed_artifact_invalid",
         failures,
     )
-    _require(
-        gate.get("passed") is True
-        and gate.get("failure_reasons") == []
-        and gate.get("state")
-        == (
+    expected_gate_state = (
+        "outcome_sensitive_infrastructure_artifact_promoted_"
+        "replacement_container_authorization_required"
+        if outcome_sensitive
+        else (
             "infrastructure_artifact_promoted_"
             "replacement_container_authorization_required"
         )
+    )
+    _require(
+        gate.get("passed") is True
+        and gate.get("failure_reasons") == []
+        and gate.get("state") == expected_gate_state
         and gate.get("report_sha256") == canonical_sha256(gate_body)
         and gate.get("reviewed_artifact", {}).get("sha256")
         == hashlib.sha256(reviewed_raw).hexdigest()
         and gate.get("reviewed_artifact", {}).get("canonical_sha256")
         == reviewed.get("reviewed_infrastructure_rebind_sha256")
         and gate.get("readiness", {}).get("participant_containers_created") == 0
-        and gate.get("readiness", {}).get("participant_containers_started") == 0,
+        and gate.get("readiness", {}).get("participant_containers_started") == 0
+        and (
+            not outcome_sensitive
+            or gate.get("disk_safety")
+            == {
+                "historical_container_cleanup_authorized": False,
+                "implicit_container_prune_authorized": False,
+                "implicit_image_prune_authorized": False,
+                "source_container_removal_authorized": False,
+            }
+        ),
         "activation_promotion_gate_invalid",
         failures,
     )
