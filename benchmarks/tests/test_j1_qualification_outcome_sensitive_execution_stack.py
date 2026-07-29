@@ -11,6 +11,12 @@ from benchmarks.j1.qualification_outcome_sensitive_execution_contract import (
     build_execution_contract,
     validate_execution_contract,
 )
+from benchmarks.j1.qualification_outcome_sensitive_execution_authorization import (
+    build_authorization,
+    build_claim_preflight,
+    build_issuance_gate,
+    validate_authorization,
+)
 from benchmarks.j1.qualification_outcome_sensitive_fault_matrix import (
     REPORT_SCHEMA as FAULT_SCHEMA,
     run_fault_matrix,
@@ -504,3 +510,108 @@ def test_outcome_preflight_binds_480_scope_and_private_materials(
     assert preflight["owner_authorization"]["required_exact_statement"] == statement
     assert "480 structured participant decisions" in statement
     assert "1200000 tokens and 731040 USD microunits" in statement
+
+    signer = _Signer()
+    reviewer = {
+        "did": "did:civ:reviewer:authorization-test",
+        "public_key_hex": signer.public_key_hex,
+        "credential_version": 1,
+        "signer_kind": "pkcs11_ed25519",
+    }
+    plan_ref = {
+        "path": "/private/plan.json",
+        "sha256": "b" * 64,
+        "canonical_sha256": plan["plan_sha256"],
+    }
+    preflight_ref = {
+        "path": "/private/preflight.json",
+        "sha256": "c" * 64,
+        "canonical_sha256": preflight["preflight_sha256"],
+    }
+    implementation = {
+        "source_revision": "d" * 40,
+        "domain_source_sha256": "e" * 64,
+        "operation_source_sha256": "f" * 64,
+    }
+    authorization = build_authorization(
+        authorization_id="outcome-authorization-test",
+        owner_authorization_id="outcome-owner-authorization-test",
+        owner_statement_sha256=preflight["owner_authorization"][
+            "statement_sha256"
+        ],
+        issued_at="2026-07-29T00:00:00+00:00",
+        plan_ref=plan_ref,
+        preflight_ref=preflight_ref,
+        plan=plan,
+        execution_manifest_sha256="1" * 64,
+        reviewer=reviewer,
+        reviewer_profile_sha256="2" * 64,
+        implementation=implementation,
+        signer=signer,
+    )
+    assert (
+        validate_authorization(
+            authorization,
+            plan_ref=plan_ref,
+            preflight_ref=preflight_ref,
+            plan=plan,
+            expected_owner_authorization_id=(
+                "outcome-owner-authorization-test"
+            ),
+            expected_owner_statement_sha256=preflight[
+                "owner_authorization"
+            ]["statement_sha256"],
+            expected_execution_manifest_sha256="1" * 64,
+            expected_reviewer=reviewer,
+            expected_reviewer_profile_sha256="2" * 64,
+            expected_implementation=implementation,
+            require_current=False,
+        )
+        == []
+    )
+    authorization_ref = {
+        "path": "/private/authorization.json",
+        "sha256": "3" * 64,
+        "canonical_sha256": authorization["signature"][
+            "signed_payload_sha256"
+        ],
+    }
+    inventory = {
+        "participant_container_count": 40,
+        "created_count": 40,
+        "running_count": 0,
+    }
+    gate = build_issuance_gate(
+        checked_at="2026-07-29T00:00:01+00:00",
+        authorization_ref=authorization_ref,
+        authorization=authorization,
+        plan_ref=plan_ref,
+        preflight_ref=preflight_ref,
+        inventory_snapshot=inventory,
+    )
+    gate_ref = {
+        "path": "/private/gate.json",
+        "sha256": "4" * 64,
+        "canonical_sha256": gate["report_sha256"],
+    }
+    claim = build_claim_preflight(
+        authorization_ref=authorization_ref,
+        authorization=authorization,
+        issuance_gate_ref=gate_ref,
+        claim_path="/private/claim.json",
+        checked_at="2026-07-29T00:00:02+00:00",
+        inventory_snapshot=inventory,
+        implementation=implementation,
+    )
+    assert gate["passed"] is True
+    assert claim["readiness"]["atomic_claim_created"] is False
+    assert (
+        claim["execution_boundary"]["agent_or_task_execution_performed"]
+        is False
+    )
+    assert "480 direct behavior observations" in claim[
+        "owner_authorization"
+    ]["required_exact_statement"]
+    assert materials["material_binding_sha256"] in claim[
+        "owner_authorization"
+    ]["required_exact_statement"]
