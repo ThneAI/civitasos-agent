@@ -36,6 +36,8 @@ DOMAIN_SOURCE = (
 )
 OPERATION_SOURCE = Path(__file__)
 Transport = Callable[[str, str, dict[str, Any]], tuple[int, bytes]]
+SourceValidator = Callable[..., list[str]]
+SourceReplayer = Callable[[dict[str, Any]], dict[str, dict[str, Any]]]
 MAX_RESPONSE_BYTES = 1_048_576
 
 
@@ -51,13 +53,15 @@ def execute_probe(
     output_root: Path,
     repository_root: Path,
     transport: Transport | None = None,
+    source_validator: SourceValidator = validate_probe_sources,
+    source_replayer: SourceReplayer | None = None,
 ) -> dict[str, Any]:
     _require_rfc3339(claimed_at)
     plan, plan_raw = _read_private(plan_path)
     preflight, preflight_raw = _read_private(preflight_path)
     plan_raw_sha256 = hashlib.sha256(plan_raw).hexdigest()
     preflight_raw_sha256 = hashlib.sha256(preflight_raw).hexdigest()
-    failures = validate_probe_sources(
+    failures = source_validator(
         plan=plan,
         plan_raw_sha256=plan_raw_sha256,
         preflight=preflight,
@@ -65,7 +69,7 @@ def execute_probe(
     )
     if failures:
         raise ValueError(f"provider admission probe source invalid: {failures}")
-    source_values = _replay_plan_sources(plan)
+    source_values = (source_replayer or _replay_plan_sources)(plan)
     inventory_before, inventory_failures = _inspect_current_inventory(
         infrastructure=source_values["infrastructure"],
         activation=source_values["activation"],
