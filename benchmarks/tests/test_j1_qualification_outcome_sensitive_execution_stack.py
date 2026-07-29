@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from nacl.signing import SigningKey
+
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_outcome_sensitive_execution_contract import (
     SOURCE_NAMES,
@@ -18,6 +20,12 @@ from benchmarks.j1.qualification_outcome_sensitive_execution_review import (
     build_review_bundle,
     build_review_request,
     reviewer_approval_statement,
+)
+from benchmarks.j1.qualification_outcome_sensitive_execution_promotion import (
+    build_frozen_stack,
+    build_signed_review_receipt,
+    validate_frozen_stack,
+    validate_signed_review_receipt,
 )
 from benchmarks.j1.qualification_outcome_sensitive_orchestrator import (
     REPORT_SCHEMA,
@@ -324,3 +332,89 @@ def test_review_bundle_freezes_480_task_evidence() -> None:
         "approve_outcome_sensitive_execution_stack"
     )
     assert "full 480-task offline recovery evidence" in statement
+
+
+class _Signer:
+    def __init__(self) -> None:
+        self.key = SigningKey.generate()
+
+    @property
+    def public_key_hex(self) -> str:
+        return self.key.verify_key.encode().hex()
+
+    def sign(self, message: bytes) -> bytes:
+        return self.key.sign(message).signature
+
+
+def test_signed_review_receipt_and_frozen_stack_validate() -> None:
+    signer = _Signer()
+    reviewer = {
+        "did": "did:civ:reviewer:test",
+        "public_key_hex": signer.public_key_hex,
+        "credential_version": 1,
+        "signer_kind": "pkcs11_ed25519",
+    }
+    reference = {
+        "path": "/private/artifact.json",
+        "sha256": "7" * 64,
+        "canonical_sha256": "8" * 64,
+    }
+    implementation = {
+        "source_revision": "9" * 40,
+        "domain_source_sha256": "a" * 64,
+        "operation_source_sha256": "b" * 64,
+    }
+    receipt = build_signed_review_receipt(
+        review_id="outcome-review-test",
+        reviewed_at="2026-07-29T00:00:00+00:00",
+        request_ref=reference,
+        bundle_ref=reference,
+        contract_sha256="c" * 64,
+        approval_statement_sha256="d" * 64,
+        reviewer=reviewer,
+        reviewer_profile_sha256="e" * 64,
+        implementation=implementation,
+        signer=signer,
+    )
+    assert (
+        validate_signed_review_receipt(
+            receipt,
+            expected_request_ref=reference,
+            expected_bundle_ref=reference,
+            expected_contract_sha256="c" * 64,
+            expected_approval_statement_sha256="d" * 64,
+            expected_reviewer=reviewer,
+            expected_reviewer_profile_sha256="e" * 64,
+            expected_implementation=implementation,
+        )
+        == []
+    )
+    stack = build_frozen_stack(
+        frozen_id="outcome-stack-test",
+        promoted_at="2026-07-29T00:00:00+00:00",
+        candidate_bundle_sha256="f" * 64,
+        review_receipt_ref=reference,
+        frozen_artifacts={
+            name: reference
+            for name in (
+                "execution_contract",
+                "offline_orchestrator_report",
+                "offline_execution_journal",
+                "fault_matrix_report",
+                "review_bundle",
+            )
+        },
+        provider_admission={
+            "status": "admitted",
+            "gate_passed": True,
+            "receipt_sha256": "1" * 64,
+            "gate_sha256": "2" * 64,
+        },
+        runtime_inventory={
+            "participant_count": 40,
+            "created_count": 40,
+            "running_count": 0,
+        },
+        implementation=implementation,
+    )
+    assert validate_frozen_stack(stack) == []
