@@ -18,7 +18,7 @@ from benchmarks.j1.qualification_outcome_sensitive_infrastructure_rebind import 
     approval_statement,
     build_rebind_plan,
 )
-from benchmarks.j1.qualification_participant_runner_image import (
+from benchmarks.j1.qualification_outcome_sensitive_participant_runner_image import (
     validate_runner_image_manifest,
 )
 
@@ -306,7 +306,7 @@ def _validate_sources(
     )
     _require(
         runner_gate.get("schema_version")
-        == "j1-qualification-participant-runner-image-gate:v1"
+        == "j1-qualification-outcome-sensitive-runner-image-gate:v1"
         and runner_gate.get("passed") is True
         and runner_gate.get("failure_reasons") == []
         and runner_gate.get("report_sha256") == _self_hash(runner_gate, "report_sha256")

@@ -25,13 +25,21 @@ EXECUTION_SOURCE_PATHS = [
     "benchmarks/j1/qualification_fault_matrix_v4.py",
     "benchmarks/j1/qualification_orchestrator_v4.py",
     "benchmarks/j1/qualification_outcome_sensitive_execution_contract.py",
+    "benchmarks/j1/qualification_outcome_sensitive_execution_entry.py",
     "benchmarks/j1/qualification_outcome_sensitive_execution_review.py",
     "benchmarks/j1/qualification_outcome_sensitive_fault_matrix.py",
+    "benchmarks/j1/qualification_outcome_sensitive_live_adapter.py",
     "benchmarks/j1/qualification_outcome_sensitive_orchestrator.py",
+    "benchmarks/j1/qualification_outcome_sensitive_participant_runner_image.py",
+    "benchmarks/j1/outcome_sensitive_participant_runner.Dockerfile",
     "benchmarks/j1_qualification_outcome_sensitive_execution_contract.py",
+    "benchmarks/j1_qualification_outcome_sensitive_execution_entry.py",
     "benchmarks/j1_qualification_outcome_sensitive_execution_review.py",
     "benchmarks/j1_qualification_outcome_sensitive_fault_matrix.py",
+    "benchmarks/j1_qualification_outcome_sensitive_live_execute.py",
     "benchmarks/j1_qualification_outcome_sensitive_orchestrator.py",
+    "benchmarks/j1_qualification_outcome_sensitive_participant_runner.py",
+    "benchmarks/j1_qualification_outcome_sensitive_participant_runner_image.py",
 ]
 
 

@@ -29,11 +29,11 @@ REVIEW_CHECKLIST = [
     "180_mentor_advice_and_empty_control_projection_bound",
     "40_created_0_running_infrastructure_bound",
     "single_use_live_provider_admission_receipt_bound",
-    "strict_decision_and_ground_truth_non_disclosure_verified",
+    "strict_live_runner_decision_and_ground_truth_non_disclosure_verified",
     "480_unique_task_and_provider_call_ids_verified",
     "full_480_task_offline_recovery_evidence_verified",
     "all_8_fault_scenarios_verified",
-    "no_external_execution_effect_boundary_verified",
+    "live_adapter_atomic_claim_and_sanitized_failure_boundary_reviewed",
 ]
 REVIEW_BOUNDARY = {
     "independent_review_only": True,
@@ -72,6 +72,9 @@ def build_review_bundle(
         "artifacts": copy.deepcopy(artifacts),
         "frozen_stack": {
             "execution_contract_sha256": contract.get("contract_sha256"),
+            "live_source_set_sha256": canonical_sha256(
+                source_implementation.get("source_files", {})
+            ),
             "provider_admission_receipt_sha256": contract.get(
                 "provider_admission", {}
             ).get("receipt_sha256"),
@@ -159,6 +162,7 @@ def validate_review_bundle(value: Any) -> list[str]:
     scope = frozen.get("scope", {})
     _require(
         _sha256(frozen.get("execution_contract_sha256"))
+        and _sha256(frozen.get("live_source_set_sha256"))
         and _sha256(frozen.get("provider_admission_receipt_sha256"))
         and _sha256(frozen.get("provider_admission_gate_sha256"))
         and scope.get("participant_count") == 40
@@ -283,8 +287,10 @@ def reviewer_approval_statement(
         f"copy-on-write promotion of review bundle raw SHA-256 {bundle_raw_sha256}, "
         f"canonical SHA-256 {bundle['bundle_sha256']}, binding execution contract "
         f"{frozen['execution_contract_sha256']}, full 480-task offline recovery "
-        "evidence, strict structured participant decisions and direct behavior "
-        "observations, and the 8-scenario fault matrix. I acknowledge that a new "
+        "evidence, the outcome-specific sealed runner, live adapter, atomic claim "
+        "entry, sanitized failure boundary, strict structured participant decisions "
+        "and direct behavior observations, and the 8-scenario fault matrix. I "
+        "acknowledge that a new "
         "single-use execution preflight and authorization remain required before "
         "any real execution. This approval does not start a participant container, "
         "read a provider credential, call a provider or model, execute an Agent or "
