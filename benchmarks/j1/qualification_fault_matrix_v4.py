@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .controlled_comparison import canonical_sha256
 from .qualification_orchestrator_v4 import (
@@ -46,6 +46,9 @@ def run_fault_matrix(
     *,
     contract: dict[str, Any],
     root: Path,
+    adapter_factory: Callable[[], OfflineAdapter] = OfflineAdapter,
+    overrun_adapter_factory: Callable[[], OfflineAdapter] = _OverrunAdapter,
+    report_schema: str = REPORT_SCHEMA,
 ) -> dict[str, Any]:
     root.mkdir(parents=True, exist_ok=False, mode=0o700)
     root.chmod(0o700)
@@ -58,6 +61,7 @@ def run_fault_matrix(
             expected_status="complete",
             expected_provider_calls=1,
             expected_budget_state="reconciled",
+            adapter_factory=adapter_factory,
         ),
         _crash_resume(
             contract,
@@ -67,6 +71,7 @@ def run_fault_matrix(
             expected_status="complete",
             expected_provider_calls=1,
             expected_budget_state="reconciled",
+            adapter_factory=adapter_factory,
         ),
         _crash_resume(
             contract,
@@ -76,6 +81,7 @@ def run_fault_matrix(
             expected_status="failed",
             expected_provider_calls=1,
             expected_budget_state="provider_outcome_unknown",
+            adapter_factory=adapter_factory,
         ),
         _crash_resume(
             contract,
@@ -85,6 +91,7 @@ def run_fault_matrix(
             expected_status="complete",
             expected_provider_calls=1,
             expected_budget_state="reconciled",
+            adapter_factory=adapter_factory,
         ),
         _crash_resume(
             contract,
@@ -94,13 +101,18 @@ def run_fault_matrix(
             expected_status="complete",
             expected_provider_calls=1,
             expected_budget_state="reconciled",
+            adapter_factory=adapter_factory,
         ),
         _journal_tamper(contract, root),
-        _workspace_drift(contract, root),
-        _budget_overrun(contract, root),
+        _workspace_drift(contract, root, adapter_factory=adapter_factory),
+        _budget_overrun(
+            contract,
+            root,
+            overrun_adapter_factory=overrun_adapter_factory,
+        ),
     ]
     report = {
-        "schema_version": REPORT_SCHEMA,
+        "schema_version": report_schema,
         "contract_sha256": contract["contract_sha256"],
         "passed": all(item["passed"] for item in results),
         "scenario_count": len(results),
@@ -117,13 +129,15 @@ def run_fault_matrix(
         },
     }
     report["report_sha256"] = canonical_sha256(report)
-    failures = validate_fault_matrix(report)
+    failures = validate_fault_matrix(report, expected_schema=report_schema)
     if failures:
         raise ValueError(f"r4 fault matrix invalid: {failures}")
     return report
 
 
-def validate_fault_matrix(value: Any) -> list[str]:
+def validate_fault_matrix(
+    value: Any, *, expected_schema: str = REPORT_SCHEMA
+) -> list[str]:
     report = value if isinstance(value, dict) else {}
     failures: list[str] = []
     results = report.get("results")
@@ -134,7 +148,7 @@ def validate_fault_matrix(value: Any) -> list[str]:
         if isinstance(item, dict) and isinstance(item.get("scenario"), str)
     }
     if (
-        report.get("schema_version") != REPORT_SCHEMA
+        report.get("schema_version") != expected_schema
         or report.get("passed") is not True
         or report.get("scenario_count") != 8
         or len(results) != 8
@@ -169,9 +183,10 @@ def _crash_resume(
     expected_status: str,
     expected_provider_calls: int,
     expected_budget_state: str,
+    adapter_factory: Callable[[], OfflineAdapter],
 ) -> dict[str, Any]:
     scenario_root = root / scenario
-    adapter = OfflineAdapter()
+    adapter = adapter_factory()
     injected = False
 
     def checkpoint(name: str, _: dict[str, Any]) -> None:
@@ -246,10 +261,15 @@ def _journal_tamper(contract: dict[str, Any], root: Path) -> dict[str, Any]:
     }
 
 
-def _workspace_drift(contract: dict[str, Any], root: Path) -> dict[str, Any]:
+def _workspace_drift(
+    contract: dict[str, Any],
+    root: Path,
+    *,
+    adapter_factory: Callable[[], OfflineAdapter],
+) -> dict[str, Any]:
     scenario = "container_or_workspace_drift"
     scenario_root = root / scenario
-    adapter = OfflineAdapter()
+    adapter = adapter_factory()
 
     def checkpoint(name: str, _: dict[str, Any]) -> None:
         if name == "after_request_prepared":
@@ -290,9 +310,14 @@ def _workspace_drift(contract: dict[str, Any], root: Path) -> dict[str, Any]:
     }
 
 
-def _budget_overrun(contract: dict[str, Any], root: Path) -> dict[str, Any]:
+def _budget_overrun(
+    contract: dict[str, Any],
+    root: Path,
+    *,
+    overrun_adapter_factory: Callable[[], OfflineAdapter],
+) -> dict[str, Any]:
     scenario = "budget_or_protocol_ceiling_exceeded"
-    adapter = _OverrunAdapter()
+    adapter = overrun_adapter_factory()
     report = run_offline_orchestrator(
         contract=contract,
         run_id=f"r4-fault-{scenario}",
