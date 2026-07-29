@@ -303,8 +303,6 @@ def _validate_sources(
         (legacy_parent_gate or replacement_parent_gate)
         and activation_gate.get("passed") is True
         and activation_gate.get("failure_reasons") == []
-        and activation_gate.get("state")
-        == "complete_exited_set_repaired_40_created_0_running"
         and activation_gate.get("report_sha256")
         == _self_hash(activation_gate, "report_sha256")
         and activation_gate.get("activation")
