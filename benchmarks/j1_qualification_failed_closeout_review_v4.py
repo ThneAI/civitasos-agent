@@ -217,7 +217,7 @@ def promote_review(
     handoff, handoff_raw = _read_private(handoff_path)
     request, request_raw = _read_private(request_path)
     bundle, bundle_raw = _read_private(bundle_path)
-    profile, profile_raw = _read_private(reviewer_profile_path)
+    identity_profile, profile_raw = _read_private(reviewer_profile_path)
     bundle_ref = _ref(bundle_path, bundle["bundle_sha256"], raw=bundle_raw)
     request_ref = _ref(request_path, request["request_sha256"], raw=request_raw)
     expected_statement = reviewer_approval_statement(
@@ -248,19 +248,19 @@ def promote_review(
         )
     ):
         raise ValueError("failed closeout review approval or artifact binding invalid")
-    profile_failures = validate_reviewer_identity_profile(profile)
+    profile_failures = validate_reviewer_identity_profile(identity_profile)
     if profile_failures:
         raise ValueError(
             f"failed closeout reviewer profile invalid: {profile_failures}"
         )
     _validate_pkcs11(
-        profile,
+        identity_profile,
         module_path=module_path,
         token_label=token_label,
         key_label=key_label,
         key_id_hex=key_id_hex,
     )
-    reviewer = profile["reviewer"]
+    reviewer = identity_profile["reviewer"]
     with Pkcs11Ed25519Signer(
         str(Path(module_path).resolve()),
         token_label,
