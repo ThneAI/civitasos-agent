@@ -27,6 +27,20 @@ EVALUATION_SCHEMA = "j1-qualification-r4-failed-evaluation-report:v2"
 CLOSEOUT_SCHEMA = "j1-qualification-r4-failed-operator-closeout:v2"
 GATE_SCHEMA = "j1-qualification-r4-failed-closeout-gate:v2"
 
+OUTCOME_PREFLIGHT_SCHEMA = (
+    "j1-qualification-outcome-sensitive-failed-execution-closeout-preflight:v1"
+)
+OUTCOME_POST_RUN_SCHEMA = (
+    "j1-qualification-outcome-sensitive-failed-post-run-receipt:v1"
+)
+OUTCOME_EVALUATION_SCHEMA = (
+    "j1-qualification-outcome-sensitive-failed-evaluation-report:v1"
+)
+OUTCOME_CLOSEOUT_SCHEMA = (
+    "j1-qualification-outcome-sensitive-failed-operator-closeout:v1"
+)
+OUTCOME_GATE_SCHEMA = "j1-qualification-outcome-sensitive-failed-closeout-gate:v1"
+
 PREFLIGHT_BOUNDARY = {
     "failed_closeout_preparation_only": True,
     "signed_closeout_created": False,
@@ -55,6 +69,7 @@ class CloseoutSigner(Protocol):
 
 
 def owner_closeout_statement(preflight: dict[str, Any]) -> str:
+    profile = _profile(preflight)
     sources = preflight["source_binding"]
     execution = preflight["execution_summary"]
     budget = preflight["budget_summary"]
@@ -88,7 +103,8 @@ def owner_closeout_statement(preflight: dict[str, Any]) -> str:
             f"(source type {failure['source_exception_type']})"
         )
     return (
-        "I authorize exactly one signed J1-D r4 partial-failure closeout for run "
+        f"I authorize exactly one signed {profile['statement_label']} "
+        "partial-failure closeout for run "
         f"{preflight['run_id']}, consumed authorization "
         f"{preflight['authorization_id']}, claim raw SHA-256 "
         f"{sources['claim']['sha256']}, claim canonical SHA-256 "
@@ -125,10 +141,21 @@ def build_preflight(
     terminal_inventory: dict[str, int],
     output_root: str,
     implementation: dict[str, str],
+    profile: str = "r4",
 ) -> dict[str, Any]:
+    if profile not in {"r4", "outcome_sensitive"}:
+        raise ValueError("failed closeout profile invalid")
+    schema_version = (
+        OUTCOME_PREFLIGHT_SCHEMA if profile == "outcome_sensitive" else PREFLIGHT_SCHEMA
+    )
+    state = (
+        "outcome_sensitive_failed_execution_closeout_ready_owner_authorization_required"
+        if profile == "outcome_sensitive"
+        else "r4_failed_execution_closeout_ready_owner_authorization_required"
+    )
     value = {
-        "schema_version": PREFLIGHT_SCHEMA,
-        "state": "r4_failed_execution_closeout_ready_owner_authorization_required",
+        "schema_version": schema_version,
+        "state": state,
         "checked_at": checked_at,
         "run_id": run_id,
         "authorization_id": authorization_id,
@@ -169,23 +196,27 @@ def validate_preflight(value: Any) -> list[str]:
     budget = preflight.get("budget_summary", {})
     failure = preflight.get("failure", {})
     inventory = preflight.get("terminal_inventory", {})
+    profile = _profile(preflight)
     pre_orchestrator = failure.get("state") == "pre_orchestrator_error"
     if not (
-        preflight.get("schema_version") in {PREFLIGHT_SCHEMA_V1, PREFLIGHT_SCHEMA}
-        and preflight.get("state")
-        == "r4_failed_execution_closeout_ready_owner_authorization_required"
+        preflight.get("schema_version")
+        in {PREFLIGHT_SCHEMA_V1, PREFLIGHT_SCHEMA, OUTCOME_PREFLIGHT_SCHEMA}
+        and preflight.get("state") == profile["preflight_state"]
         and _rfc3339(preflight.get("checked_at"))
         and _text(preflight.get("run_id"))
         and _text(preflight.get("authorization_id"))
     ):
         failures.append("failed_closeout_preflight_identity_invalid")
     accounted_provider_calls = budget.get("reconciled_provider_call_count", 0)
-    if preflight.get("schema_version") == PREFLIGHT_SCHEMA:
+    if preflight.get("schema_version") in {
+        PREFLIGHT_SCHEMA,
+        OUTCOME_PREFLIGHT_SCHEMA,
+    }:
         accounted_provider_calls += budget.get(
             "overrun_provider_call_count", 0
         ) + budget.get("provider_outcome_unknown_call_count", 0)
     partial_execution_valid = (
-        execution.get("authorized_task_count") == 320
+        execution.get("authorized_task_count") == profile["task_count"]
         and execution.get("committed_task_count", -1) >= 0
         and execution.get("failed_task_count", -1) >= 1
         and execution.get("unattempted_task_count", -1) >= 0
@@ -199,17 +230,17 @@ def validate_preflight(value: Any) -> list[str]:
         and execution.get("committed_task_count")
         + execution.get("failed_task_count")
         + execution.get("unattempted_task_count")
-        == 320
+        == profile["task_count"]
         and execution.get("provider_call_count") == accounted_provider_calls
         and execution.get("participant_signature_count")
         == execution.get("committed_task_count")
         + execution.get("signed_failed_task_count", 0)
     )
     pre_orchestrator_valid = (
-        execution.get("authorized_task_count") == 320
+        execution.get("authorized_task_count") == profile["task_count"]
         and execution.get("committed_task_count") == 0
         and execution.get("failed_task_count") == 0
-        and execution.get("unattempted_task_count") == 320
+        and execution.get("unattempted_task_count") == profile["task_count"]
         and execution.get("provider_call_count") == 0
         and execution.get("participant_signature_count") == 0
         and execution.get("container_start_count") == 0
@@ -263,7 +294,10 @@ def validate_preflight(value: Any) -> list[str]:
             "actual_cost_microunits",
         )
     )
-    if preflight.get("schema_version") == PREFLIGHT_SCHEMA:
+    if preflight.get("schema_version") in {
+        PREFLIGHT_SCHEMA,
+        OUTCOME_PREFLIGHT_SCHEMA,
+    }:
         budget_valid = budget_valid and all(
             isinstance(budget.get(name), int) and budget[name] >= 0
             for name in (
@@ -361,8 +395,11 @@ def build_closeout_artifacts(
         "implementation": copy.deepcopy(implementation),
     }
     historical_v1 = preflight.get("schema_version") == PREFLIGHT_SCHEMA_V1
+    profile = _profile(preflight)
     post_run = {
-        "schema_version": POST_RUN_SCHEMA_V1 if historical_v1 else POST_RUN_SCHEMA,
+        "schema_version": (
+            POST_RUN_SCHEMA_V1 if historical_v1 else profile["post_run_schema"]
+        ),
         "status": "failed",
         **copy.deepcopy(common),
         "partial_results_promotable": False,
@@ -370,7 +407,9 @@ def build_closeout_artifacts(
     }
     post_run["receipt_sha256"] = canonical_sha256(post_run)
     evaluation = {
-        "schema_version": EVALUATION_SCHEMA_V1 if historical_v1 else EVALUATION_SCHEMA,
+        "schema_version": (
+            EVALUATION_SCHEMA_V1 if historical_v1 else profile["evaluation_schema"]
+        ),
         "status": "ineligible_failed_run",
         **copy.deepcopy(common),
         "post_run_receipt_sha256": post_run["receipt_sha256"],
@@ -381,7 +420,9 @@ def build_closeout_artifacts(
     }
     evaluation["report_sha256"] = canonical_sha256(evaluation)
     closeout = {
-        "schema_version": CLOSEOUT_SCHEMA_V1 if historical_v1 else CLOSEOUT_SCHEMA,
+        "schema_version": (
+            CLOSEOUT_SCHEMA_V1 if historical_v1 else profile["closeout_schema"]
+        ),
         "decision": "record_failed_run",
         **copy.deepcopy(common),
         "post_run_receipt_sha256": post_run["receipt_sha256"],
@@ -439,11 +480,16 @@ def validate_closeout_artifacts(
     closeout = values.get("operator_closeout", {})
     failures: list[str] = []
     historical_v1 = preflight.get("schema_version") == PREFLIGHT_SCHEMA_V1
-    expected_post_run_schema = POST_RUN_SCHEMA_V1 if historical_v1 else POST_RUN_SCHEMA
-    expected_evaluation_schema = (
-        EVALUATION_SCHEMA_V1 if historical_v1 else EVALUATION_SCHEMA
+    profile = _profile(preflight)
+    expected_post_run_schema = (
+        POST_RUN_SCHEMA_V1 if historical_v1 else profile["post_run_schema"]
     )
-    expected_closeout_schema = CLOSEOUT_SCHEMA_V1 if historical_v1 else CLOSEOUT_SCHEMA
+    expected_evaluation_schema = (
+        EVALUATION_SCHEMA_V1 if historical_v1 else profile["evaluation_schema"]
+    )
+    expected_closeout_schema = (
+        CLOSEOUT_SCHEMA_V1 if historical_v1 else profile["closeout_schema"]
+    )
     if not (
         post_run.get("schema_version") == expected_post_run_schema
         and post_run.get("status") == "failed"
@@ -508,11 +554,12 @@ def build_closeout_gate(
         preflight.get("failure", {}).get("state") == "pre_orchestrator_error"
     )
     historical_v1 = preflight.get("schema_version") == PREFLIGHT_SCHEMA_V1
+    profile = _profile(preflight)
     value = {
-        "schema_version": GATE_SCHEMA_V1 if historical_v1 else GATE_SCHEMA,
+        "schema_version": GATE_SCHEMA_V1 if historical_v1 else profile["gate_schema"],
         "passed": True,
         "failure_reasons": [],
-        "state": "r4_failed_run_closed_no_promotion_new_stack_required",
+        "state": profile["gate_state"],
         "checked_at": checked_at,
         "run_id": preflight["run_id"],
         "preflight": copy.deepcopy(preflight_ref),
@@ -550,6 +597,37 @@ def _payload(value: dict[str, Any]) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()
+
+
+def _profile(preflight: dict[str, Any]) -> dict[str, Any]:
+    if preflight.get("schema_version") == OUTCOME_PREFLIGHT_SCHEMA:
+        return {
+            "task_count": 480,
+            "statement_label": "J1-D outcome-sensitive",
+            "preflight_state": (
+                "outcome_sensitive_failed_execution_closeout_ready_"
+                "owner_authorization_required"
+            ),
+            "post_run_schema": OUTCOME_POST_RUN_SCHEMA,
+            "evaluation_schema": OUTCOME_EVALUATION_SCHEMA,
+            "closeout_schema": OUTCOME_CLOSEOUT_SCHEMA,
+            "gate_schema": OUTCOME_GATE_SCHEMA,
+            "gate_state": (
+                "outcome_sensitive_failed_run_closed_no_promotion_new_stack_required"
+            ),
+        }
+    return {
+        "task_count": 320,
+        "statement_label": "J1-D r4",
+        "preflight_state": (
+            "r4_failed_execution_closeout_ready_owner_authorization_required"
+        ),
+        "post_run_schema": POST_RUN_SCHEMA,
+        "evaluation_schema": EVALUATION_SCHEMA,
+        "closeout_schema": CLOSEOUT_SCHEMA,
+        "gate_schema": GATE_SCHEMA,
+        "gate_state": "r4_failed_run_closed_no_promotion_new_stack_required",
+    }
 
 
 def _rfc3339(value: Any) -> bool:

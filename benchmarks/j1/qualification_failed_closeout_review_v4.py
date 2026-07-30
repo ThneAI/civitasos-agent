@@ -19,6 +19,18 @@ BUNDLE_SCHEMA = "j1-qualification-r4-failed-closeout-review-bundle:v2"
 REQUEST_SCHEMA = "j1-qualification-r4-failed-closeout-review-request:v1"
 RECEIPT_SCHEMA = "j1-qualification-r4-failed-closeout-review-receipt:v1"
 GATE_SCHEMA = "j1-qualification-r4-failed-closeout-review-gate:v1"
+OUTCOME_BUNDLE_SCHEMA = (
+    "j1-qualification-outcome-sensitive-failed-closeout-review-bundle:v1"
+)
+OUTCOME_REQUEST_SCHEMA = (
+    "j1-qualification-outcome-sensitive-failed-closeout-review-request:v1"
+)
+OUTCOME_RECEIPT_SCHEMA = (
+    "j1-qualification-outcome-sensitive-failed-closeout-review-receipt:v1"
+)
+OUTCOME_GATE_SCHEMA = (
+    "j1-qualification-outcome-sensitive-failed-closeout-review-gate:v1"
+)
 LEGACY_CHECKLIST = [
     "failed_closeout_v1_replay_compatibility_reviewed",
     "failed_closeout_v2_schema_and_signature_boundary_reviewed",
@@ -72,9 +84,14 @@ def build_review_bundle(
     run_evidence: dict[str, Any],
     source_implementation: dict[str, Any],
     verification: dict[str, Any],
+    profile: str = "r4",
 ) -> dict[str, Any]:
+    if profile not in {"r4", "outcome_sensitive"}:
+        raise ValueError("failed closeout review profile invalid")
     value = {
-        "schema_version": BUNDLE_SCHEMA,
+        "schema_version": (
+            OUTCOME_BUNDLE_SCHEMA if profile == "outcome_sensitive" else BUNDLE_SCHEMA
+        ),
         "bundle_id": bundle_id,
         "status": "independent_review_required",
         "created_at": created_at,
@@ -109,7 +126,8 @@ def validate_review_bundle(value: Any) -> list[str]:
     files = source.get("source_files", {})
     verification = bundle.get("verification", {})
     if not (
-        bundle.get("schema_version") in {BUNDLE_SCHEMA_V1, BUNDLE_SCHEMA}
+        bundle.get("schema_version")
+        in {BUNDLE_SCHEMA_V1, BUNDLE_SCHEMA, OUTCOME_BUNDLE_SCHEMA}
         and bundle.get("status") == "independent_review_required"
         and bundle.get("review_scope") == "failed_closeout_implementation_only"
         and _text(bundle.get("bundle_id"))
@@ -121,15 +139,14 @@ def validate_review_bundle(value: Any) -> list[str]:
         if bundle.get("schema_version") == BUNDLE_SCHEMA_V1
         else _validate_failed_run(run)
     )
-    if not run_valid:
+    profile_valid = (
+        run.get("execution_profile") == "outcome_sensitive"
+        if bundle.get("schema_version") == OUTCOME_BUNDLE_SCHEMA
+        else "execution_profile" not in run
+    )
+    if not (run_valid and profile_valid):
         failures.append("failed_closeout_review_run_evidence_invalid")
-    required_sources = {
-        "benchmarks/j1/qualification_failed_closeout_review_v4.py",
-        "benchmarks/j1/qualification_failed_execution_closeout_v4.py",
-        "benchmarks/j1/qualification_provider_broker.py",
-        "benchmarks/j1_qualification_failed_closeout_review_v4.py",
-        "benchmarks/j1_qualification_failed_execution_closeout_v4.py",
-    }
+    required_sources = _required_sources(bundle)
     if not (
         _revision(source.get("source_revision"))
         and set(files) == required_sources
@@ -174,8 +191,11 @@ def build_review_request(
     bundle_ref: dict[str, str],
     bundle: dict[str, Any],
 ) -> dict[str, Any]:
+    outcome_sensitive = bundle.get("schema_version") == OUTCOME_BUNDLE_SCHEMA
     value = {
-        "schema_version": REQUEST_SCHEMA,
+        "schema_version": (
+            OUTCOME_REQUEST_SCHEMA if outcome_sensitive else REQUEST_SCHEMA
+        ),
         "request_id": request_id,
         "status": "independent_reviewer_decision_required",
         "created_at": created_at,
@@ -212,8 +232,13 @@ def reviewer_approval_statement(
     bundle: dict[str, Any],
 ) -> str:
     run = bundle["run_evidence"]
+    label = (
+        "J1-D outcome-sensitive"
+        if bundle.get("schema_version") == OUTCOME_BUNDLE_SCHEMA
+        else "J1-D r4"
+    )
     return (
-        "I have independently reviewed J1-D r4 failed-closeout implementation review "
+        f"I have independently reviewed {label} failed-closeout implementation review "
         f"request raw SHA-256 {request_raw_sha256} and choose "
         "approve_failed_closeout_implementation. I confirm all "
         f"{len(CHECKLIST)} required checklist items, disclose all conflicts, affirm "
@@ -286,7 +311,8 @@ def _validate_failed_run(run: dict[str, Any]) -> bool:
             "provider_outcome_unknown",
         }
         and all(_nonnegative_int(item) for item in (committed, failed, unattempted))
-        and committed + failed + unattempted == 320
+        and committed + failed + unattempted
+        == (480 if run.get("execution_profile") == "outcome_sensitive" else 320)
         and failed == 1
         and _nonnegative_int(provider_calls)
         and all(_nonnegative_int(item) for item in counts)
@@ -341,11 +367,14 @@ def build_signed_receipt(
     reviewer: dict[str, Any],
     reviewer_profile_sha256: str,
     signer: ReviewSigner,
+    profile: str = "r4",
 ) -> dict[str, Any]:
     if signer.public_key_hex != reviewer.get("public_key_hex"):
         raise ValueError("failed closeout reviewer signer mismatch")
     value = {
-        "schema_version": RECEIPT_SCHEMA,
+        "schema_version": (
+            OUTCOME_RECEIPT_SCHEMA if profile == "outcome_sensitive" else RECEIPT_SCHEMA
+        ),
         "review_id": review_id,
         "decision": "approve_failed_closeout_implementation",
         "reviewed_at": reviewed_at,
@@ -376,6 +405,7 @@ def validate_signed_receipt(
     bundle_ref: dict[str, str],
     expected_reviewer: dict[str, Any],
     expected_reviewer_profile_sha256: str,
+    profile: str = "r4",
 ) -> list[str]:
     receipt = value if isinstance(value, dict) else {}
     signature = receipt.get("signature", {})
@@ -389,7 +419,12 @@ def validate_signed_receipt(
     except (BadSignatureError, ValueError):
         failures.append("failed_closeout_review_signature_invalid")
     if not (
-        receipt.get("schema_version") == RECEIPT_SCHEMA
+        receipt.get("schema_version")
+        == (
+            OUTCOME_RECEIPT_SCHEMA
+            if profile == "outcome_sensitive"
+            else RECEIPT_SCHEMA
+        )
         and receipt.get("decision") == "approve_failed_closeout_implementation"
         and receipt.get("request") == request_ref
         and receipt.get("bundle") == bundle_ref
@@ -411,12 +446,19 @@ def build_review_gate(
     *,
     bundle_ref: dict[str, str],
     receipt_ref: dict[str, str],
+    profile: str = "r4",
 ) -> dict[str, Any]:
     value = {
-        "schema_version": GATE_SCHEMA,
+        "schema_version": (
+            OUTCOME_GATE_SCHEMA if profile == "outcome_sensitive" else GATE_SCHEMA
+        ),
         "passed": True,
         "failure_reasons": [],
-        "state": "r4_failed_closeout_implementation_frozen",
+        "state": (
+            "outcome_sensitive_failed_closeout_implementation_frozen"
+            if profile == "outcome_sensitive"
+            else "r4_failed_closeout_implementation_frozen"
+        ),
         "review_bundle": copy.deepcopy(bundle_ref),
         "review_receipt": copy.deepcopy(receipt_ref),
         "signature_valid": True,
@@ -437,6 +479,27 @@ def _payload(value: dict[str, Any]) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()
+
+
+def _required_sources(bundle: dict[str, Any]) -> set[str]:
+    if bundle.get("schema_version") == OUTCOME_BUNDLE_SCHEMA:
+        return {
+            "benchmarks/j1/qualification_failed_closeout_review_v4.py",
+            "benchmarks/j1/qualification_failed_execution_closeout_v4.py",
+            "benchmarks/j1/qualification_provider_broker.py",
+            "benchmarks/j1_qualification_failed_closeout_review_v4.py",
+            (
+                "benchmarks/"
+                "j1_qualification_outcome_sensitive_failed_execution_closeout.py"
+            ),
+        }
+    return {
+        "benchmarks/j1/qualification_failed_closeout_review_v4.py",
+        "benchmarks/j1/qualification_failed_execution_closeout_v4.py",
+        "benchmarks/j1/qualification_provider_broker.py",
+        "benchmarks/j1_qualification_failed_closeout_review_v4.py",
+        "benchmarks/j1_qualification_failed_execution_closeout_v4.py",
+    }
 
 
 def _ref(value: Any) -> bool:

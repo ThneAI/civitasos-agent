@@ -16,6 +16,7 @@ from civitasos import Pkcs11Ed25519Signer
 
 from benchmarks.j1.controlled_comparison import canonical_sha256, write_private_json
 from benchmarks.j1.qualification_failed_closeout_review_v4 import (
+    OUTCOME_BUNDLE_SCHEMA,
     build_review_bundle,
     build_review_gate,
     build_review_request,
@@ -42,6 +43,13 @@ SOURCE_PATHS = [
     "benchmarks/j1_qualification_failed_closeout_review_v4.py",
     "benchmarks/j1_qualification_failed_execution_closeout_v4.py",
 ]
+OUTCOME_SOURCE_PATHS = [
+    "benchmarks/j1/qualification_failed_closeout_review_v4.py",
+    "benchmarks/j1/qualification_failed_execution_closeout_v4.py",
+    "benchmarks/j1/qualification_provider_broker.py",
+    "benchmarks/j1_qualification_failed_closeout_review_v4.py",
+    "benchmarks/j1_qualification_outcome_sensitive_failed_execution_closeout.py",
+]
 
 
 def prepare_review(
@@ -55,6 +63,7 @@ def prepare_review(
     repository_root: Path,
     output_root: Path,
     pytest_passed_count: int,
+    profile: str = "r4",
 ) -> dict[str, Any]:
     if output_root.exists():
         raise FileExistsError(f"failed closeout review output exists: {output_root}")
@@ -85,6 +94,8 @@ def prepare_review(
     ):
         raise ValueError("failed closeout review run evidence invalid")
     budget = _budget_summary(budget_path)
+    if profile not in {"r4", "outcome_sensitive"}:
+        raise ValueError("failed closeout review profile invalid")
     states = report["journal"]["task_states"]
     failed_count = sum(
         int(states.get(name, 0))
@@ -110,6 +121,11 @@ def prepare_review(
             "failed_task_count": failed_count,
             "unattempted_task_count": int(states.get("planned", 0)),
             "budget_summary": budget,
+            **(
+                {"execution_profile": "outcome_sensitive"}
+                if profile == "outcome_sensitive"
+                else {}
+            ),
         },
         source_implementation={
             "source_revision": revision,
@@ -117,9 +133,14 @@ def prepare_review(
                 relative: hashlib.sha256(
                     (repository_root / relative).read_bytes()
                 ).hexdigest()
-                for relative in SOURCE_PATHS
+                for relative in (
+                    OUTCOME_SOURCE_PATHS
+                    if profile == "outcome_sensitive"
+                    else SOURCE_PATHS
+                )
             },
         },
+        profile=profile,
         verification={
             "ruff_all_passed": True,
             "pytest_all_passed": True,
@@ -149,7 +170,11 @@ def prepare_review(
         bundle=bundle,
     )
     handoff = {
-        "schema_version": "j1-qualification-r4-failed-closeout-review-handoff:v1",
+        "schema_version": (
+            "j1-qualification-outcome-sensitive-failed-closeout-review-handoff:v1"
+            if profile == "outcome_sensitive"
+            else "j1-qualification-r4-failed-closeout-review-handoff:v1"
+        ),
         "status": "independent_reviewer_decision_required",
         "request": _ref(request_path, request["request_sha256"]),
         "bundle": bundle_ref,
@@ -180,9 +205,12 @@ def promote_review(
     repository_root: Path,
     output_root: Path,
     pin: str,
+    profile: str = "r4",
 ) -> dict[str, Any]:
     if not pin:
         raise ValueError("SoftHSM user PIN is empty")
+    if profile not in {"r4", "outcome_sensitive"}:
+        raise ValueError("failed closeout review profile invalid")
     if output_root.exists():
         raise FileExistsError(f"failed closeout promotion output exists: {output_root}")
     revision = _clean_pushed_revision(repository_root)
@@ -199,6 +227,10 @@ def promote_review(
     )
     if not (
         validate_review_bundle(bundle) == []
+        and (
+            (profile == "outcome_sensitive")
+            == (bundle.get("schema_version") == OUTCOME_BUNDLE_SCHEMA)
+        )
         and bundle["source_implementation"]["source_revision"] == revision
         and handoff.get("request") == request_ref
         and handoff.get("bundle") == bundle_ref
@@ -246,6 +278,7 @@ def promote_review(
             reviewer=reviewer,
             reviewer_profile_sha256=hashlib.sha256(profile_raw).hexdigest(),
             signer=signer,
+            profile=profile,
         )
     failures = validate_signed_receipt(
         receipt,
@@ -253,6 +286,7 @@ def promote_review(
         bundle_ref=bundle_ref,
         expected_reviewer=reviewer,
         expected_reviewer_profile_sha256=hashlib.sha256(profile_raw).hexdigest(),
+        profile=profile,
     )
     if failures:
         raise ValueError(f"failed closeout signed review invalid: {failures}")
@@ -261,6 +295,7 @@ def promote_review(
         bundle_path=bundle_path,
         bundle=bundle,
         receipt=receipt,
+        profile=profile,
     )
 
 
@@ -270,6 +305,7 @@ def _persist_promotion(
     bundle_path: Path,
     bundle: dict[str, Any],
     receipt: dict[str, Any],
+    profile: str = "r4",
 ) -> dict[str, Any]:
     parent = output_root.resolve().parent
     parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -291,7 +327,11 @@ def _persist_promotion(
             published_receipt,
             receipt["signature"]["signed_payload_sha256"],
         )
-        gate = build_review_gate(bundle_ref=bundle_ref, receipt_ref=receipt_ref)
+        gate = build_review_gate(
+            bundle_ref=bundle_ref,
+            receipt_ref=receipt_ref,
+            profile=profile,
+        )
         write_private_json(
             staging / "failed-closeout-implementation-review-gate-report.json", gate
         )
@@ -397,6 +437,9 @@ def main() -> int:
     prepare.add_argument("--repository-root", type=Path, required=True)
     prepare.add_argument("--output-root", type=Path, required=True)
     prepare.add_argument("--pytest-passed-count", type=int, required=True)
+    prepare.add_argument(
+        "--profile", choices=("r4", "outcome_sensitive"), default="r4"
+    )
     promote = subparsers.add_parser("promote")
     promote.add_argument("--review-id", required=True)
     promote.add_argument("--reviewed-at", required=True)
@@ -412,6 +455,9 @@ def main() -> int:
     promote.add_argument("--pin-file", type=Path)
     promote.add_argument("--repository-root", type=Path, required=True)
     promote.add_argument("--output-root", type=Path, required=True)
+    promote.add_argument(
+        "--profile", choices=("r4", "outcome_sensitive"), default="r4"
+    )
     args = parser.parse_args()
     if args.operation == "prepare":
         result = prepare_review(
@@ -424,6 +470,7 @@ def main() -> int:
             repository_root=args.repository_root,
             output_root=args.output_root,
             pytest_passed_count=args.pytest_passed_count,
+            profile=args.profile,
         )
     else:
         result = promote_review(
@@ -441,6 +488,7 @@ def main() -> int:
             repository_root=args.repository_root,
             output_root=args.output_root,
             pin=read_pin(args.pin_file),
+            profile=args.profile,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
