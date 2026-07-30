@@ -14,6 +14,12 @@ from benchmarks.j1.qualification_infrastructure_activation import (
     inspect_projection,
     validate_reviewed_activation_source,
 )
+from benchmarks.j1.qualification_outcome_sensitive_participant_runner_image import (
+    build_runner_image_manifest as build_outcome_runner_image_manifest,
+)
+from benchmarks.j1.qualification_participant_runner_image import (
+    build_runner_image_manifest as build_participant_runner_image_manifest,
+)
 from benchmarks.tests.test_j1_qualification_infrastructure_rebind import _plan
 
 
@@ -247,6 +253,90 @@ def test_activation_source_accepts_outcome_sensitive_promoted_gate() -> None:
             gate=gate,
         )
         == []
+    )
+
+
+def test_activation_selects_runner_validator_from_reviewed_schema() -> None:
+    implementation = {
+        "source_revision": "a" * 40,
+        "source_sha256": "b" * 64,
+    }
+    common = {
+        "build_id": "runner-r1",
+        "created_at": "2026-07-30T00:00:00+00:00",
+        "dockerfile_sha256": "1" * 64,
+        "runner_source_sha256": "2" * 64,
+        "build_context_sha256": "3" * 64,
+        "image_id": f"sha256:{'4' * 64}",
+        "image_tag": "civitasos/test:runner-r1",
+        "architecture": "amd64",
+        "os_name": "linux",
+        "implementation": implementation,
+    }
+    outcome_manifest = build_outcome_runner_image_manifest(
+        **common,
+        smoke={
+            "baseline_empty_advice_exit_code": 0,
+            "baseline_output_sha256": "5" * 64,
+            "treatment_advice_exit_code": 0,
+            "treatment_output_sha256": "6" * 64,
+            "ground_truth_negative_exit_code": 1,
+            "ground_truth_negative_output_created": False,
+            "strict_structured_decision_tested_in_process": True,
+            "synthetic_only": True,
+        },
+    )
+    participant_manifest = build_participant_runner_image_manifest(
+        **common,
+        smoke={
+            "positive_exit_code": 0,
+            "positive_output_sha256": "7" * 64,
+            "positive_repeat_output_sha256": "7" * 64,
+            "deterministic_output": True,
+            "negative_exit_code": 1,
+            "negative_output_created": False,
+            "synthetic_only": True,
+        },
+    )
+    outcome_reviewed = {
+        "schema_version": (
+            "j1-qualification-outcome-sensitive-"
+            "infrastructure-rebind:operator-reviewed:v1"
+        )
+    }
+    participant_reviewed = {
+        "schema_version": (
+            "j1-qualification-infrastructure-rebind:operator-reviewed:v1"
+        )
+    }
+
+    assert (
+        activation_operation._validate_runner_manifest_for_activation(
+            runner_manifest=outcome_manifest,
+            reviewed=outcome_reviewed,
+        )
+        == []
+    )
+    assert (
+        activation_operation._validate_runner_manifest_for_activation(
+            runner_manifest=participant_manifest,
+            reviewed=participant_reviewed,
+        )
+        == []
+    )
+    assert (
+        activation_operation._validate_runner_manifest_for_activation(
+            runner_manifest=participant_manifest,
+            reviewed=outcome_reviewed,
+        )
+        == ["activation_outcome_runner_manifest_schema_invalid"]
+    )
+    assert (
+        activation_operation._validate_runner_manifest_for_activation(
+            runner_manifest=outcome_manifest,
+            reviewed=participant_reviewed,
+        )
+        == ["activation_participant_runner_manifest_schema_invalid"]
     )
 
 

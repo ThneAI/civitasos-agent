@@ -22,7 +22,12 @@ from benchmarks.j1.qualification_infrastructure_activation import (
     validate_reviewed_activation_source,
 )
 from benchmarks.j1.qualification_participant_runner_image import (
-    validate_runner_image_manifest,
+    MANIFEST_SCHEMA as PARTICIPANT_RUNNER_MANIFEST_SCHEMA,
+    validate_runner_image_manifest as validate_participant_runner_image_manifest,
+)
+from benchmarks.j1.qualification_outcome_sensitive_participant_runner_image import (
+    MANIFEST_SCHEMA as OUTCOME_SENSITIVE_RUNNER_MANIFEST_SCHEMA,
+    validate_runner_image_manifest as validate_outcome_sensitive_runner_image_manifest,
 )
 from benchmarks.j1_qualification_infrastructure_rebind import (
     _read_private,
@@ -79,9 +84,9 @@ def activate_infrastructure(
     if authorization_statement != expected_statement:
         raise ValueError("replacement-container creation authorization mismatch")
     authorization_sha256 = hashlib.sha256(authorization_statement.encode()).hexdigest()
-    manifest_failures = validate_runner_image_manifest(
-        runner_manifest,
-        expected_implementation=runner_manifest.get("implementation", {}),
+    manifest_failures = _validate_runner_manifest_for_activation(
+        runner_manifest=runner_manifest,
+        reviewed=reviewed,
     )
     runner_source = reviewed.get("source_binding", {}).get("runner_manifest")
     runner_raw_binding = (
@@ -334,6 +339,33 @@ def _validate_outcome_source_containers(reviewed: dict[str, Any]) -> None:
         raise ValueError(
             "outcome activation source container state changed after promotion"
         )
+
+
+def _validate_runner_manifest_for_activation(
+    *,
+    runner_manifest: dict[str, Any],
+    reviewed: dict[str, Any],
+) -> list[str]:
+    expected_implementation = runner_manifest.get("implementation", {})
+    if reviewed.get("schema_version") == (
+        "j1-qualification-outcome-sensitive-infrastructure-rebind:"
+        "operator-reviewed:v1"
+    ):
+        if (
+            runner_manifest.get("schema_version")
+            != OUTCOME_SENSITIVE_RUNNER_MANIFEST_SCHEMA
+        ):
+            return ["activation_outcome_runner_manifest_schema_invalid"]
+        return validate_outcome_sensitive_runner_image_manifest(
+            runner_manifest,
+            expected_implementation=expected_implementation,
+        )
+    if runner_manifest.get("schema_version") != PARTICIPANT_RUNNER_MANIFEST_SCHEMA:
+        return ["activation_participant_runner_manifest_schema_invalid"]
+    return validate_participant_runner_image_manifest(
+        runner_manifest,
+        expected_implementation=expected_implementation,
+    )
 
 
 def _assignment_commitment(isolation: dict[str, Any]) -> str:
