@@ -17,7 +17,14 @@ RECEIPT_SCHEMA = "j1-qualification-provider-receipt:v1"
 ProviderCall = Callable[..., dict[str, Any]]
 
 PROVIDER_FAILURE_STAGES = {
-    "http": {"http_transport", "http_status"},
+    "http": {
+        "http_transport",
+        "http_pre_dispatch_connect",
+        "http_pre_dispatch_tls",
+        "http_dispatch_ambiguous",
+        "http_response_too_large",
+        "http_status",
+    },
     "parse": {
         "request_parse",
         "response_json_parse",

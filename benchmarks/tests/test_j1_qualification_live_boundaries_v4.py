@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -196,6 +198,172 @@ def test_provider_boundary_binds_and_extracts_json_decision(
     assert (
         boundaries.DECISION_SYSTEM_SUFFIX in captured["body"]["messages"][0]["content"]
     )
+
+
+def test_live_provider_uses_prepared_single_use_transport(tmp_path: Path) -> None:
+    transports: list[Any] = []
+
+    class Transport:
+        def __init__(self, url: str) -> None:
+            self.url = urlsplit(url)
+            self.prepare_count = 0
+            self.post_count = 0
+            self.close_count = 0
+            transports.append(self)
+
+        def prepare(self) -> None:
+            self.prepare_count += 1
+
+        def post_json_once(
+            self,
+            *,
+            api_key: str,
+            body: dict[str, Any],
+            user_agent: str,
+        ) -> tuple[int, bytes]:
+            assert api_key == "private-api-key"
+            assert body["model"] == "reviewed-model"
+            assert user_agent == "civitasos-j1d-live-execution/1"
+            self.post_count += 1
+            return (
+                200,
+                json.dumps(
+                    {
+                        "model": "reviewed-model",
+                        "choices": [
+                            {
+                                "finish_reason": "stop",
+                                "message": {
+                                    "content": json.dumps(
+                                        {"decision": "bounded decision"}
+                                    )
+                                },
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 3,
+                            "completion_tokens": 2,
+                            "prompt_cache_hit_tokens": 0,
+                            "prompt_cache_miss_tokens": 3,
+                        },
+                    }
+                ).encode(),
+            )
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    provider = boundaries.OpenAICompatibleQualificationProvider(
+        run_id="run-1",
+        api_key="private-api-key",
+        authorization_sha256="a" * 64,
+        amended_design={
+            "provider_call": {
+                "provider_id": "openai_compatible",
+                "base_url": "https://provider.invalid",
+                "model_id": "reviewed-model",
+                "temperature": 0,
+                "max_output_tokens": 8,
+                "max_input_utf8_bytes": 65_536,
+                "reserved_total_tokens_per_call": 32,
+            },
+            "budget_reservation": {
+                "per_call_max_microunits": 100,
+                "per_participant_reserved_tokens": 32,
+                "per_participant_reserved_microunits": 100,
+                "aggregate_reserved_tokens": 32,
+                "aggregate_reserved_microunits": 100,
+            },
+            "pricing": {
+                "rate_basis_tokens": 1_000_000,
+                "rates_microunits": {
+                    "input_cache_hit": 3625,
+                    "input_cache_miss": 435000,
+                    "output": 870000,
+                },
+            },
+        },
+        budget_path=tmp_path / "budget.sqlite3",
+        transport_factory=Transport,
+    )
+    task = {
+        "call_id": "call-1",
+        "participant_id": "participant-1",
+        "task": {"task_id": "task-1"},
+    }
+    provider.prepare(task=task)
+    provider.prepare(task=task)
+
+    result = provider.call(
+        task=task,
+        request={"system": "bounded", "user": "bounded"},
+    )
+
+    assert result["decision"] == "bounded decision"
+    assert result["usage"]["cost_microunits"] == 4
+    assert len(transports) == 1
+    assert transports[0].prepare_count == 1
+    assert transports[0].post_count == 1
+    assert provider.budget.status("call-1") == "reconciled"
+
+
+def test_live_provider_discards_unused_prepared_transport(tmp_path: Path) -> None:
+    transports: list[Any] = []
+
+    class Transport:
+        def __init__(self, url: str) -> None:
+            self.url = urlsplit(url)
+            self.close_count = 0
+            transports.append(self)
+
+        def prepare(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    provider = boundaries.OpenAICompatibleQualificationProvider(
+        run_id="run-1",
+        api_key="private-api-key",
+        authorization_sha256="a" * 64,
+        amended_design={
+            "provider_call": {
+                "provider_id": "openai_compatible",
+                "base_url": "https://provider.invalid",
+                "model_id": "reviewed-model",
+                "temperature": 0,
+                "max_output_tokens": 8,
+                "max_input_utf8_bytes": 65_536,
+                "reserved_total_tokens_per_call": 32,
+            },
+            "budget_reservation": {
+                "per_call_max_microunits": 100,
+                "per_participant_reserved_tokens": 32,
+                "per_participant_reserved_microunits": 100,
+                "aggregate_reserved_tokens": 32,
+                "aggregate_reserved_microunits": 100,
+            },
+            "pricing": {
+                "rate_basis_tokens": 1_000_000,
+                "rates_microunits": {
+                    "input_cache_hit": 3625,
+                    "input_cache_miss": 435000,
+                    "output": 870000,
+                },
+            },
+        },
+        budget_path=tmp_path / "budget.sqlite3",
+        transport_factory=Transport,
+    )
+    task = {
+        "call_id": "call-1",
+        "participant_id": "participant-1",
+        "task": {"task_id": "task-1"},
+    }
+    provider.prepare(task=task)
+    provider.discard(task=task)
+
+    assert transports[0].close_count == 1
 
 
 @pytest.mark.parametrize(

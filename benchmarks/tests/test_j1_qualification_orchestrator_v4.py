@@ -106,6 +106,39 @@ def test_resume_after_dispatch_intent_never_retries_provider(tmp_path: Path) -> 
     assert report["journal"]["budget_states"] == {"provider_outcome_unknown": 1}
 
 
+def test_preconnect_exhaustion_fails_before_dispatch(tmp_path: Path) -> None:
+    contract, _ = _contract()
+
+    class PreconnectFailureAdapter(OfflineAdapter):
+        def prepare_provider(self, task: dict) -> None:
+            del task
+            raise SanitizedProviderFailure(
+                category="http",
+                stage="http_pre_dispatch_connect",
+                source_exception_type="TimeoutError",
+            )
+
+    adapter = PreconnectFailureAdapter()
+    report = run_offline_orchestrator(
+        contract=contract,
+        run_id="offline-r4",
+        root=tmp_path / "run",
+        adapter=adapter,
+        task_limit=1,
+    )
+
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "task_failed_before_dispatch"
+    assert report["failure_diagnostic"] == {
+        "reason": "SanitizedProviderFailure",
+        "failure_category": "http",
+        "failure_stage": "http_pre_dispatch_connect",
+        "source_exception_type": "TimeoutError",
+    }
+    assert adapter.provider_calls == 0
+    assert report["journal"]["task_states"] == {"task_failed_before_dispatch": 1}
+
+
 def test_post_dispatch_failure_records_sanitized_stage_and_never_retries(
     tmp_path: Path,
 ) -> None:

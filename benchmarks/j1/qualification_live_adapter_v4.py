@@ -105,6 +105,9 @@ class LiveExecutionAdapter:
         }
 
     def stop_container(self, task: dict[str, Any]) -> None:
+        discard = getattr(self.provider, "discard", None)
+        if callable(discard):
+            discard(task=task)
         self.containers.stop(task)
 
     def prepare_request(self, task: dict[str, Any]) -> dict[str, Any]:
@@ -113,6 +116,11 @@ class LiveExecutionAdapter:
             **output["provider_request"],
             "host_process_instance_id": output["process_instance_id"],
         }
+
+    def prepare_provider(self, task: dict[str, Any]) -> None:
+        prepare = getattr(self.provider, "prepare", None)
+        if callable(prepare):
+            prepare(task=task)
 
     def provider_call(
         self, task: dict[str, Any], request: dict[str, Any]

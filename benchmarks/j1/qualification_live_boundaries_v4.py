@@ -14,9 +14,11 @@ from benchmarks.j1_qualification_provider_admission_probe import _https_post_onc
 
 from .qualification_provider_broker import (
     QualificationBudgetStore,
+    SanitizedProviderFailure,
     execute_provider_call,
     sanitized_provider_failure,
 )
+from .qualification_http_transport import PreparedHTTPSPost
 
 DECISION_SYSTEM_SUFFIX = (
     'Return exactly one JSON object with the form {"decision":"<participant '
@@ -68,6 +70,7 @@ class OpenAICompatibleQualificationProvider:
         authorization_sha256: str,
         amended_design: dict[str, Any],
         budget_path: Path,
+        transport_factory: Any | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("provider API key is required")
@@ -76,8 +79,33 @@ class OpenAICompatibleQualificationProvider:
         self.authorization_sha256 = authorization_sha256
         self.design = _normalized_design(amended_design)
         self.budget = QualificationBudgetStore(budget_path)
+        self._transport_factory = transport_factory or PreparedHTTPSPost
+        self._prepared: dict[str, PreparedHTTPSPost] = {}
+
+    def prepare(self, *, task: dict[str, Any]) -> None:
+        call_id = task["call_id"]
+        if call_id in self._prepared:
+            return
+        provider = self.design["provider_call"]
+        transport = self._transport_factory(
+            f"{provider['base_url'].rstrip('/')}/chat/completions"
+        )
+        transport.prepare()
+        self._prepared[call_id] = transport
+
+    def discard(self, *, task: dict[str, Any]) -> None:
+        transport = self._prepared.pop(task["call_id"], None)
+        if transport is not None:
+            transport.close()
 
     def call(self, *, task: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        transport = self._prepared.pop(task["call_id"], None)
+        if transport is None:
+            raise sanitized_provider_failure(
+                category="internal",
+                stage="pre_dispatch_unclassified",
+                source_exception_type="ProviderTransportNotPreparedError",
+            )
         prompt = _decision_prompt(
             system=request["system"],
             user=request["user"],
@@ -92,7 +120,10 @@ class OpenAICompatibleQualificationProvider:
             execution_authorization_sha256=self.authorization_sha256,
             reviewed_design=self.design,
             budget_store=self.budget,
-            provider_call=self._post_once,
+            provider_call=lambda **kwargs: self._post_prepared_once(
+                transport=transport,
+                **kwargs,
+            ),
         )
         receipt = result["receipt"]
         return {
@@ -105,8 +136,66 @@ class OpenAICompatibleQualificationProvider:
         }
 
     @staticmethod
+    def _post_prepared_once(
+        *,
+        transport: PreparedHTTPSPost,
+        base_url: str,
+        api_key: str,
+        model: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: int,
+    ) -> dict[str, Any]:
+        expected_url = f"{base_url.rstrip('/')}/chat/completions"
+        if transport.url.geturl() != expected_url:
+            transport.close()
+            raise sanitized_provider_failure(
+                category="schema",
+                stage="request_decision_contract",
+                source_exception_type="ProviderTransportBindingError",
+            )
+        try:
+            return OpenAICompatibleQualificationProvider._post_with_sender(
+                sender=lambda _url, key, body: transport.post_json_once(
+                    api_key=key,
+                    body=body,
+                    user_agent="civitasos-j1d-live-execution/1",
+                ),
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception:
+            transport.close()
+            raise
+
+    @staticmethod
     def _post_once(
         *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: int,
+    ) -> dict[str, Any]:
+        return OpenAICompatibleQualificationProvider._post_with_sender(
+            sender=_https_post_once,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    @staticmethod
+    def _post_with_sender(
+        *,
+        sender: Any,
         base_url: str,
         api_key: str,
         model: str,
@@ -148,9 +237,11 @@ class OpenAICompatibleQualificationProvider:
             "stream": False,
         }
         try:
-            status, raw = _https_post_once(
+            status, raw = sender(
                 f"{base_url.rstrip('/')}/chat/completions", api_key, body
             )
+        except SanitizedProviderFailure:
+            raise
         except Exception as error:
             raise sanitized_provider_failure(
                 category="http",

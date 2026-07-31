@@ -73,6 +73,9 @@ class OfflineAdapter:
             "offline_synthetic": True,
         }
 
+    def prepare_provider(self, task: dict[str, Any]) -> None:
+        del task
+
     def provider_call(
         self, task: dict[str, Any], request: dict[str, Any]
     ) -> dict[str, Any]:
@@ -841,6 +844,7 @@ def _drive_task(
         _verify_workspace(
             journal, workspace, task, "request_prepared", "request", "request_sha256"
         )
+        adapter.prepare_provider(task)
         journal.reserve(task)
         journal.transition(
             task,
