@@ -48,6 +48,9 @@ from benchmarks.j1.qualification_outcome_sensitive_orchestrator import (
     REPORT_SCHEMA,
     run_offline_orchestrator,
 )
+from benchmarks.j1.qualification_outcome_sensitive_provider_admission import (
+    SOURCE_CANONICAL_FIELDS as PROVIDER_ADMISSION_SOURCE_FIELDS,
+)
 
 
 def _materials() -> dict[str, Any]:
@@ -230,6 +233,17 @@ def _contract() -> tuple[dict[str, Any], dict[str, Any]]:
         **materials,
     )
     return contract, materials
+
+
+def test_contract_source_inventory_covers_provider_admission_v2() -> None:
+    assert set(PROVIDER_ADMISSION_SOURCE_FIELDS) < SOURCE_NAMES
+    assert SOURCE_NAMES - set(PROVIDER_ADMISSION_SOURCE_FIELDS) == {
+        "consent_gate",
+        "provider_admission_gate",
+        "provider_admission_plan",
+        "provider_admission_preflight",
+        "provider_admission_receipt",
+    }
 
 
 def test_contract_builds_exact_private_480_task_manifest() -> None:
