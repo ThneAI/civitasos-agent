@@ -195,7 +195,11 @@ def _inspect_current_inventory(
     isolations = infrastructure["isolations"]
     isolation_index = {item["participant_id"]: item for item in isolations}
     activation_records = activation["containers"]
-    authorization_sha256 = activation["authorization"]["statement_sha256"]
+    authorization_sha256 = _creation_authorization_sha256(activation)
+    if authorization_sha256 is None:
+        return _empty_inventory_snapshot(), [
+            "refresh_inventory_creation_authorization_invalid"
+        ]
     reviewed_sha256 = infrastructure["reviewed_infrastructure_rebind_sha256"]
     rebind_id = infrastructure["rebind_id"]
     uid = os.getuid()
@@ -252,6 +256,34 @@ def _inspect_current_inventory(
     ):
         failures.append("refresh_inventory_complete_set_invalid")
     return snapshot, list(dict.fromkeys(failures))
+
+
+def _creation_authorization_sha256(activation: dict[str, Any]) -> str | None:
+    authorization = _object(activation.get("authorization")).get("statement_sha256")
+    if _sha256(authorization):
+        return str(authorization)
+    values = {
+        _object(_object(record.get("container")).get("labels")).get(
+            "civitasos.j1d.creation-authorization"
+        )
+        for record in activation.get("containers", [])
+        if isinstance(record, dict)
+    }
+    if len(values) != 1:
+        return None
+    value = next(iter(values))
+    return str(value) if _sha256(value) else None
+
+
+def _empty_inventory_snapshot() -> dict[str, Any]:
+    return {
+        "participant_count": 0,
+        "container_count": 0,
+        "created_count": 0,
+        "running_count": 0,
+        "container_set_sha256": canonical_sha256([]),
+        "container_details_persisted": False,
+    }
 
 
 def _docker_inspect(container_id: str) -> dict[str, Any]:
@@ -369,6 +401,14 @@ def _require_rfc3339(value: str) -> None:
 
 def _object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def main() -> int:

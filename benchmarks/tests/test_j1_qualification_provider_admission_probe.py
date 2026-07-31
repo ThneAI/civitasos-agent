@@ -21,6 +21,7 @@ from benchmarks.j1.qualification_provider_admission_refresh import (
     PREFLIGHT_SCHEMA,
     probe_authorization_statement,
 )
+from benchmarks.j1.qualification_provider_broker import sanitized_provider_failure
 from benchmarks.tests.test_j1_qualification_provider_admission_refresh import (
     _plan,
 )
@@ -102,6 +103,81 @@ def _inventory() -> dict:
         "container_set_sha256": "a" * 64,
         "container_details_persisted": False,
     }
+
+
+def _provider_env(tmp_path: Path) -> Path:
+    path = tmp_path / ".provider.env"
+    path.write_text(
+        "\n".join(
+            [
+                "BETA6_EXTERNAL_AGENT_PROVIDER=openai_compatible",
+                "BETA6_EXTERNAL_AGENT_API_BASE_URL=https://api.deepseek.com",
+                "BETA6_EXTERNAL_AGENT_MODEL=deepseek-v4-pro",
+                f"BETA6_EXTERNAL_AGENT_API_KEY={API_KEY}",
+            ]
+        )
+        + "\n"
+    )
+    path.chmod(0o600)
+    return path
+
+
+def _stub_live_dependencies(monkeypatch) -> None:
+    monkeypatch.setattr(
+        probe_operation,
+        "_inspect_current_inventory",
+        lambda **_kwargs: (_inventory(), []),
+    )
+    monkeypatch.setattr(
+        probe_operation,
+        "_implementation",
+        lambda *_args, **_kwargs: {
+            "source_revision": "1" * 40,
+            "plan_source_revision": "2" * 40,
+            "domain_source_sha256": "3" * 64,
+            "operation_source_sha256": "4" * 64,
+            "transport_domain_source_sha256": "5" * 64,
+        },
+    )
+
+
+class _Policy:
+    def as_dict(self) -> dict:
+        return {
+            "connect_attempts": 3,
+            "pre_dispatch_connect_retry_allowed": True,
+            "http_request_retry_allowed": False,
+            "ambiguous_dispatch_retry_allowed": False,
+        }
+
+
+class _PreparedTransport:
+    policy = _Policy()
+
+    def __init__(self, *, fail_before_dispatch: bool) -> None:
+        self.fail_before_dispatch = fail_before_dispatch
+        self.connect_attempt_count = 0
+        self.http_request_count = 0
+
+    def prepare(self) -> None:
+        self.connect_attempt_count = 3 if self.fail_before_dispatch else 1
+        if self.fail_before_dispatch:
+            raise sanitized_provider_failure(
+                category="http",
+                stage="http_pre_dispatch_connect",
+                source_exception_type="TimeoutError",
+            )
+
+    def post_json_once(self, **_kwargs) -> tuple[int, bytes]:
+        self.http_request_count = 1
+        raise sanitized_provider_failure(
+            category="http",
+            stage="http_dispatch_ambiguous",
+            source_exception_type="TimeoutError",
+        )
+
+    def close(self) -> None:
+        return None
 
 
 def test_probe_source_requires_exact_generated_authorization(tmp_path: Path) -> None:
@@ -337,3 +413,61 @@ def test_complete_probe_claims_once_and_never_persists_content_or_key(
             transport=transport,
         )
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("fail_before_dispatch", "expected_call_count", "expected_stage"),
+    [
+        (True, 0, "http_pre_dispatch_connect"),
+        (False, 1, "http_dispatch_ambiguous"),
+    ],
+)
+def test_prepared_probe_preserves_dispatch_boundary(
+    monkeypatch,
+    tmp_path: Path,
+    fail_before_dispatch: bool,
+    expected_call_count: int,
+    expected_stage: str,
+) -> None:
+    _, plan_path, _, preflight_path, statement = _artifacts(tmp_path)
+    _stub_live_dependencies(monkeypatch)
+    prepared = _PreparedTransport(fail_before_dispatch=fail_before_dispatch)
+    report = probe_operation.execute_probe(
+        probe_id=f"probe-boundary-{expected_call_count}",
+        claimed_at=NOW,
+        authorization_statement=statement,
+        plan_path=plan_path,
+        preflight_path=preflight_path,
+        provider_env_path=_provider_env(tmp_path),
+        claim_root=tmp_path / "claims",
+        output_root=tmp_path / "output",
+        repository_root=tmp_path,
+        prepared_transport_factory=lambda _url: prepared,
+        source_replayer=lambda _plan: {
+            "infrastructure": {},
+            "activation": {},
+        },
+    )
+
+    assert report["passed"] is False
+    assert report["provider_call_count"] == expected_call_count
+    assert report["retry_performed"] is False
+    evidence = report["sanitized_transport_evidence"]
+    assert evidence["connect_attempt_count"] == prepared.connect_attempt_count
+    assert evidence["http_request_count"] == expected_call_count
+    assert evidence["post_dispatch_retry_count"] == 0
+    assert evidence["sanitized_failure"] == {
+        "category": "http",
+        "stage": expected_stage,
+        "source_exception_type": "TimeoutError",
+        "exception_message_persisted": False,
+    }
+    persisted = "\n".join(
+        path.read_text()
+        for path in [
+            *(tmp_path / "claims").iterdir(),
+            *(tmp_path / "output").iterdir(),
+        ]
+    )
+    assert API_KEY not in persisted
+    assert "sanitized provider failure" not in persisted

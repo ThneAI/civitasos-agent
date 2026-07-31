@@ -218,6 +218,27 @@ def test_live_inventory_revalidation_accepts_exact_stopped_set_and_rejects_drift
     assert snapshot["created_count"] == 40
     assert snapshot["running_count"] == 0
 
+    repaired_activation = copy.deepcopy(activation)
+    repaired_activation.pop("authorization")
+    repaired_snapshot, repaired_failures = (
+        refresh_operation._inspect_current_inventory(
+            infrastructure=infrastructure,
+            activation=repaired_activation,
+        )
+    )
+    assert repaired_failures == []
+    assert repaired_snapshot == snapshot
+
+    repaired_activation["containers"][0]["container"]["labels"][
+        "civitasos.j1d.creation-authorization"
+    ] = "f" * 64
+    empty, failures = refresh_operation._inspect_current_inventory(
+        infrastructure=infrastructure,
+        activation=repaired_activation,
+    )
+    assert failures == ["refresh_inventory_creation_authorization_invalid"]
+    assert empty["container_count"] == 0
+
     first_id = activation_records[0]["container"]["container_id"]
     inspect_values[first_id]["State"] = {"Status": "running", "Running": True}
     _, failures = refresh_operation._inspect_current_inventory(

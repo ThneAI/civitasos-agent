@@ -39,6 +39,9 @@ OUTCOME_PROBE_OPERATION_SOURCE = (
     Path(__file__).parent
     / "j1_qualification_outcome_sensitive_provider_probe.py"
 )
+TRANSPORT_DOMAIN_SOURCE = (
+    Path(__file__).parent / "j1" / "qualification_http_transport.py"
+)
 
 
 def generate_preflight(
@@ -156,6 +159,7 @@ def _implementation(repository_root: Path) -> dict[str, str]:
         "probe_domain_source_sha256": PROBE_DOMAIN_SOURCE,
         "probe_operation_source_sha256": PROBE_OPERATION_SOURCE,
         "outcome_probe_operation_source_sha256": OUTCOME_PROBE_OPERATION_SOURCE,
+        "transport_domain_source_sha256": TRANSPORT_DOMAIN_SOURCE,
     }
     return {
         "source_revision": _git(root, "rev-parse", "HEAD").strip(),

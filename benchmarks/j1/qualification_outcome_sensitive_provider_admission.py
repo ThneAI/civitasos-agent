@@ -16,9 +16,9 @@ from .qualification_provider_admission_refresh import (
 )
 
 
-PLAN_SCHEMA = "j1-qualification-outcome-sensitive-provider-admission-plan:v1"
+PLAN_SCHEMA = "j1-qualification-outcome-sensitive-provider-admission-plan:v2"
 PREFLIGHT_SCHEMA = (
-    "j1-qualification-outcome-sensitive-provider-admission-preflight:v1"
+    "j1-qualification-outcome-sensitive-provider-admission-preflight:v2"
 )
 SOURCE_CANONICAL_FIELDS = {
     "protocol": "protocol_sha256",
@@ -33,8 +33,16 @@ SOURCE_CANONICAL_FIELDS = {
     "mentor_advice_gate": "report_sha256",
     "infrastructure": "reviewed_infrastructure_rebind_sha256",
     "infrastructure_promotion_gate": "report_sha256",
+    "parent_activation": "activation_sha256",
+    "parent_activation_gate": "report_sha256",
+    "reviewed_repair": "reviewed_repair_sha256",
+    "repair_promotion_gate": "report_sha256",
     "activation": "activation_sha256",
     "activation_gate": "report_sha256",
+    "transport_promotion_gate": "report_sha256",
+    "transport_plan": "plan_sha256",
+    "transport_report": "report_sha256",
+    "transport_gate": "report_sha256",
     "runner_manifest": "manifest_sha256",
     "material_promotion_gate": "report_sha256",
 }
@@ -88,8 +96,16 @@ def validate_source_chain(
     advice_gate = values["mentor_advice_gate"]
     infrastructure = values["infrastructure"]
     infrastructure_gate = values["infrastructure_promotion_gate"]
+    parent_activation = values["parent_activation"]
+    parent_activation_gate = values["parent_activation_gate"]
+    reviewed_repair = values["reviewed_repair"]
+    repair_promotion_gate = values["repair_promotion_gate"]
     activation = values["activation"]
     activation_gate = values["activation_gate"]
+    transport_promotion_gate = values["transport_promotion_gate"]
+    transport_plan = values["transport_plan"]
+    transport_report = values["transport_report"]
+    transport_gate = values["transport_gate"]
     runner = values["runner_manifest"]
     material_gate = values["material_promotion_gate"]
 
@@ -267,9 +283,9 @@ def validate_source_chain(
         "outcome_admission_infrastructure_promotion_invalid",
         failures,
     )
-    activation_source = _object(activation.get("source_binding"))
+    activation_source = _object(parent_activation.get("source_binding"))
     _require(
-        activation.get("schema_version")
+        parent_activation.get("schema_version")
         == "j1-qualification-infrastructure-activation:v1"
         and activation_source.get("reviewed_artifact_sha256")
         == raw_sha256["infrastructure"]
@@ -287,18 +303,18 @@ def validate_source_chain(
         failures,
     )
     _require(
-        activation_gate.get("passed") is True
-        and activation_gate.get("failure_reasons") == []
-        and activation_gate.get("state")
+        parent_activation_gate.get("passed") is True
+        and parent_activation_gate.get("failure_reasons") == []
+        and parent_activation_gate.get("state")
         == "replacement_containers_created_provider_admission_required"
-        and activation_gate.get("next_blocker")
+        and parent_activation_gate.get("next_blocker")
         == "live_provider_admission_refresh_required"
         and _ref_matches(
-            activation_gate.get("activation"),
-            raw_sha256["activation"],
-            canonical_source_sha256("activation", activation),
+            parent_activation_gate.get("activation"),
+            raw_sha256["parent_activation"],
+            canonical_source_sha256("parent_activation", parent_activation),
         )
-        and activation_gate.get("inventory")
+        and parent_activation_gate.get("inventory")
         == {
             "container_created_count": 40,
             "container_started_count": 0,
@@ -308,6 +324,23 @@ def validate_source_chain(
         },
         "outcome_admission_activation_gate_invalid",
         failures,
+    )
+    _validate_repaired_activation_chain(
+        parent_activation=parent_activation,
+        reviewed_repair=reviewed_repair,
+        repair_promotion_gate=repair_promotion_gate,
+        activation=activation,
+        activation_gate=activation_gate,
+        raw_sha256=raw_sha256,
+        failures=failures,
+    )
+    _validate_transport_chain(
+        promotion_gate=transport_promotion_gate,
+        plan=transport_plan,
+        report=transport_report,
+        gate=transport_gate,
+        raw_sha256=raw_sha256,
+        failures=failures,
     )
     return list(dict.fromkeys(failures))
 
@@ -354,6 +387,9 @@ def build_plan(
             "evaluator_sha256": evaluator["evaluator_sha256"],
             "design_sha256": design["amended_design_sha256"],
             "activation_sha256": activation["activation_sha256"],
+            "transport_gate_sha256": source_binding["transport_gate"][
+                "canonical_sha256"
+            ],
         },
         "preserved_design_reuse_scope": {
             "provider_identity_and_pricing_only": True,
@@ -407,7 +443,11 @@ def build_plan(
             "maximum_ttl_seconds": 1800,
             "one_credential_read_allowed": True,
             "one_https_provider_call_allowed": True,
-            "retry_allowed": False,
+            "pre_dispatch_connect_attempts": 3,
+            "pre_dispatch_connect_retry_allowed": True,
+            "http_request_attempts": 1,
+            "http_request_retry_allowed": False,
+            "ambiguous_dispatch_retry_allowed": False,
             "participant_container_start_allowed": False,
             "execution_stack_promotion_allowed": False,
             "execution_authorization_issuance_or_consumption_allowed": False,
@@ -471,6 +511,7 @@ def validate_plan(plan: dict[str, Any]) -> list[str]:
                 "evaluator_sha256",
                 "design_sha256",
                 "activation_sha256",
+                "transport_gate_sha256",
             )
         ),
         "outcome_admission_frozen_stack_invalid",
@@ -522,7 +563,11 @@ def validate_plan(plan: dict[str, Any]) -> list[str]:
         authorization.get("single_use_required") is True
         and authorization.get("one_credential_read_allowed") is True
         and authorization.get("one_https_provider_call_allowed") is True
-        and authorization.get("retry_allowed") is False
+        and authorization.get("pre_dispatch_connect_attempts") == 3
+        and authorization.get("pre_dispatch_connect_retry_allowed") is True
+        and authorization.get("http_request_attempts") == 1
+        and authorization.get("http_request_retry_allowed") is False
+        and authorization.get("ambiguous_dispatch_retry_allowed") is False
         and authorization.get("participant_container_start_allowed") is False
         and authorization.get("execution_stack_promotion_allowed") is False
         and authorization.get(
@@ -566,6 +611,8 @@ def build_preflight(
             "outcome_sensitive_materials_and_evaluator_bound": True,
             "reviewed_roster_assignment_and_advice_bound": True,
             "reviewed_infrastructure_activation_bound": True,
+            "reviewed_single_container_repair_bound": True,
+            "transport_terminal_gate_bound": True,
             "exact_40_stopped_containers_revalidated": True,
             "provider_request_is_synthetic_and_bounded": True,
             "provider_budget_reserved_under_preserved_reviewed_rates": True,
@@ -600,7 +647,8 @@ def probe_authorization_statement(
         f"canonical SHA-256 {plan['plan_sha256']}, binding infrastructure "
         f"activation {stack['activation_sha256']}, outcome-sensitive protocol "
         f"{stack['protocol_sha256']}, evaluator {stack['evaluator_sha256']}, and "
-        f"preserved pricing design {stack['design_sha256']}. I authorize one read "
+        f"transport terminal Gate {stack['transport_gate_sha256']}, under preserved "
+        f"pricing design {stack['design_sha256']}. I authorize one read "
         "of a private mode-0600 provider environment file and exactly one HTTPS "
         f"POST to {stack['base_url']}{probe['path']} using provider "
         f"{stack['provider_id']}, model {stack['model_id']}, and frozen synthetic "
@@ -610,8 +658,11 @@ def probe_authorization_statement(
         f"of {ceiling} USD microunits. The credential value and hash and response "
         "content must not be persisted; only response SHA-256 and sanitized usage "
         "may be recorded. The authorization is single-use, must be claimed before "
-        "credential access, and permits no retry. It permits only this synthetic "
-        "admission probe. It does not permit creating, starting, renaming, or "
+        "credential access, and permits at most 3 connection-setup attempts only "
+        "before HTTP request dispatch. The HTTP request is single-use; any failure "
+        "after dispatch is ambiguous and must never be retried. It permits only "
+        "this synthetic admission probe. It does not permit creating, starting, "
+        "renaming, or "
         "removing any participant container, use of participant data, advice, "
         "fixtures, or tasks, Agent or experiment execution, execution-stack "
         "promotion, Backend Fact append, Ledger append, execution authorization "
@@ -638,6 +689,7 @@ def validate_probe_sources(
     owner = _object(preflight.get("owner_authorization"))
     plan_ref = _object(preflight.get("plan"))
     readiness = _object(preflight.get("readiness"))
+    checks = _object(preflight.get("checks"))
     _require(
         preflight.get("schema_version") == PREFLIGHT_SCHEMA
         and preflight.get("passed") is True
@@ -661,6 +713,23 @@ def validate_probe_sources(
         == hashlib.sha256(expected.encode()).hexdigest()
         and authorization_statement == expected,
         "outcome_probe_owner_authorization_mismatch",
+        failures,
+    )
+    _require(
+        checks
+        == {
+            "outcome_sensitive_materials_and_evaluator_bound": True,
+            "reviewed_roster_assignment_and_advice_bound": True,
+            "reviewed_infrastructure_activation_bound": True,
+            "reviewed_single_container_repair_bound": True,
+            "transport_terminal_gate_bound": True,
+            "exact_40_stopped_containers_revalidated": True,
+            "provider_request_is_synthetic_and_bounded": True,
+            "provider_budget_reserved_under_preserved_reviewed_rates": True,
+            "credential_not_accessed": True,
+            "network_and_model_not_invoked": True,
+        },
+        "outcome_probe_preflight_checks_invalid",
         failures,
     )
     _require(
@@ -689,6 +758,177 @@ def _ref_matches(value: Any, raw_sha256: str, canonical_sha256_value: str) -> bo
     return (
         ref.get("sha256") == raw_sha256
         and ref.get("canonical_sha256") == canonical_sha256_value
+    )
+
+
+def _validate_repaired_activation_chain(
+    *,
+    parent_activation: dict[str, Any],
+    reviewed_repair: dict[str, Any],
+    repair_promotion_gate: dict[str, Any],
+    activation: dict[str, Any],
+    activation_gate: dict[str, Any],
+    raw_sha256: dict[str, str],
+    failures: list[str],
+) -> None:
+    _require(
+        reviewed_repair.get("schema_version")
+        == "j1-qualification-infrastructure-repair:operator-reviewed:v1"
+        and reviewed_repair.get("status") == "operator_reviewed"
+        and _ref_matches(
+            reviewed_repair.get("parent_activation"),
+            raw_sha256["parent_activation"],
+            canonical_source_sha256("parent_activation", parent_activation),
+        )
+        and _object(reviewed_repair.get("postcondition"))
+        == {
+            "container_count": 40,
+            "created_count": 40,
+            "exited_count": 0,
+            "running_count": 0,
+            "same_image_mount_and_runtime_boundary": True,
+            "same_participant_and_container_name_set": True,
+        },
+        "outcome_admission_reviewed_repair_invalid",
+        failures,
+    )
+    _require(
+        repair_promotion_gate.get("schema_version")
+        == "j1-qualification-infrastructure-repair-review-gate:v1"
+        and repair_promotion_gate.get("passed") is True
+        and repair_promotion_gate.get("failure_reasons") == []
+        and repair_promotion_gate.get("state")
+        == "single_container_repair_promoted_exact_authorization_required"
+        and _ref_matches(
+            repair_promotion_gate.get("reviewed_repair"),
+            raw_sha256["reviewed_repair"],
+            canonical_source_sha256("reviewed_repair", reviewed_repair),
+        ),
+        "outcome_admission_repair_promotion_invalid",
+        failures,
+    )
+    _require(
+        activation.get("schema_version")
+        == "j1-qualification-infrastructure-repair-activation:v1"
+        and _ref_matches(
+            activation.get("parent_activation"),
+            raw_sha256["parent_activation"],
+            canonical_source_sha256("parent_activation", parent_activation),
+        )
+        and _ref_matches(
+            activation.get("reviewed_repair"),
+            raw_sha256["reviewed_repair"],
+            canonical_source_sha256("reviewed_repair", reviewed_repair),
+        )
+        and len(activation.get("containers", [])) == 40
+        and activation.get("inventory")
+        == {
+            "participant_count": 40,
+            "container_created_count": 40,
+            "container_exited_count": 0,
+            "container_started_count": 0,
+        },
+        "outcome_admission_repair_activation_invalid",
+        failures,
+    )
+    _require(
+        activation_gate.get("schema_version")
+        == "j1-qualification-infrastructure-repair-gate:v1"
+        and activation_gate.get("passed") is True
+        and activation_gate.get("failure_reasons") == []
+        and activation_gate.get("state")
+        == "single_container_repaired_40_created_0_running"
+        and _ref_matches(
+            activation_gate.get("activation"),
+            raw_sha256["activation"],
+            canonical_source_sha256("activation", activation),
+        )
+        and activation_gate.get("inventory") == activation.get("inventory"),
+        "outcome_admission_repair_activation_gate_invalid",
+        failures,
+    )
+
+
+def _validate_transport_chain(
+    *,
+    promotion_gate: dict[str, Any],
+    plan: dict[str, Any],
+    report: dict[str, Any],
+    gate: dict[str, Any],
+    raw_sha256: dict[str, str],
+    failures: list[str],
+) -> None:
+    _require(
+        promotion_gate.get("schema_version")
+        == "j1-qualification-transport-reliability-promotion-gate:v1"
+        and promotion_gate.get("passed") is True
+        and promotion_gate.get("failure_reasons") == []
+        and promotion_gate.get("signature_valid") is True
+        and promotion_gate.get("pin_recorded") is False
+        and promotion_gate.get("private_key_exported") is False,
+        "outcome_admission_transport_promotion_invalid",
+        failures,
+    )
+    plan_sources = _object(plan.get("source_artifacts"))
+    policy = _object(plan.get("execution_policy"))
+    _require(
+        plan.get("schema_version")
+        == "j1-qualification-transport-admission-soak-execution-plan:v1"
+        and _ref_matches(
+            plan_sources.get("promotion_gate"),
+            raw_sha256["transport_promotion_gate"],
+            canonical_source_sha256(
+                "transport_promotion_gate", promotion_gate
+            ),
+        )
+        and policy.get("connect_attempts_per_call") == 3
+        and policy.get("http_request_attempts_per_call") == 1
+        and policy.get("ambiguous_dispatch_retry_count") == 0,
+        "outcome_admission_transport_plan_invalid",
+        failures,
+    )
+    scope = _object(report.get("scope"))
+    boundary = _object(report.get("execution_boundary"))
+    _require(
+        report.get("schema_version")
+        == "j1-qualification-transport-admission-soak-report:v1"
+        and report.get("status") == "passed"
+        and _ref_matches(
+            _object(report.get("source_binding")).get("plan"),
+            raw_sha256["transport_plan"],
+            canonical_source_sha256("transport_plan", plan),
+        )
+        and scope.get("required_call_count") == 64
+        and scope.get("provider_dispatch_count") == 64
+        and scope.get("completed_call_count") == 64
+        and scope.get("provider_outcome_unknown_count") == 0
+        and scope.get("post_dispatch_retry_count") == 0
+        and boundary.get("participant_container_started_or_modified") is False
+        and boundary.get("participant_data_used") is False,
+        "outcome_admission_transport_report_invalid",
+        failures,
+    )
+    _require(
+        gate.get("schema_version")
+        == "j1-qualification-transport-admission-soak-gate:v1"
+        and gate.get("passed") is True
+        and gate.get("failure_reasons") == []
+        and gate.get("state") == "transport_admission_soak_passed"
+        and _ref_matches(
+            gate.get("report"),
+            raw_sha256["transport_report"],
+            canonical_source_sha256("transport_report", report),
+        )
+        and _object(gate.get("readiness")).get(
+            "new_outcome_sensitive_execution_stack_allowed"
+        )
+        is True
+        and _object(gate.get("readiness")).get(
+            "provider_or_model_execution_authorized"
+        )
+        is False,
+        "outcome_admission_transport_gate_invalid",
+        failures,
     )
 
 

@@ -78,6 +78,10 @@ def test_outcome_admission_plan_binds_current_stack_and_narrow_probe() -> None:
     assert plan["frozen_stack"]["protocol_sha256"] == "a" * 64
     assert plan["frozen_stack"]["evaluator_sha256"] == "b" * 64
     assert plan["frozen_stack"]["activation_sha256"] == "c" * 64
+    assert (
+        plan["frozen_stack"]["transport_gate_sha256"]
+        == _refs()["transport_gate"]["canonical_sha256"]
+    )
     assert plan["probe_contract"]["call_count"] == 1
     assert plan["pricing_and_budget"]["maximum_cost_microunits"] == 926
     assert plan["preserved_design_reuse_scope"] == {
@@ -86,6 +90,11 @@ def test_outcome_admission_plan_binds_current_stack_and_narrow_probe() -> None:
         "new_execution_stack_review_required": True,
     }
     assert plan["execution_boundary"] == OFFLINE_BOUNDARY
+    assert plan["authorization_contract"]["pre_dispatch_connect_attempts"] == 3
+    assert plan["authorization_contract"]["http_request_attempts"] == 1
+    assert (
+        plan["authorization_contract"]["ambiguous_dispatch_retry_allowed"] is False
+    )
 
 
 def test_outcome_admission_plan_rejects_budget_and_scope_expansion() -> None:
@@ -94,6 +103,8 @@ def test_outcome_admission_plan_rejects_budget_and_scope_expansion() -> None:
     tampered["probe_contract"]["call_count"] = 2
     tampered["pricing_and_budget"]["maximum_cost_microunits"] = 927
     tampered["authorization_contract"]["participant_container_start_allowed"] = True
+    tampered["authorization_contract"]["ambiguous_dispatch_retry_allowed"] = True
+    tampered["frozen_stack"]["transport_gate_sha256"] = ""
 
     failures = validate_plan(tampered)
 
@@ -127,7 +138,10 @@ def test_outcome_admission_preflight_requires_exact_owner_statement() -> None:
     )
     assert "outcome-sensitive live-provider admission probe" in statement
     assert plan["frozen_stack"]["activation_sha256"] in statement
+    assert plan["frozen_stack"]["transport_gate_sha256"] in statement
     assert "exactly one HTTPS POST" in statement
+    assert "at most 3 connection-setup attempts" in statement
+    assert "after dispatch is ambiguous and must never be retried" in statement
     assert "926 USD microunits" in statement
     assert "execution-stack promotion" in statement
 

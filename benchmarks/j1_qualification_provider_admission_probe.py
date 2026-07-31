@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.j1.controlled_comparison import canonical_sha256, write_private_json
+from benchmarks.j1.qualification_http_transport import PreparedHTTPSPost
 from benchmarks.j1.qualification_admission import _load_private_env
 from benchmarks.j1.qualification_provider_admission_probe import (
     GATE_SCHEMA,
@@ -35,7 +36,29 @@ DOMAIN_SOURCE = (
     Path(__file__).parent / "j1" / "qualification_provider_admission_probe.py"
 )
 OPERATION_SOURCE = Path(__file__)
+TRANSPORT_DOMAIN_SOURCE = (
+    Path(__file__).parent / "j1" / "qualification_http_transport.py"
+)
+OUTCOME_IMPLEMENTATION_SOURCES = {
+    "domain_source_sha256": (
+        Path(__file__).parent
+        / "j1"
+        / "qualification_outcome_sensitive_provider_admission.py"
+    ),
+    "operation_source_sha256": (
+        Path(__file__).parent
+        / "j1_qualification_outcome_sensitive_provider_admission.py"
+    ),
+    "probe_domain_source_sha256": DOMAIN_SOURCE,
+    "probe_operation_source_sha256": OPERATION_SOURCE,
+    "outcome_probe_operation_source_sha256": (
+        Path(__file__).parent
+        / "j1_qualification_outcome_sensitive_provider_probe.py"
+    ),
+    "transport_domain_source_sha256": TRANSPORT_DOMAIN_SOURCE,
+}
 Transport = Callable[[str, str, dict[str, Any]], tuple[int, bytes]]
+PreparedTransportFactory = Callable[[str], PreparedHTTPSPost]
 SourceValidator = Callable[..., list[str]]
 SourceReplayer = Callable[[dict[str, Any]], dict[str, dict[str, Any]]]
 MAX_RESPONSE_BYTES = 1_048_576
@@ -53,6 +76,7 @@ def execute_probe(
     output_root: Path,
     repository_root: Path,
     transport: Transport | None = None,
+    prepared_transport_factory: PreparedTransportFactory = PreparedHTTPSPost,
     source_validator: SourceValidator = validate_probe_sources,
     source_replayer: SourceReplayer | None = None,
 ) -> dict[str, Any]:
@@ -122,6 +146,8 @@ def execute_probe(
     provider_env_read_count = 0
     provider_call_count = 0
     transport_evidence: dict[str, Any] | None = None
+    prepared_transport: PreparedHTTPSPost | None = None
+    api_key = ""
     try:
         api_key = _read_provider_configuration(
             provider_env_path,
@@ -133,17 +159,36 @@ def execute_probe(
         write_private_json(journal_path, journal)
         provider = plan["frozen_stack"]
         request_body = plan["probe_contract"]["request_body"]
+        url = f"{provider['base_url']}{plan['probe_contract']['path']}"
+        if transport is None:
+            prepared_transport = prepared_transport_factory(url)
+            journal["state"] = "connection_setup_in_progress_pre_dispatch"
+            write_private_json(journal_path, journal)
+            prepared_transport.prepare()
+            journal["connect_attempt_count"] = (
+                prepared_transport.connect_attempt_count
+            )
+            journal["state"] = "connection_prepared_dispatch_not_started"
+            write_private_json(journal_path, journal)
         provider_call_count = 1
         journal["provider_call_count"] = 1
         journal["state"] = "provider_call_dispatched_no_retry"
         write_private_json(journal_path, journal)
-        status, body = (transport or _https_post_once)(
-            f"{provider['base_url']}{plan['probe_contract']['path']}",
-            api_key,
-            request_body,
-        )
+        if prepared_transport is not None:
+            status, body = prepared_transport.post_json_once(
+                api_key=api_key,
+                body=request_body,
+                user_agent="civitasos-j1d-admission-probe/2",
+            )
+            provider_call_count = prepared_transport.http_request_count
+        else:
+            status, body = transport(url, api_key, request_body)
         api_key = ""
         transport_evidence = _sanitized_transport_evidence(status=status, body=body)
+        if prepared_transport is not None:
+            transport_evidence.update(
+                _prepared_transport_evidence(prepared_transport)
+            )
         provider_result = normalize_probe_response(
             status=status,
             body=body,
@@ -205,11 +250,12 @@ def execute_probe(
             },
             "receipt": _artifact(receipt_path, receipt["receipt_sha256"]),
             "journal": _artifact(journal_path),
+            "sanitized_transport_evidence": transport_evidence,
             "checks": {
                 "single_use_claim_persisted_before_credential_access": True,
                 "budget_reserved_before_provider_call": True,
                 "credential_read_exactly_once": True,
-                "one_https_post_without_retry_or_redirect": True,
+                "one_https_post_with_bounded_pre_dispatch_connect_retries": True,
                 "provider_model_identity_matched": True,
                 "usage_and_cost_reconciled": True,
                 "response_content_not_persisted": True,
@@ -237,9 +283,21 @@ def execute_probe(
         )
         return report
     except Exception as error:
+        api_key = ""
+        if prepared_transport is not None:
+            provider_call_count = prepared_transport.http_request_count
+            transport_evidence = _prepared_transport_failure_evidence(
+                prepared_transport,
+                error=error,
+                prior=transport_evidence,
+            )
         journal["state"] = "probe_failed_authorization_consumed_no_retry"
         journal["provider_env_read_count"] = provider_env_read_count
         journal["provider_call_count"] = provider_call_count
+        if prepared_transport is not None:
+            journal["connect_attempt_count"] = (
+                prepared_transport.connect_attempt_count
+            )
         write_private_json(journal_path, journal)
         report = _failure_report(
             probe_id=probe_id,
@@ -262,6 +320,10 @@ def execute_probe(
             report,
         )
         return report
+    finally:
+        api_key = ""
+        if prepared_transport is not None:
+            prepared_transport.close()
 
 
 def _replay_plan_sources(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -422,6 +484,49 @@ def _sanitized_transport_evidence(*, status: int, body: bytes) -> dict[str, Any]
     return evidence
 
 
+def _prepared_transport_evidence(
+    transport: PreparedHTTPSPost,
+) -> dict[str, Any]:
+    return {
+        "connect_attempt_count": transport.connect_attempt_count,
+        "http_request_count": transport.http_request_count,
+        "post_dispatch_retry_count": 0,
+        "transport_policy": transport.policy.as_dict(),
+    }
+
+
+def _prepared_transport_failure_evidence(
+    transport: PreparedHTTPSPost,
+    *,
+    error: Exception,
+    prior: dict[str, Any] | None,
+) -> dict[str, Any]:
+    evidence = dict(prior or {})
+    evidence.update(_prepared_transport_evidence(transport))
+    category = getattr(error, "failure_category", None)
+    stage = getattr(error, "failure_stage", None)
+    source_type = getattr(error, "source_exception_type", None)
+    if all(isinstance(value, str) and value for value in (category, stage, source_type)):
+        evidence["sanitized_failure"] = {
+            "category": category,
+            "stage": stage,
+            "source_exception_type": source_type,
+            "exception_message_persisted": False,
+        }
+    else:
+        evidence["sanitized_failure"] = {
+            "category": "internal",
+            "stage": (
+                "post_dispatch_unclassified"
+                if transport.http_request_count
+                else "pre_dispatch_unclassified"
+            ),
+            "source_exception_type": type(error).__name__,
+            "exception_message_persisted": False,
+        }
+    return evidence
+
+
 def _failure_report(
     *,
     probe_id: str,
@@ -482,6 +587,10 @@ def _failure_report(
 
 
 def _failure_code(error: Exception) -> str:
+    category = getattr(error, "failure_category", None)
+    stage = getattr(error, "failure_stage", None)
+    if isinstance(category, str) and isinstance(stage, str):
+        return f"provider_{category}_{stage}"
     known = {
         "probe provider response is not valid JSON": "provider_response_json_invalid",
         "probe provider response must be an object": "provider_response_object_invalid",
@@ -520,6 +629,10 @@ def _implementation(repository_root: Path, *, plan: dict[str, Any]) -> dict[str,
     )
     if ancestor.returncode != 0:
         raise ValueError("provider admission plan implementation is not an ancestor")
+    if plan.get("schema_version") == (
+        "j1-qualification-outcome-sensitive-provider-admission-plan:v2"
+    ):
+        _validate_outcome_implementation(plan, revision=revision)
     return {
         "source_revision": revision,
         "plan_source_revision": planned_revision,
@@ -527,7 +640,26 @@ def _implementation(repository_root: Path, *, plan: dict[str, Any]) -> dict[str,
         "operation_source_sha256": hashlib.sha256(
             OPERATION_SOURCE.read_bytes()
         ).hexdigest(),
+        "transport_domain_source_sha256": hashlib.sha256(
+            TRANSPORT_DOMAIN_SOURCE.read_bytes()
+        ).hexdigest(),
     }
+
+
+def _validate_outcome_implementation(
+    plan: dict[str, Any],
+    *,
+    revision: str,
+) -> None:
+    planned = plan.get("implementation")
+    if not isinstance(planned, dict) or planned.get("source_revision") != revision:
+        raise ValueError("outcome provider admission implementation revision drift")
+    current = {
+        name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for name, path in OUTCOME_IMPLEMENTATION_SOURCES.items()
+    }
+    if any(planned.get(name) != digest for name, digest in current.items()):
+        raise ValueError("outcome provider admission implementation source drift")
 
 
 def _canonical_source_sha256(name: str, value: dict[str, Any]) -> str:
