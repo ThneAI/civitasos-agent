@@ -2,15 +2,28 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 
 import pytest
+from nacl.signing import SigningKey
 
-from benchmarks.j1.controlled_comparison import canonical_sha256
+from benchmarks.j1.controlled_comparison import canonical_sha256, write_private_json
 from benchmarks.j1.qualification_outcome_sensitive_confirmatory_consent import (
     MATERIAL_NAMES,
     authorization_statement,
+    build_extension,
     build_plan,
+    validate_extension,
     validate_plan,
+)
+from benchmarks.j1.qualification_participant_provisioning import (
+    participant_did,
+    participant_id,
+)
+from benchmarks.j1_qualification_outcome_sensitive_confirmatory_consent_sign import (
+    SIGNING_BOUNDARY,
+    _build_manifest,
+    validate_manifest,
 )
 
 
@@ -26,16 +39,16 @@ def _plan() -> dict:
     identities = []
     targets = []
     for index in range(40):
-        participant_id = f"j1q-agent-{index:020d}"
-        execution_did = f"did:civ:qualification:{index:040d}"
+        public_key = SigningKey(bytes([index + 1]) * 32).verify_key.encode()
+        public_key_hex = public_key.hex()
+        current_participant_id = participant_id(public_key_hex)
+        execution_did = participant_did(public_key_hex)
         cohort = "mentor" if index % 2 == 0 else "control"
         identities.append(
             {
-                "participant_id": participant_id,
+                "participant_id": current_participant_id,
                 "execution_did": execution_did,
-                "public_key_sha256": hashlib.sha256(
-                    f"public:{index}".encode()
-                ).hexdigest(),
+                "public_key_sha256": hashlib.sha256(public_key).hexdigest(),
                 "key_label": f"participant-{index}",
                 "key_id_hex": f"{index + 1:04x}",
                 "profile_artifact_sha256": hashlib.sha256(
@@ -48,7 +61,7 @@ def _plan() -> dict:
         )
         targets.append(
             {
-                "participant_id": participant_id,
+                "participant_id": current_participant_id,
                 "execution_did": execution_did,
                 "pair_id": f"j1q-pair-{index // 2 + 1:02d}",
                 "cohort": cohort,
@@ -171,3 +184,123 @@ def test_builder_rejects_duplicate_prior_consent() -> None:
             consent_targets=targets,
             implementation=plan["implementation"],
         )
+
+
+class _Signer:
+    def __init__(self, key: SigningKey) -> None:
+        self._key = key
+
+    @property
+    def public_key_hex(self) -> str:
+        return self._key.verify_key.encode().hex()
+
+    def sign(self, message: bytes) -> bytes:
+        return self._key.sign(message).signature
+
+
+def _extension(
+    plan: dict,
+    index: int,
+    *,
+    plan_artifact_sha256: str = "d" * 64,
+    preflight_artifact_sha256: str = "e" * 64,
+) -> dict:
+    key = SigningKey(bytes([index + 1]) * 32)
+    return build_extension(
+        extension_id=f"extension-{index}",
+        signed_at="2026-08-04T03:00:00+00:00",
+        target=plan["consent_targets"][index],
+        identity=plan["participant_identity_set"][index],
+        public_key_hex=key.verify_key.encode().hex(),
+        plan=plan,
+        plan_artifact_sha256=plan_artifact_sha256,
+        preflight_artifact_sha256=preflight_artifact_sha256,
+        authorization_id="confirmatory-consent-authorization",
+        authorization_statement_sha256="f" * 64,
+        nonce=bytes([index + 41]) * 32,
+        signer=_Signer(key),
+    )
+
+
+def test_extension_signature_and_parent_binding_validate() -> None:
+    extension = _extension(_plan(), 0)
+    assert validate_extension(extension) == []
+    assert extension["prior_outcome_consent"]["inherited"] is False
+    assert extension["provider_or_model_execution_authorized"] is False
+
+
+def test_extension_rejects_signature_tamper() -> None:
+    extension = _extension(_plan(), 0)
+    extension["signature"]["signature_hex"] = "00" * 64
+    extension["extension_sha256"] = canonical_sha256(
+        {key: item for key, item in extension.items() if key != "extension_sha256"}
+    )
+    assert "confirmatory_consent_extension_signature_invalid" in validate_extension(
+        extension
+    )
+
+
+def test_extension_rejects_non_object_frozen_material() -> None:
+    extension = _extension(_plan(), 0)
+    extension["confirmatory_material_binding"]["frozen_materials"][
+        "exact_paired_method"
+    ] = None
+    extension["extension_sha256"] = canonical_sha256(
+        {key: item for key, item in extension.items() if key != "extension_sha256"}
+    )
+    assert "confirmatory_consent_extension_material_invalid" in validate_extension(
+        extension
+    )
+
+
+def test_manifest_replays_exactly_40_signatures(tmp_path) -> None:
+    plan = _plan()
+    plan_raw = json.dumps(plan, sort_keys=True).encode()
+    preflight_raw = b"{}"
+    descriptors = []
+    for index in range(40):
+        extension = _extension(
+            plan,
+            index,
+            plan_artifact_sha256=hashlib.sha256(plan_raw).hexdigest(),
+            preflight_artifact_sha256=hashlib.sha256(preflight_raw).hexdigest(),
+        )
+        path = tmp_path / f"{index}.json"
+        write_private_json(path, extension)
+        descriptors.append(
+            {
+                "path": str(path.resolve()),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "canonical_sha256": extension["extension_sha256"],
+                "participant_id": extension["participant"]["participant_id"],
+                "cohort": extension["cohort_binding"]["cohort"],
+            }
+        )
+    implementation = {
+        "source_revision": "1" * 40,
+        "source_sha256": "2" * 64,
+    }
+    manifest = _build_manifest(
+        signing_id="confirmatory-consent-signing",
+        signed_at="2026-08-04T03:00:00+00:00",
+        plan=plan,
+        plan_raw=plan_raw,
+        preflight_raw=preflight_raw,
+        authorization_id="confirmatory-consent-authorization",
+        authorization_statement_sha256="f" * 64,
+        descriptors=descriptors,
+        implementation=implementation,
+    )
+    assert manifest["execution_boundary"] == SIGNING_BOUNDARY
+    assert (
+        validate_manifest(
+            manifest,
+            plan=plan,
+            plan_raw=plan_raw,
+            preflight_raw=preflight_raw,
+            authorization_id="confirmatory-consent-authorization",
+            authorization_statement_sha256="f" * 64,
+            implementation=implementation,
+        )
+        == []
+    )

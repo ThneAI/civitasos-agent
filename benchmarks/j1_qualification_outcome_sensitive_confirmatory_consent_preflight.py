@@ -248,6 +248,85 @@ def prepare_plan(
         raise
 
 
+def replay_source_binding(plan: dict[str, Any]) -> None:
+    """Replay every immutable source referenced by a frozen consent plan."""
+    source = plan["source_binding"]
+    names = (
+        "promotion_gate",
+        "frozen_review",
+        "review_receipt",
+        "reviewed_assignment",
+        "assignment_gate",
+        "participant_provisioning_report",
+        "prior_outcome_consent_manifest",
+        "prior_outcome_consent_gate",
+    )
+    paths = {name: Path(source[name]["path"]) for name in names}
+    sources = {name: _read_private(path) for name, path in paths.items()}
+    for name, (value, raw) in sources.items():
+        ref = source[name]
+        if hashlib.sha256(raw).hexdigest() != ref["sha256"]:
+            raise ValueError(f"confirmatory consent source drift: {name}")
+        canonical = ref.get("canonical_sha256")
+        if canonical is not None:
+            hash_field = {
+                "promotion_gate": "report_sha256",
+                "frozen_review": "frozen_review_sha256",
+                "review_receipt": "receipt_sha256",
+                "reviewed_assignment": "reviewed_rebound_assignment_sha256",
+                "assignment_gate": "report_sha256",
+                "prior_outcome_consent_manifest": "manifest_sha256",
+                "prior_outcome_consent_gate": "report_sha256",
+            }[name]
+            if value.get(hash_field) != canonical:
+                raise ValueError(f"confirmatory consent canonical source drift: {name}")
+    materials = _validate_confirmatory_promotion(paths=paths, sources=sources)
+    if {name: item["ref"] for name, item in sorted(materials.items())} != source[
+        "frozen_materials"
+    ]:
+        raise ValueError("confirmatory consent frozen material binding drift")
+    prior = _validate_prior_consents(
+        manifest=sources["prior_outcome_consent_manifest"][0],
+        manifest_raw=sources["prior_outcome_consent_manifest"][1],
+        manifest_path=paths["prior_outcome_consent_manifest"],
+        gate=sources["prior_outcome_consent_gate"][0],
+    )
+    assignments = _validate_assignment(
+        assignment=sources["reviewed_assignment"][0],
+        assignment_raw=sources["reviewed_assignment"][1],
+        assignment_path=paths["reviewed_assignment"],
+        gate=sources["assignment_gate"][0],
+        prior_consents=prior,
+    )
+    plan_targets = {
+        item["participant_id"]: {
+            key: item[key]
+            for key in (
+                "participant_id",
+                "execution_did",
+                "pair_id",
+                "cohort",
+                "assignment_commitment_sha256",
+            )
+        }
+        for item in plan["consent_targets"]
+    }
+    if assignments != plan_targets:
+        raise ValueError("confirmatory consent assignment target drift")
+    boundary = sources["participant_provisioning_report"][0].get(
+        "pkcs11_boundary",
+        {},
+    )
+    if not (
+        boundary.get("unique_key_count") == 40
+        and boundary.get("private_keys_sensitive") is True
+        and boundary.get("private_keys_extractable") is False
+        and boundary.get("pin_recorded") is False
+        and boundary.get("token_label") == source["token_label"]
+    ):
+        raise ValueError("confirmatory consent provisioning boundary drift")
+
+
 def _validate_confirmatory_promotion(
     *,
     paths: dict[str, Path],
