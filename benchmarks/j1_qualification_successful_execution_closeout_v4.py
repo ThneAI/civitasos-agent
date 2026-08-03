@@ -57,9 +57,7 @@ from scripts.pkcs11_identity_probe import DEFAULT_MODULE, read_pin
 
 
 DOMAIN_SOURCE = (
-    Path(__file__).parent
-    / "j1"
-    / "qualification_successful_execution_closeout_v4.py"
+    Path(__file__).parent / "j1" / "qualification_successful_execution_closeout_v4.py"
 )
 OPERATION_SOURCE = Path(__file__)
 SOURCE_PATHS = [
@@ -115,7 +113,9 @@ def prepare_review(
     pytest_passed_count: int,
 ) -> dict[str, Any]:
     if output_root.exists():
-        raise FileExistsError(f"successful closeout review output exists: {output_root}")
+        raise FileExistsError(
+            f"successful closeout review output exists: {output_root}"
+        )
     revision = _clean_pushed_revision(repository_root)
     collected = collect_successful_run(
         authorization_path=authorization_path,
@@ -252,8 +252,7 @@ def collect_successful_run(
     ):
         raise ValueError("successful closeout frozen evaluator invalid")
     if (
-        evaluator["source_binding"]["rebound_assignment_sha256"]
-        != assignment_sha256
+        evaluator["source_binding"]["rebound_assignment_sha256"] != assignment_sha256
         or evaluator["source_binding"]["rebound_assignment_artifact_sha256"]
         != hashlib.sha256(raw["reviewed_assignment"]).hexdigest()
     ):
@@ -271,11 +270,15 @@ def collect_successful_run(
         raise ValueError("successful closeout execution task IDs invalid")
     profiles = _participant_profiles(participant_profiles_root)
     journal = _journal(execution_root / "execution-journal.sqlite3")
-    if journal["logical"] != {
-        key: item
-        for key, item in report["journal"].items()
-        if key != "journal_artifact_sha256"
-    } or journal["raw_sha256"] != report["journal"]["journal_artifact_sha256"]:
+    if (
+        journal["logical"]
+        != {
+            key: item
+            for key, item in report["journal"].items()
+            if key != "journal_artifact_sha256"
+        }
+        or journal["raw_sha256"] != report["journal"]["journal_artifact_sha256"]
+    ):
         raise ValueError("successful closeout journal does not match live report")
 
     participant_data: dict[str, dict[str, Any]] = defaultdict(
@@ -378,9 +381,9 @@ def collect_successful_run(
         aggregate["sovereignty_violations"] += _sovereignty_violations(assertions)
         aggregate["direct_trust_increments"] += _direct_trust_increments(receipts)
         if task["task"]["verifier_case"] == "three-consecutive-verified-tasks":
-            aggregate["maturity_task_count"] = assertions[
-                "consecutive_verified_tasks"
-            ]["value"]
+            aggregate["maturity_task_count"] = assertions["consecutive_verified_tasks"][
+                "value"
+            ]
         aggregate["cases"].add(task["task"]["verifier_case"])
     if observed_task_ids != set(by_execution_id):
         raise ValueError("successful closeout committed task set incomplete")
@@ -590,6 +593,7 @@ def promote_review(
             reviewer=reviewer,
             reviewer_profile_sha256=profile_sha256,
             signer=signer,
+            profile=bundle.get("execution_profile", "r4"),
         )
     failures = validate_review_receipt(
         receipt,
@@ -990,16 +994,12 @@ def _outcome_records(
                     "token_count": aggregate["tokens"],
                     "cost_microunits": aggregate["cost"],
                     "repeated_error_count": aggregate["repeated_errors"],
-                    "repeated_error_opportunities": aggregate[
-                        "repeated_opportunities"
-                    ],
+                    "repeated_error_opportunities": aggregate["repeated_opportunities"],
                     "pattern_prediction_count": 0,
                     "pattern_false_positive_count": 0,
                     "expected_provenance_count": aggregate["expected_provenance"],
                     "complete_provenance_count": aggregate["complete_provenance"],
-                    "sovereignty_violation_count": aggregate[
-                        "sovereignty_violations"
-                    ],
+                    "sovereignty_violation_count": aggregate["sovereignty_violations"],
                     "direct_trust_increment_count": aggregate[
                         "direct_trust_increments"
                     ],
@@ -1193,9 +1193,7 @@ def _validate_successful_review_gate(
         == gate.get("source_revision")
         and bundle.get("preflight", {}).get("sha256")
         == hashlib.sha256(
-            json.dumps(
-                preflight, ensure_ascii=False, indent=2, sort_keys=True
-            ).encode()
+            json.dumps(preflight, ensure_ascii=False, indent=2, sort_keys=True).encode()
             + b"\n"
         ).hexdigest()
         and bundle.get("preflight", {}).get("canonical_sha256")
