@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
+
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
 
 from .controlled_comparison import canonical_sha256
 from .qualification_outcome_sensitive_treatment_advice import (
@@ -17,6 +22,13 @@ ADVICE_SCHEMA = (
 )
 MANIFEST_SCHEMA = (
     "j1-qualification-outcome-sensitive-confirmatory-treatment-advice-manifest:v1"
+)
+SIGNED_ADVICE_SCHEMA = (
+    "j1-qualification-outcome-sensitive-confirmatory-treatment-advice-signed:v1"
+)
+SIGNED_MANIFEST_SCHEMA = (
+    "j1-qualification-outcome-sensitive-confirmatory-"
+    "treatment-advice-signed-manifest:v1"
 )
 CANDIDATE_BOUNDARY = {
     "candidate_only": True,
@@ -49,6 +61,29 @@ MANIFEST_BOUNDARY = {
     "effectiveness_or_causal_claim_authorized": False,
     "si13_maturity_upgrade_authorized": False,
 }
+SIGNED_ADVICE_BOUNDARY = {
+    "confirmatory_advice_signature_only": True,
+    "prior_advice_reused": False,
+    "advice_adherence_observed": False,
+    "runtime_projection_allowed": False,
+    "provider_credential_read_allowed": False,
+    "provider_api_call_allowed": False,
+    "model_invocation_allowed": False,
+    "agent_execution_allowed": False,
+    "infrastructure_change_allowed": False,
+    "backend_fact_append_allowed": False,
+    "ledger_append_allowed": False,
+    "execution_authorization_issued_or_consumed": False,
+    "r4_reanalysis_allowed": False,
+    "effectiveness_or_causal_claim_authorized": False,
+    "si13_maturity_upgrade_authorized": False,
+}
+
+
+class TreatmentAdviceSigner(Protocol):
+    public_key_hex: str
+
+    def sign(self, payload: bytes) -> bytes: ...
 
 
 def build_advice_candidate(
@@ -269,6 +304,216 @@ def validate_advice_candidate(
     return list(dict.fromkeys(failures))
 
 
+def build_signed_advice(
+    *,
+    candidate: dict[str, Any],
+    candidate_artifact_sha256: str,
+    source_manifest_artifact_sha256: str,
+    source_manifest_sha256: str,
+    authorization_id: str,
+    authorization_statement_sha256: str,
+    signed_at: str,
+    mentor_identity: dict[str, Any],
+    signer: TreatmentAdviceSigner,
+) -> dict[str, Any]:
+    candidate_body = {
+        key: item for key, item in candidate.items() if key != "candidate_sha256"
+    }
+    if candidate.get("candidate_sha256") != canonical_sha256(candidate_body):
+        raise ValueError("confirmatory advice candidate hash mismatch")
+    if (
+        signer.public_key_hex.lower()
+        != mentor_identity["mentor"]["public_key_hex"].lower()
+    ):
+        raise ValueError("confirmatory advice signer public key mismatch")
+    value = {
+        "schema_version": SIGNED_ADVICE_SCHEMA,
+        "advice_id": candidate["advice_id"],
+        "status": "signed_non_executable",
+        "signed_at": signed_at,
+        "source_candidate": {
+            "artifact_sha256": candidate_artifact_sha256,
+            "canonical_sha256": candidate["candidate_sha256"],
+        },
+        "source_manifest": {
+            "artifact_sha256": source_manifest_artifact_sha256,
+            "canonical_sha256": source_manifest_sha256,
+        },
+        "authorization": {
+            "authorization_id": authorization_id,
+            "statement_sha256": authorization_statement_sha256,
+        },
+        "source_binding": copy.deepcopy(candidate["source_binding"]),
+        "mentor": copy.deepcopy(candidate["mentor"]),
+        "recipient": copy.deepcopy(candidate["recipient"]),
+        "task": copy.deepcopy(candidate["task"]),
+        "advice": copy.deepcopy(candidate["advice"]),
+        "leakage_guard": copy.deepcopy(candidate["leakage_guard"]),
+        "measurement_boundary": copy.deepcopy(candidate["measurement_boundary"]),
+        "execution_boundary": copy.deepcopy(SIGNED_ADVICE_BOUNDARY),
+    }
+    payload = _signature_payload(value)
+    value["signature"] = {
+        "algorithm": "ed25519",
+        "signed_payload_sha256": hashlib.sha256(payload).hexdigest(),
+        "signature_hex": signer.sign(payload).hex(),
+    }
+    value["signed_advice_sha256"] = canonical_sha256(value)
+    failures = validate_signed_advice(
+        value,
+        candidate=candidate,
+        candidate_artifact_sha256=candidate_artifact_sha256,
+        source_manifest_artifact_sha256=source_manifest_artifact_sha256,
+        source_manifest_sha256=source_manifest_sha256,
+        authorization_id=authorization_id,
+        authorization_statement_sha256=authorization_statement_sha256,
+        mentor_identity=mentor_identity,
+    )
+    if failures:
+        raise ValueError(f"signed confirmatory advice invalid: {failures}")
+    return value
+
+
+def validate_signed_advice(
+    value: Any,
+    *,
+    candidate: dict[str, Any],
+    candidate_artifact_sha256: str,
+    source_manifest_artifact_sha256: str,
+    source_manifest_sha256: str,
+    authorization_id: str,
+    authorization_statement_sha256: str,
+    mentor_identity: dict[str, Any],
+) -> list[str]:
+    signed = value if isinstance(value, dict) else {}
+    failures: list[str] = []
+    _require(
+        set(signed)
+        == {
+            "schema_version",
+            "advice_id",
+            "status",
+            "signed_at",
+            "source_candidate",
+            "source_manifest",
+            "authorization",
+            "source_binding",
+            "mentor",
+            "recipient",
+            "task",
+            "advice",
+            "leakage_guard",
+            "measurement_boundary",
+            "execution_boundary",
+            "signature",
+            "signed_advice_sha256",
+        },
+        "signed_confirmatory_advice_fields_invalid",
+        failures,
+    )
+    _require(
+        signed.get("schema_version") == SIGNED_ADVICE_SCHEMA
+        and signed.get("status") == "signed_non_executable"
+        and _rfc3339(signed.get("signed_at")),
+        "signed_confirmatory_advice_identity_invalid",
+        failures,
+    )
+    candidate_body = {
+        key: item for key, item in candidate.items() if key != "candidate_sha256"
+    }
+    _require(
+        candidate.get("candidate_sha256") == canonical_sha256(candidate_body),
+        "signed_confirmatory_advice_candidate_hash_invalid",
+        failures,
+    )
+    _require(
+        signed.get("source_candidate")
+        == {
+            "artifact_sha256": candidate_artifact_sha256,
+            "canonical_sha256": candidate.get("candidate_sha256"),
+        },
+        "signed_confirmatory_advice_candidate_binding_invalid",
+        failures,
+    )
+    _require(
+        signed.get("source_manifest")
+        == {
+            "artifact_sha256": source_manifest_artifact_sha256,
+            "canonical_sha256": source_manifest_sha256,
+        },
+        "signed_confirmatory_advice_manifest_binding_invalid",
+        failures,
+    )
+    _require(
+        signed.get("authorization")
+        == {
+            "authorization_id": authorization_id,
+            "statement_sha256": authorization_statement_sha256,
+        },
+        "signed_confirmatory_advice_authorization_invalid",
+        failures,
+    )
+    for field in (
+        "advice_id",
+        "source_binding",
+        "mentor",
+        "recipient",
+        "task",
+        "advice",
+        "leakage_guard",
+        "measurement_boundary",
+    ):
+        _require(
+            signed.get(field) == candidate.get(field),
+            f"signed_confirmatory_advice_{field}_invalid",
+            failures,
+        )
+    _require(
+        signed.get("mentor", {}).get("mentor_did")
+        == mentor_identity.get("mentor", {}).get("did")
+        and signed.get("mentor", {}).get("public_key_sha256")
+        == mentor_identity.get("mentor", {}).get("public_key_sha256"),
+        "signed_confirmatory_advice_mentor_identity_invalid",
+        failures,
+    )
+    _require(
+        signed.get("execution_boundary") == SIGNED_ADVICE_BOUNDARY,
+        "signed_confirmatory_advice_execution_boundary_invalid",
+        failures,
+    )
+    signature = (
+        signed.get("signature") if isinstance(signed.get("signature"), dict) else {}
+    )
+    payload = _signature_payload(signed)
+    signature_hex = str(signature.get("signature_hex") or "")
+    _require(
+        set(signature) == {"algorithm", "signed_payload_sha256", "signature_hex"}
+        and signature.get("algorithm") == "ed25519"
+        and signature.get("signed_payload_sha256")
+        == hashlib.sha256(payload).hexdigest()
+        and _hex_bytes(signature_hex, 64),
+        "signed_confirmatory_advice_signature_invalid",
+        failures,
+    )
+    try:
+        VerifyKey(
+            bytes.fromhex(str(mentor_identity.get("mentor", {}).get("public_key_hex")))
+        ).verify(payload, bytes.fromhex(signature_hex))
+    except (BadSignatureError, ValueError, TypeError, AttributeError):
+        _require(
+            False,
+            "signed_confirmatory_advice_signature_unverified",
+            failures,
+        )
+    body = {key: item for key, item in signed.items() if key != "signed_advice_sha256"}
+    _require(
+        signed.get("signed_advice_sha256") == canonical_sha256(body),
+        "signed_confirmatory_advice_hash_invalid",
+        failures,
+    )
+    return list(dict.fromkeys(failures))
+
+
 def authorization_statement(manifest: dict[str, Any], manifest_raw_sha256: str) -> str:
     source = manifest["source_binding"]
     mentor = manifest["mentor"]
@@ -313,3 +558,24 @@ def _rfc3339(value: Any) -> bool:
 def _require(condition: bool, failure: str, failures: list[str]) -> None:
     if not condition:
         failures.append(failure)
+
+
+def _signature_payload(value: dict[str, Any]) -> bytes:
+    unsigned = {
+        key: item
+        for key, item in value.items()
+        if key not in {"signature", "signed_advice_sha256"}
+    }
+    return json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+
+
+def _hex_bytes(value: str, size: int) -> bool:
+    try:
+        return len(bytes.fromhex(value)) == size
+    except ValueError:
+        return False

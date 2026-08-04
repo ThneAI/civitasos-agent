@@ -3,16 +3,28 @@ from __future__ import annotations
 import copy
 import hashlib
 
+from nacl.signing import SigningKey
+
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_outcome_sensitive_confirmatory_treatment_advice import (
     CANDIDATE_BOUNDARY,
     authorization_statement,
     build_advice_candidate,
+    build_signed_advice,
     validate_advice_candidate,
+    validate_signed_advice,
 )
 
 
 NOW = "2026-08-04T12:00:00+08:00"
+SIGNING_KEY = SigningKey(b"\x01" * 32)
+
+
+class _Signer:
+    public_key_hex = SIGNING_KEY.verify_key.encode().hex()
+
+    def sign(self, payload: bytes) -> bytes:
+        return SIGNING_KEY.sign(payload).signature
 
 
 def _inputs() -> tuple[dict, ...]:
@@ -28,6 +40,7 @@ def _inputs() -> tuple[dict, ...]:
             "did": "did:civ:mentor:test",
             "credential_version": 1,
             "public_key_sha256": "7" * 64,
+            "public_key_hex": SIGNING_KEY.verify_key.encode().hex(),
         },
     }
     assignment = {
@@ -163,3 +176,68 @@ def test_authorization_is_exact_new_non_executable_scope() -> None:
     assert "does not authorize infrastructure changes" in statement
     assert "r4 reanalysis" in statement
     assert hashlib.sha256(statement.encode()).hexdigest()
+
+
+def test_signed_advice_preserves_measurement_boundary_and_verifies() -> None:
+    candidate, inputs = _candidate()
+    signed = build_signed_advice(
+        candidate=candidate,
+        candidate_artifact_sha256="b" * 64,
+        source_manifest_artifact_sha256="c" * 64,
+        source_manifest_sha256="d" * 64,
+        authorization_id="authorization-1",
+        authorization_statement_sha256="e" * 64,
+        signed_at=NOW,
+        mentor_identity=inputs[5],
+        signer=_Signer(),
+    )
+
+    assert (
+        validate_signed_advice(
+            signed,
+            candidate=candidate,
+            candidate_artifact_sha256="b" * 64,
+            source_manifest_artifact_sha256="c" * 64,
+            source_manifest_sha256="d" * 64,
+            authorization_id="authorization-1",
+            authorization_statement_sha256="e" * 64,
+            mentor_identity=inputs[5],
+        )
+        == []
+    )
+    assert signed["measurement_boundary"] == candidate["measurement_boundary"]
+    assert signed["execution_boundary"]["r4_reanalysis_allowed"] is False
+
+
+def test_signed_advice_rejects_measurement_boundary_tamper() -> None:
+    candidate, inputs = _candidate()
+    signed = build_signed_advice(
+        candidate=candidate,
+        candidate_artifact_sha256="b" * 64,
+        source_manifest_artifact_sha256="c" * 64,
+        source_manifest_sha256="d" * 64,
+        authorization_id="authorization-1",
+        authorization_statement_sha256="e" * 64,
+        signed_at=NOW,
+        mentor_identity=inputs[5],
+        signer=_Signer(),
+    )
+    changed = copy.deepcopy(signed)
+    changed["measurement_boundary"]["advice_adherence_observed"] = True
+    changed["signed_advice_sha256"] = canonical_sha256(
+        {key: item for key, item in changed.items() if key != "signed_advice_sha256"}
+    )
+
+    failures = validate_signed_advice(
+        changed,
+        candidate=candidate,
+        candidate_artifact_sha256="b" * 64,
+        source_manifest_artifact_sha256="c" * 64,
+        source_manifest_sha256="d" * 64,
+        authorization_id="authorization-1",
+        authorization_statement_sha256="e" * 64,
+        mentor_identity=inputs[5],
+    )
+
+    assert "signed_confirmatory_advice_measurement_boundary_invalid" in failures
+    assert "signed_confirmatory_advice_signature_unverified" in failures
