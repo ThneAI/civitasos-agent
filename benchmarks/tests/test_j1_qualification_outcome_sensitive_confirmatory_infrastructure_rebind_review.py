@@ -4,17 +4,25 @@ import copy
 import hashlib
 import json
 
+from nacl.signing import SigningKey
+
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_outcome_sensitive_confirmatory_infrastructure_rebind import (
     REQUIRED_REVIEW_CHECKS,
 )
 from benchmarks.j1.qualification_outcome_sensitive_confirmatory_infrastructure_rebind_review import (
     APPROVAL_DECISION,
+    DECISION_BOUNDARY,
     EXECUTION_BOUNDARY,
+    PROMOTION_BOUNDARY,
     approval_review_declaration,
     build_review_decision_template,
+    build_review_receipt,
     build_review_request,
+    build_reviewed_infrastructure_rebind,
+    validate_review_receipt,
     validate_review_request,
+    validate_reviewed_infrastructure_rebind,
 )
 from benchmarks.tests.test_j1_qualification_outcome_sensitive_confirmatory_infrastructure_rebind import (
     _build,
@@ -27,6 +35,20 @@ PLAN_PATH = "/private/confirmatory-infrastructure-plan.json"
 PREFLIGHT_PATH = "/private/confirmatory-infrastructure-preflight.json"
 STATEMENT_SHA256 = "a" * 64
 IMPLEMENTATION = {"source_revision": "b" * 40, "source_sha256": "c" * 64}
+PROFILE_SHA256 = "e" * 64
+DECLARATION_SHA256 = "f" * 64
+
+
+class _Signer:
+    def __init__(self) -> None:
+        self._key = SigningKey.generate()
+
+    @property
+    def public_key_hex(self) -> str:
+        return self._key.verify_key.encode().hex()
+
+    def sign(self, message: bytes) -> bytes:
+        return self._key.sign(message).signature
 
 
 def _bundle() -> tuple[dict, bytes, dict, bytes, dict]:
@@ -138,3 +160,116 @@ def test_reviewer_declaration_binds_request_and_nonclaims() -> None:
     assert "It does not create, start, rename, or remove any container" in statement
     assert "reanalyze r4" in statement
     assert "infer advice adherence" in statement
+
+
+def _receipt() -> tuple[dict, dict]:
+    request = _bundle()[4]
+    signer = _Signer()
+    decision = {
+        "schema_version": (
+            "j1-qualification-outcome-sensitive-confirmatory-"
+            "infrastructure-rebind-review-decision:v1"
+        ),
+        "review_id": "confirmatory-infrastructure-review-r1",
+        "review_request_sha256": request["request_sha256"],
+        "decision": APPROVAL_DECISION,
+        "reviewed_at": NOW,
+        "reviewer": {
+            "did": "did:civ:testnet:reviewer",
+            "public_key_hex": signer.public_key_hex,
+            "credential_version": 1,
+            "signer_kind": "pkcs11_ed25519",
+            "custody_provenance_sha256": PROFILE_SHA256,
+            "signer_attestation_sha256": PROFILE_SHA256,
+        },
+        "independence": {
+            "conflicts_disclosed": True,
+            "independent_from_runner_and_candidate_authoring": True,
+            "human_review_completed": True,
+        },
+        "checklist": {check: True for check in sorted(REQUIRED_REVIEW_CHECKS)},
+        "execution_boundary": DECISION_BOUNDARY,
+    }
+    receipt = build_review_receipt(
+        request=request,
+        decision=decision,
+        review_declaration_sha256=DECLARATION_SHA256,
+        reviewer_profile_sha256=PROFILE_SHA256,
+        implementation=IMPLEMENTATION,
+        signer=signer,
+    )
+    return request, receipt
+
+
+def test_signed_receipt_verifies_exact_scope_and_signature() -> None:
+    request, receipt = _receipt()
+
+    assert (
+        validate_review_receipt(
+            receipt,
+            request=request,
+            expected_review_declaration_sha256=DECLARATION_SHA256,
+            expected_reviewer_profile_sha256=PROFILE_SHA256,
+            expected_implementation=IMPLEMENTATION,
+        )
+        == []
+    )
+    assert receipt["execution_boundary"]["r4_reanalysis_performed"] is False
+    assert receipt["execution_boundary"]["advice_adherence_observed"] is False
+
+
+def test_signed_receipt_rejects_scope_tamper() -> None:
+    request, receipt = _receipt()
+    changed = copy.deepcopy(receipt)
+    changed["review_scope"]["inventory"]["total_decision_count"] = 479
+
+    failures = validate_review_receipt(
+        changed,
+        request=request,
+        expected_review_declaration_sha256=DECLARATION_SHA256,
+        expected_reviewer_profile_sha256=PROFILE_SHA256,
+        expected_implementation=IMPLEMENTATION,
+    )
+
+    assert "confirmatory_infrastructure_review_receipt_scope_invalid" in failures
+    assert "confirmatory_infrastructure_review_signature_invalid" in failures
+
+
+def test_promotion_is_copy_on_write_and_preserves_non_effect_boundaries() -> None:
+    _, receipt = _receipt()
+    candidate = _bundle()[0]
+    original = copy.deepcopy(candidate)
+    reviewed = build_reviewed_infrastructure_rebind(
+        candidate=candidate,
+        receipt=receipt,
+        receipt_artifact_sha256="1" * 64,
+    )
+
+    assert candidate == original
+    assert reviewed["execution_boundary"] == PROMOTION_BOUNDARY
+    assert reviewed["execution_boundary"]["infrastructure_promoted"] is True
+    assert reviewed["execution_boundary"]["participant_container_created"] is False
+    assert reviewed["execution_boundary"]["r4_reanalysis_performed"] is False
+    assert reviewed["execution_boundary"]["advice_adherence_observed"] is False
+    assert (
+        validate_reviewed_infrastructure_rebind(
+            reviewed,
+            candidate=candidate,
+            receipt=receipt,
+            receipt_artifact_sha256="1" * 64,
+        )
+        == []
+    )
+
+    changed = copy.deepcopy(reviewed)
+    changed["isolations"][0]["target_isolation"]["runtime_boundary"][
+        "network_mode"
+    ] = "bridge"
+    failures = validate_reviewed_infrastructure_rebind(
+        changed,
+        candidate=candidate,
+        receipt=receipt,
+        receipt_artifact_sha256="1" * 64,
+    )
+    assert "confirmatory_reviewed_infrastructure_hash_invalid" in failures
+    assert "confirmatory_reviewed_infrastructure_copy_on_write_invalid" in failures
