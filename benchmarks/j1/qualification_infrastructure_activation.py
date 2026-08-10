@@ -10,6 +10,13 @@ from .controlled_comparison import canonical_sha256
 
 ACTIVATION_SCHEMA = "j1-qualification-infrastructure-activation:v1"
 GATE_SCHEMA = "j1-qualification-infrastructure-activation-gate:v1"
+OUTCOME_SENSITIVE_REVIEWED_SCHEMAS = {
+    "j1-qualification-outcome-sensitive-infrastructure-rebind:operator-reviewed:v1",
+    (
+        "j1-qualification-outcome-sensitive-confirmatory-"
+        "infrastructure-rebind:operator-reviewed:v1"
+    ),
+}
 FORBIDDEN_ENVIRONMENT_NAMES = {
     "ANTHROPIC_API_KEY",
     "DEEPSEEK_API_KEY",
@@ -261,8 +268,10 @@ def validate_reviewed_activation_source(
     }
     gate_body = {key: item for key, item in gate.items() if key != "report_sha256"}
     schema = reviewed.get("schema_version")
-    outcome_sensitive = schema == (
-        "j1-qualification-outcome-sensitive-infrastructure-rebind:operator-reviewed:v1"
+    outcome_sensitive = schema in OUTCOME_SENSITIVE_REVIEWED_SCHEMAS
+    confirmatory = schema == (
+        "j1-qualification-outcome-sensitive-confirmatory-"
+        "infrastructure-rebind:operator-reviewed:v1"
     )
     _require(
         schema
@@ -270,6 +279,10 @@ def validate_reviewed_activation_source(
             "j1-qualification-infrastructure-rebind:operator-reviewed:v1",
             (
                 "j1-qualification-outcome-sensitive-"
+                "infrastructure-rebind:operator-reviewed:v1"
+            ),
+            (
+                "j1-qualification-outcome-sensitive-confirmatory-"
                 "infrastructure-rebind:operator-reviewed:v1"
             ),
         }
@@ -280,15 +293,21 @@ def validate_reviewed_activation_source(
         "activation_reviewed_artifact_invalid",
         failures,
     )
-    expected_gate_state = (
-        "outcome_sensitive_infrastructure_artifact_promoted_"
-        "replacement_container_authorization_required"
-        if outcome_sensitive
-        else (
+    if confirmatory:
+        expected_gate_state = (
+            "confirmatory_infrastructure_artifact_promoted_"
+            "replacement_container_authorization_required"
+        )
+    elif outcome_sensitive:
+        expected_gate_state = (
+            "outcome_sensitive_infrastructure_artifact_promoted_"
+            "replacement_container_authorization_required"
+        )
+    else:
+        expected_gate_state = (
             "infrastructure_artifact_promoted_"
             "replacement_container_authorization_required"
         )
-    )
     _require(
         gate.get("passed") is True
         and gate.get("failure_reasons") == []

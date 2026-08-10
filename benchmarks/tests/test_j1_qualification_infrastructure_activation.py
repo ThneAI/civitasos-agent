@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import benchmarks.j1_qualification_infrastructure_activate as activation_operation
+import benchmarks.j1_qualification_infrastructure_activation_preflight as activation_preflight
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_infrastructure_activation import (
     creation_authorization_statement,
@@ -256,6 +257,53 @@ def test_activation_source_accepts_outcome_sensitive_promoted_gate() -> None:
     )
 
 
+def test_activation_source_accepts_confirmatory_promoted_gate() -> None:
+    reviewed = {
+        "schema_version": (
+            "j1-qualification-outcome-sensitive-confirmatory-"
+            "infrastructure-rebind:operator-reviewed:v1"
+        ),
+        "status": "operator_reviewed",
+        "isolations": [
+            {"participant_id": f"participant-{index}"} for index in range(40)
+        ],
+    }
+    reviewed["reviewed_infrastructure_rebind_sha256"] = canonical_sha256(reviewed)
+    reviewed_raw = json.dumps(reviewed, sort_keys=True).encode()
+    gate = {
+        "passed": True,
+        "failure_reasons": [],
+        "state": (
+            "confirmatory_infrastructure_artifact_promoted_"
+            "replacement_container_authorization_required"
+        ),
+        "reviewed_artifact": {
+            "sha256": hashlib.sha256(reviewed_raw).hexdigest(),
+            "canonical_sha256": reviewed["reviewed_infrastructure_rebind_sha256"],
+        },
+        "readiness": {
+            "participant_containers_created": 0,
+            "participant_containers_started": 0,
+        },
+        "disk_safety": {
+            "historical_container_cleanup_authorized": False,
+            "implicit_container_prune_authorized": False,
+            "implicit_image_prune_authorized": False,
+            "source_container_removal_authorized": False,
+        },
+    }
+    gate["report_sha256"] = canonical_sha256(gate)
+
+    assert (
+        validate_reviewed_activation_source(
+            reviewed=reviewed,
+            reviewed_raw=reviewed_raw,
+            gate=gate,
+        )
+        == []
+    )
+
+
 def test_activation_selects_runner_validator_from_reviewed_schema() -> None:
     implementation = {
         "source_revision": "a" * 40,
@@ -304,6 +352,12 @@ def test_activation_selects_runner_validator_from_reviewed_schema() -> None:
             "infrastructure-rebind:operator-reviewed:v1"
         )
     }
+    confirmatory_reviewed = {
+        "schema_version": (
+            "j1-qualification-outcome-sensitive-confirmatory-"
+            "infrastructure-rebind:operator-reviewed:v1"
+        )
+    }
     participant_reviewed = {
         "schema_version": (
             "j1-qualification-infrastructure-rebind:operator-reviewed:v1"
@@ -314,6 +368,13 @@ def test_activation_selects_runner_validator_from_reviewed_schema() -> None:
         activation_operation._validate_runner_manifest_for_activation(
             runner_manifest=outcome_manifest,
             reviewed=outcome_reviewed,
+        )
+        == []
+    )
+    assert (
+        activation_operation._validate_runner_manifest_for_activation(
+            runner_manifest=outcome_manifest,
+            reviewed=confirmatory_reviewed,
         )
         == []
     )
@@ -338,6 +399,123 @@ def test_activation_selects_runner_validator_from_reviewed_schema() -> None:
         )
         == ["activation_participant_runner_manifest_schema_invalid"]
     )
+
+
+def test_activation_preflight_freezes_statement_without_container_effects(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target_root = tmp_path / "target-state"
+    isolations = [
+        {
+            "participant_id": f"participant-{index:02d}",
+            "cohort": "mentor" if index < 20 else "control",
+            "target_isolation": {
+                "container_name": f"target-{index:02d}",
+                "input_root": str(target_root / f"participant-{index:02d}" / "input"),
+                "output_root": str(
+                    target_root / f"participant-{index:02d}" / "output"
+                ),
+            },
+        }
+        for index in range(40)
+    ]
+    runner = {"manifest_sha256": "f" * 64, "image": {"image_id": "sha256:image"}}
+    runner_path = tmp_path / "runner.json"
+    _write_private(runner_path, runner)
+    reviewed = {
+        "schema_version": (
+            "j1-qualification-outcome-sensitive-confirmatory-"
+            "infrastructure-rebind:operator-reviewed:v1"
+        ),
+        "status": "operator_reviewed",
+        "source_binding": {
+            "runner_manifest": {
+                "sha256": hashlib.sha256(runner_path.read_bytes()).hexdigest()
+            }
+        },
+        "runner_image": {
+            "manifest_sha256": runner["manifest_sha256"],
+            "image_id": "sha256:image",
+        },
+        "isolations": isolations,
+    }
+    reviewed["reviewed_infrastructure_rebind_sha256"] = canonical_sha256(reviewed)
+    reviewed_path = tmp_path / "reviewed.json"
+    _write_private(reviewed_path, reviewed)
+    gate = {
+        "passed": True,
+        "failure_reasons": [],
+        "state": (
+            "confirmatory_infrastructure_artifact_promoted_"
+            "replacement_container_authorization_required"
+        ),
+        "reviewed_artifact": {
+            "sha256": hashlib.sha256(reviewed_path.read_bytes()).hexdigest(),
+            "canonical_sha256": reviewed["reviewed_infrastructure_rebind_sha256"],
+        },
+        "readiness": {
+            "participant_containers_created": 0,
+            "participant_containers_started": 0,
+        },
+        "disk_safety": {
+            "historical_container_cleanup_authorized": False,
+            "implicit_container_prune_authorized": False,
+            "implicit_image_prune_authorized": False,
+            "source_container_removal_authorized": False,
+        },
+    }
+    gate["report_sha256"] = canonical_sha256(gate)
+    gate_path = tmp_path / "gate.json"
+    _write_private(gate_path, gate)
+    monkeypatch.setattr(activation_preflight, "_validate_runner_binding", lambda **_: None)
+    monkeypatch.setattr(activation_preflight, "_validate_runner_image_local", lambda _: None)
+    monkeypatch.setattr(
+        activation_preflight, "_validate_outcome_source_containers", lambda _: None
+    )
+    monkeypatch.setattr(activation_preflight, "_require_targets_absent", lambda **_: None)
+    monkeypatch.setattr(activation_preflight, "_validate_target_paths", lambda _: None)
+    monkeypatch.setattr(
+        activation_preflight,
+        "_docker_census",
+        lambda: {
+            "historical_j1_container_count": 240,
+            "running_count": 0,
+            "cleanup_authorized": False,
+        },
+    )
+    monkeypatch.setattr(
+        activation_preflight,
+        "_implementation",
+        lambda _: {"source_revision": "a" * 40, "source_sha256": "b" * 64},
+    )
+    output_root = tmp_path / "preflight"
+
+    report = activation_preflight.prepare_activation_preflight(
+        preflight_id="confirmatory-create-preflight-r1",
+        created_at="2026-08-11T12:00:00+08:00",
+        reviewed_artifact_path=reviewed_path,
+        promotion_gate_path=gate_path,
+        runner_manifest_path=runner_path,
+        repository_root=tmp_path,
+        output_root=output_root,
+    )
+
+    assert report["passed"] is True
+    assert report["inventory"]["participant_count"] == 40
+    assert report["readiness"]["replacement_container_creation_authorized"] is False
+    assert report["execution_boundary"]["participant_container_created"] is False
+    assert "exactly 40 stopped replacement containers" in report[
+        "approval_request"
+    ]["required_exact_statement"]
+    assert not target_root.exists()
+    artifact = output_root / "infrastructure-activation-authorization-preflight.json"
+    assert artifact.is_file()
+    assert artifact.stat().st_mode & 0o077 == 0
+
+
+def _write_private(path: Path, value: dict) -> None:
+    path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+    path.chmod(0o600)
 
 
 def test_rollback_removes_only_recorded_ids_and_empty_created_directories(

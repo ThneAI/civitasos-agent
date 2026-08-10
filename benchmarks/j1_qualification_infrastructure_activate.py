@@ -16,6 +16,7 @@ from benchmarks.j1.qualification_infrastructure_activation import (
     ACTIVATION_BOUNDARY,
     ACTIVATION_SCHEMA,
     GATE_SCHEMA,
+    OUTCOME_SENSITIVE_REVIEWED_SCHEMAS,
     creation_authorization_statement,
     docker_create_command,
     inspect_projection,
@@ -318,9 +319,7 @@ def _validate_target_paths(isolations: list[dict[str, Any]]) -> None:
 
 
 def _validate_outcome_source_containers(reviewed: dict[str, Any]) -> None:
-    if reviewed.get("schema_version") != (
-        "j1-qualification-outcome-sensitive-infrastructure-rebind:operator-reviewed:v1"
-    ):
+    if reviewed.get("schema_version") not in OUTCOME_SENSITIVE_REVIEWED_SCHEMAS:
         return
     source_binding = reviewed["source_binding"]
     parent_activation, _ = _read_private(
@@ -347,10 +346,7 @@ def _validate_runner_manifest_for_activation(
     reviewed: dict[str, Any],
 ) -> list[str]:
     expected_implementation = runner_manifest.get("implementation", {})
-    if reviewed.get("schema_version") == (
-        "j1-qualification-outcome-sensitive-infrastructure-rebind:"
-        "operator-reviewed:v1"
-    ):
+    if reviewed.get("schema_version") in OUTCOME_SENSITIVE_REVIEWED_SCHEMAS:
         if (
             runner_manifest.get("schema_version")
             != OUTCOME_SENSITIVE_RUNNER_MANIFEST_SCHEMA
