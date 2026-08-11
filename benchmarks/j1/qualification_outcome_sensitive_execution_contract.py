@@ -89,6 +89,9 @@ def build_execution_contract(
     provider_admission_receipt: dict[str, Any],
     provider_admission_gate: dict[str, Any],
     implementation: dict[str, str],
+    contract_schema: str = CONTRACT_SCHEMA,
+    required_source_names: set[str] | None = None,
+    execution_boundary: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
     """Build a 480-task contract without exposing fixture ground truth."""
     executions = _task_executions(
@@ -100,7 +103,7 @@ def build_execution_contract(
         design=design,
     )
     value = {
-        "schema_version": CONTRACT_SCHEMA,
+        "schema_version": contract_schema,
         "contract_id": contract_id,
         "status": "independent_review_required",
         "created_at": created_at,
@@ -147,7 +150,9 @@ def build_execution_contract(
             ),
         },
         "implementation": copy.deepcopy(implementation),
-        "execution_boundary": copy.deepcopy(EXECUTION_BOUNDARY),
+        "execution_boundary": copy.deepcopy(
+            EXECUTION_BOUNDARY if execution_boundary is None else execution_boundary
+        ),
     }
     value["contract_sha256"] = canonical_sha256(value)
     failures = validate_execution_contract(
@@ -164,6 +169,9 @@ def build_execution_contract(
         provider_admission_gate=provider_admission_gate,
         expected_source_artifacts=source_artifacts,
         expected_implementation=implementation,
+        contract_schema=contract_schema,
+        required_source_names=required_source_names,
+        expected_execution_boundary=execution_boundary,
     )
     if failures:
         raise ValueError(f"outcome-sensitive execution contract invalid: {failures}")
@@ -185,11 +193,17 @@ def validate_execution_contract(
     provider_admission_gate: dict[str, Any],
     expected_source_artifacts: dict[str, dict[str, str]],
     expected_implementation: dict[str, str],
+    contract_schema: str = CONTRACT_SCHEMA,
+    required_source_names: set[str] | None = None,
+    expected_execution_boundary: dict[str, bool] | None = None,
 ) -> list[str]:
     contract = value if isinstance(value, dict) else {}
+    source_names = (
+        SOURCE_NAMES if required_source_names is None else required_source_names
+    )
     failures: list[str] = []
     _require(
-        contract.get("schema_version") == CONTRACT_SCHEMA
+        contract.get("schema_version") == contract_schema
         and contract.get("status") == "independent_review_required"
         and _text(contract.get("contract_id"))
         and _rfc3339(contract.get("created_at")),
@@ -198,7 +212,7 @@ def validate_execution_contract(
     )
     _require(
         contract.get("source_artifacts") == expected_source_artifacts
-        and set(expected_source_artifacts) == SOURCE_NAMES
+        and set(expected_source_artifacts) == source_names
         and all(_artifact_ref(item) for item in expected_source_artifacts.values()),
         "outcome_execution_contract_sources_invalid",
         failures,
@@ -252,9 +266,7 @@ def validate_execution_contract(
     )
     _require(
         len(advice_index) == 180
-        and signed_advice_manifest.get("inventory", {}).get(
-            "signed_advice_count", 180
-        )
+        and signed_advice_manifest.get("inventory", {}).get("signed_advice_count", 180)
         == 180,
         "outcome_execution_advice_inventory_invalid",
         failures,
@@ -262,10 +274,8 @@ def validate_execution_contract(
     _require(
         len(container_index) == PARTICIPANT_COUNT
         and set(container_index) == assigned_participants
-        and activation.get("inventory", {}).get("container_created_count", 40)
-        == 40
-        and activation.get("inventory", {}).get("container_started_count", 0)
-        == 0
+        and activation.get("inventory", {}).get("container_created_count", 40) == 40
+        and activation.get("inventory", {}).get("container_started_count", 0) == 0
         and all(
             item.get("container", {}).get("state", {}).get("status", "created")
             == "created"
@@ -299,9 +309,7 @@ def validate_execution_contract(
         "outcome_execution_task_manifest_invalid",
         failures,
     )
-    advice_modes = [
-        item.get("advice", {}).get("mode") for item in expected_executions
-    ]
+    advice_modes = [item.get("advice", {}).get("mode") for item in expected_executions]
     _require(
         advice_modes.count("mentor_signed") == 180
         and advice_modes.count("baseline_empty") == 60
@@ -381,7 +389,12 @@ def validate_execution_contract(
         failures,
     )
     _require(
-        contract.get("execution_boundary") == EXECUTION_BOUNDARY,
+        contract.get("execution_boundary")
+        == (
+            EXECUTION_BOUNDARY
+            if expected_execution_boundary is None
+            else expected_execution_boundary
+        ),
         "outcome_execution_boundary_invalid",
         failures,
     )
@@ -545,9 +558,7 @@ def _expected_scope(design: dict[str, Any]) -> dict[str, Any]:
         "provider_id": provider.get("provider_id"),
         "model_id": provider.get("model_id"),
         "temperature": provider.get("temperature"),
-        "aggregate_reserved_tokens": (
-            TASK_EXECUTION_COUNT * RESERVED_TOKENS_PER_CALL
-        ),
+        "aggregate_reserved_tokens": (TASK_EXECUTION_COUNT * RESERVED_TOKENS_PER_CALL),
         "aggregate_reserved_cost_microunits": (
             TASK_EXECUTION_COUNT * RESERVED_COST_PER_CALL
         ),
@@ -567,9 +578,7 @@ def _state_machine() -> dict[str, Any]:
                 "task_failed_before_dispatch",
                 "task_aborted_before_dispatch",
             ],
-            "dispatch_intent_without_committed_response": [
-                "provider_outcome_unknown"
-            ],
+            "dispatch_intent_without_committed_response": ["provider_outcome_unknown"],
             "committed_response_before_task_commit": ["task_failed_after_response"],
         },
         "automatic_retry_allowed": False,
@@ -621,9 +630,7 @@ def _budget_contract() -> dict[str, Any]:
         "reserve_before_dispatch_intent": True,
         "reservation_tokens_per_call": RESERVED_TOKENS_PER_CALL,
         "reservation_cost_microunits_per_call": RESERVED_COST_PER_CALL,
-        "aggregate_reserved_tokens": (
-            TASK_EXECUTION_COUNT * RESERVED_TOKENS_PER_CALL
-        ),
+        "aggregate_reserved_tokens": (TASK_EXECUTION_COUNT * RESERVED_TOKENS_PER_CALL),
         "aggregate_reserved_cost_microunits": (
             TASK_EXECUTION_COUNT * RESERVED_COST_PER_CALL
         ),

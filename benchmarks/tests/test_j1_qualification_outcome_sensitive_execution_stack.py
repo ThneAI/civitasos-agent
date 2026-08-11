@@ -17,6 +17,25 @@ from benchmarks.j1.qualification_outcome_sensitive_execution_authorization impor
     build_issuance_gate,
     validate_authorization,
 )
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_contract import (
+    SOURCE_NAMES as CONFIRMATORY_SOURCE_NAMES,
+    build_confirmatory_execution_contract,
+    validate_confirmatory_execution_contract,
+)
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_review import (
+    REVIEW_CHECKLIST as CONFIRMATORY_REVIEW_CHECKLIST,
+    build_confirmatory_review_bundle,
+    build_confirmatory_review_request,
+    reviewer_approval_statement as confirmatory_reviewer_approval_statement,
+)
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_fault_matrix import (
+    REPORT_SCHEMA as CONFIRMATORY_FAULT_SCHEMA,
+    run_fault_matrix as run_confirmatory_fault_matrix,
+)
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_orchestrator import (
+    REPORT_SCHEMA as CONFIRMATORY_OFFLINE_SCHEMA,
+    run_offline_orchestrator as run_confirmatory_offline_orchestrator,
+)
 from benchmarks.j1.qualification_outcome_sensitive_fault_matrix import (
     REPORT_SCHEMA as FAULT_SCHEMA,
     run_fault_matrix,
@@ -131,9 +150,7 @@ def _materials() -> dict[str, Any]:
                             "advice_id": f"advice-{participant_id}-{ordinal}",
                             "path": f"/private/{participant_id}-{ordinal}.json",
                             "sha256": f"{ordinal + pair_number:064x}",
-                            "canonical_sha256": (
-                                f"{ordinal + pair_number + 50:064x}"
-                            ),
+                            "canonical_sha256": (f"{ordinal + pair_number + 50:064x}"),
                         }
                     )
         pair["rebind_commitment_sha256"] = canonical_sha256(pair)
@@ -235,6 +252,85 @@ def _contract() -> tuple[dict[str, Any], dict[str, Any]]:
     return contract, materials
 
 
+def _confirmatory_contract() -> tuple[dict[str, Any], dict[str, Any]]:
+    materials = _materials()
+    materials["source_artifacts"] = {
+        name: {
+            "path": f"/private/{name}.json",
+            "sha256": "d" * 64,
+            "canonical_sha256": "e" * 64,
+        }
+        for name in CONFIRMATORY_SOURCE_NAMES
+    }
+    method = {
+        "schema_version": "j1-outcome-sensitive-confirmatory-method:v1",
+        "method_sha256": "3" * 64,
+        "test": {
+            "name": "exact_matched_pair_sign_flip_randomization_test",
+            "assignment_count": 1_048_576,
+            "numeric_representation": "exact_rational_no_binary_float",
+            "zero_pair_effects": "retained_and_sign_invariant",
+            "tail_ties": "included",
+        },
+        "multiplicity": {
+            "method": "holm_step_down",
+            "familywise_alpha": {"numerator": 1, "denominator": 20},
+            "equal_p_value_tie_order": [
+                "strategy_maturity_time",
+                "repeated_error_rate",
+            ],
+        },
+        "missingness_and_censoring": {
+            "all_20_complete_pairs_required": True,
+            "all_480_terminal_task_evidence_required": True,
+            "outcome_imputation_for_claim_allowed": False,
+        },
+        "claim_gate": {
+            "both_holm_adjusted_endpoints_must_reject": True,
+        },
+        "measurement_boundary": {
+            "advice_adherence_observed": False,
+            "advice_adherence_change_deferred_to_separate_protocol_schema_review": (
+                True
+            ),
+        },
+    }
+    gates = {
+        name: {"passed": True, "report_sha256": f"{index:x}" * 64}
+        for index, name in enumerate(
+            (
+                "confirmatory_promotion_gate",
+                "consent_gate",
+                "roster_assignment_gate",
+                "mentor_advice_gate",
+                "activation_gate",
+            ),
+            start=4,
+        )
+    }
+    contract = build_confirmatory_execution_contract(
+        contract_id="confirmatory-contract-test",
+        created_at="2026-08-12T00:00:00+00:00",
+        protocol=materials["protocol"],
+        design=materials["design"],
+        evaluator=materials["evaluator"],
+        task_fixture=materials["task_fixture"],
+        roster=materials["roster"],
+        assignment=materials["assignment"],
+        signed_advice_manifest=materials["signed_advice_manifest"],
+        activation=materials["activation"],
+        provider_admission_receipt=materials["provider_admission_receipt"],
+        provider_admission_gate=materials["provider_admission_gate"],
+        confirmatory_method=method,
+        implementation=materials["implementation"],
+        source_artifacts=materials["source_artifacts"],
+        **gates,
+    )
+    materials["confirmatory_method"] = method
+    materials.update(gates)
+    return contract, materials
+
+
 def test_contract_source_inventory_covers_provider_admission_v2() -> None:
     assert set(PROVIDER_ADMISSION_SOURCE_FIELDS) < SOURCE_NAMES
     assert SOURCE_NAMES - set(PROVIDER_ADMISSION_SOURCE_FIELDS) == {
@@ -259,13 +355,50 @@ def test_contract_builds_exact_private_480_task_manifest() -> None:
     assert contract["scope"]["task_execution_count"] == 480
     assert contract["scope"]["aggregate_reserved_tokens"] == 1_200_000
     assert contract["scope"]["aggregate_reserved_cost_microunits"] == 731_040
-    assert sum(
-        item["advice"]["mode"] == "mentor_signed"
-        for item in contract["task_executions"]
-    ) == 180
+    assert (
+        sum(
+            item["advice"]["mode"] == "mentor_signed"
+            for item in contract["task_executions"]
+        )
+        == 180
+    )
     assert all(
         "ground_truth" not in item["task"] for item in contract["task_executions"]
     )
+
+
+def test_confirmatory_contract_binds_exact_method_and_31_sources() -> None:
+    contract, materials = _confirmatory_contract()
+    validation = {
+        key: value
+        for key, value in materials.items()
+        if key not in {"source_artifacts", "implementation"}
+    }
+    validation["expected_source_artifacts"] = materials["source_artifacts"]
+    validation["expected_implementation"] = materials["implementation"]
+    assert validate_confirmatory_execution_contract(contract, **validation) == []
+    assert len(contract["source_artifacts"]) == 31
+    assert contract["scope"]["task_execution_count"] == 480
+    method = contract["confirmatory_method_binding"]
+    assert method["test"]["assignment_count"] == 1_048_576
+    assert method["multiplicity"]["method"] == "holm_step_down"
+    assert method["prior_run_reanalysis_allowed"] is False
+    assert method["advice_adherence_inference_allowed"] is False
+
+
+def test_confirmatory_contract_rejects_method_drift() -> None:
+    contract, materials = _confirmatory_contract()
+    materials["confirmatory_method"]["test"]["assignment_count"] = 10
+    validation = {
+        key: value
+        for key, value in materials.items()
+        if key not in {"source_artifacts", "implementation"}
+    }
+    validation["expected_source_artifacts"] = materials["source_artifacts"]
+    validation["expected_implementation"] = materials["implementation"]
+    failures = validate_confirmatory_execution_contract(contract, **validation)
+    assert "confirmatory_execution_method_binding_invalid" in failures
+    assert "confirmatory_execution_exact_method_invalid" in failures
 
 
 def test_offline_orchestrator_emits_structured_observations(
@@ -292,6 +425,29 @@ def test_outcome_fault_matrix_uses_structured_adapter(tmp_path: Path) -> None:
     assert report["schema_version"] == FAULT_SCHEMA
     assert report["passed"] is True
     assert report["scenario_count"] == 8
+
+
+def test_confirmatory_offline_recovery_and_fault_matrix(tmp_path: Path) -> None:
+    contract, _ = _confirmatory_contract()
+    offline = run_confirmatory_offline_orchestrator(
+        contract=contract,
+        run_id="confirmatory-offline-test",
+        root=tmp_path / "offline",
+        task_limit=2,
+    )
+    assert offline["schema_version"] == CONFIRMATORY_OFFLINE_SCHEMA
+    assert offline["journal"]["task_states"] == {"task_committed": 2}
+    assert (
+        offline["confirmatory_method_binding"]["prior_run_reanalysis_performed"]
+        is False
+    )
+    fault = run_confirmatory_fault_matrix(
+        contract=contract,
+        root=tmp_path / "faults",
+    )
+    assert fault["schema_version"] == CONFIRMATORY_FAULT_SCHEMA
+    assert fault["passed"] is True
+    assert fault["scenario_count"] == 8
 
 
 def test_review_bundle_freezes_480_task_evidence() -> None:
@@ -359,10 +515,83 @@ def test_review_bundle_freezes_480_task_evidence() -> None:
         bundle=bundle,
     )
     assert bundle["review_checklist"] == REVIEW_CHECKLIST
-    assert request["allowed_decision"] == (
-        "approve_outcome_sensitive_execution_stack"
-    )
+    assert request["allowed_decision"] == ("approve_outcome_sensitive_execution_stack")
     assert "full 480-task offline recovery evidence" in statement
+
+
+def test_confirmatory_review_bundle_freezes_method_and_boundaries() -> None:
+    contract, _ = _confirmatory_contract()
+    artifact = {
+        "path": "/private/artifact.json",
+        "sha256": "3" * 64,
+        "canonical_sha256": "4" * 64,
+    }
+    offline = {
+        "status": "complete",
+        "journal": {
+            "task_states": {"task_committed": 480},
+            "budget_states": {"reconciled": 480},
+            "event_count": 5760,
+        },
+        "offline_scope": {
+            "provider_call_count": 480,
+            "participant_signature_count": 480,
+        },
+        "validation_failures": [],
+    }
+    fault = {
+        "passed": True,
+        "scenario_count": 8,
+        "results": [{"scenario": f"fault-{index}"} for index in range(8)],
+    }
+    bundle = build_confirmatory_review_bundle(
+        bundle_id="confirmatory-review-test",
+        created_at="2026-08-12T00:00:00+00:00",
+        artifacts={
+            name: artifact
+            for name in (
+                "execution_contract",
+                "offline_orchestrator_report",
+                "offline_execution_journal",
+                "fault_matrix_report",
+            )
+        },
+        contract=contract,
+        offline_report=offline,
+        fault_report=fault,
+        source_implementation={"source_files": {}},
+        verification={
+            "ruff_all_passed": True,
+            "pytest_all_passed": True,
+            "pytest_passed_count": 1,
+            "journal_artifact_hash_recomputed": True,
+            "remote_revision_verified": True,
+            "all_source_hashes_replayed": True,
+        },
+        inventory_snapshot={
+            "participant_count": 40,
+            "created_count": 40,
+            "running_count": 0,
+        },
+    )
+    request = build_confirmatory_review_request(
+        request_id="confirmatory-request-test",
+        created_at="2026-08-12T00:00:00+00:00",
+        bundle_path="/private/bundle.json",
+        bundle_raw_sha256="5" * 64,
+        bundle=bundle,
+    )
+    statement = confirmatory_reviewer_approval_statement(
+        request_raw_sha256="6" * 64,
+        bundle_raw_sha256="5" * 64,
+        bundle=bundle,
+    )
+    assert bundle["review_checklist"] == CONFIRMATORY_REVIEW_CHECKLIST
+    assert request["allowed_decision"] == (
+        "approve_outcome_sensitive_prospective_confirmatory_execution_stack"
+    )
+    assert "exact paired method" in statement
+    assert "r4 remains immutable" in statement
 
 
 class _Signer:
@@ -483,9 +712,7 @@ def test_outcome_preflight_binds_480_scope_and_private_materials(
     plan = build_execution_plan(
         run_id="outcome-run-test",
         created_at="2026-07-29T00:00:00+00:00",
-        source_artifacts={
-            name: source_ref for name in PREFLIGHT_SOURCE_NAMES
-        },
+        source_artifacts={name: source_ref for name in PREFLIGHT_SOURCE_NAMES},
         frozen_stack_sha256="3" * 64,
         contract_sha256="4" * 64,
         provider_receipt_sha256="5" * 64,
@@ -550,9 +777,7 @@ def test_outcome_preflight_binds_480_scope_and_private_materials(
     authorization = build_authorization(
         authorization_id="outcome-authorization-test",
         owner_authorization_id="outcome-owner-authorization-test",
-        owner_statement_sha256=preflight["owner_authorization"][
-            "statement_sha256"
-        ],
+        owner_statement_sha256=preflight["owner_authorization"]["statement_sha256"],
         issued_at="2026-07-29T00:00:00+00:00",
         plan_ref=plan_ref,
         preflight_ref=preflight_ref,
@@ -569,12 +794,10 @@ def test_outcome_preflight_binds_480_scope_and_private_materials(
             plan_ref=plan_ref,
             preflight_ref=preflight_ref,
             plan=plan,
-            expected_owner_authorization_id=(
-                "outcome-owner-authorization-test"
-            ),
-            expected_owner_statement_sha256=preflight[
-                "owner_authorization"
-            ]["statement_sha256"],
+            expected_owner_authorization_id=("outcome-owner-authorization-test"),
+            expected_owner_statement_sha256=preflight["owner_authorization"][
+                "statement_sha256"
+            ],
             expected_execution_manifest_sha256="1" * 64,
             expected_reviewer=reviewer,
             expected_reviewer_profile_sha256="2" * 64,
@@ -586,9 +809,7 @@ def test_outcome_preflight_binds_480_scope_and_private_materials(
     authorization_ref = {
         "path": "/private/authorization.json",
         "sha256": "3" * 64,
-        "canonical_sha256": authorization["signature"][
-            "signed_payload_sha256"
-        ],
+        "canonical_sha256": authorization["signature"]["signed_payload_sha256"],
     }
     inventory = {
         "participant_container_count": 40,
@@ -619,13 +840,12 @@ def test_outcome_preflight_binds_480_scope_and_private_materials(
     )
     assert gate["passed"] is True
     assert claim["readiness"]["atomic_claim_created"] is False
+    assert claim["execution_boundary"]["agent_or_task_execution_performed"] is False
     assert (
-        claim["execution_boundary"]["agent_or_task_execution_performed"]
-        is False
+        "480 direct behavior observations"
+        in claim["owner_authorization"]["required_exact_statement"]
     )
-    assert "480 direct behavior observations" in claim[
-        "owner_authorization"
-    ]["required_exact_statement"]
-    assert materials["material_binding_sha256"] in claim[
-        "owner_authorization"
-    ]["required_exact_statement"]
+    assert (
+        materials["material_binding_sha256"]
+        in claim["owner_authorization"]["required_exact_statement"]
+    )
