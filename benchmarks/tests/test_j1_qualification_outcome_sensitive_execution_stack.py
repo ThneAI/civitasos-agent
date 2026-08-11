@@ -28,6 +28,13 @@ from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_review
     build_confirmatory_review_request,
     reviewer_approval_statement as confirmatory_reviewer_approval_statement,
 )
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_promotion import (
+    READINESS as CONFIRMATORY_PROMOTION_READINESS,
+    build_confirmatory_frozen_stack,
+    build_signed_confirmatory_review_receipt,
+    validate_confirmatory_frozen_stack,
+    validate_signed_confirmatory_review_receipt,
+)
 from benchmarks.j1.qualification_outcome_sensitive_confirmatory_fault_matrix import (
     REPORT_SCHEMA as CONFIRMATORY_FAULT_SCHEMA,
     run_fault_matrix as run_confirmatory_fault_matrix,
@@ -678,6 +685,86 @@ def test_signed_review_receipt_and_frozen_stack_validate() -> None:
         implementation=implementation,
     )
     assert validate_frozen_stack(stack) == []
+
+
+def test_confirmatory_signed_review_receipt_and_frozen_stack_validate() -> None:
+    contract, _ = _confirmatory_contract()
+    signer = _Signer()
+    reviewer = {
+        "did": "did:civ:reviewer:confirmatory-test",
+        "public_key_hex": signer.public_key_hex,
+        "credential_version": 1,
+        "signer_kind": "pkcs11_ed25519",
+    }
+    reference = {
+        "path": "/private/confirmatory-artifact.json",
+        "sha256": "7" * 64,
+        "canonical_sha256": "8" * 64,
+    }
+    implementation = {
+        "source_revision": "9" * 40,
+        "domain_source_sha256": "a" * 64,
+        "operation_source_sha256": "b" * 64,
+    }
+    receipt = build_signed_confirmatory_review_receipt(
+        review_id="confirmatory-review-test",
+        reviewed_at="2026-08-12T00:00:00+00:00",
+        request_ref=reference,
+        bundle_ref=reference,
+        contract_sha256=contract["contract_sha256"],
+        approval_statement_sha256="d" * 64,
+        reviewer=reviewer,
+        reviewer_profile_sha256="e" * 64,
+        implementation=implementation,
+        signer=signer,
+    )
+    assert (
+        validate_signed_confirmatory_review_receipt(
+            receipt,
+            expected_request_ref=reference,
+            expected_bundle_ref=reference,
+            expected_contract_sha256=contract["contract_sha256"],
+            expected_approval_statement_sha256="d" * 64,
+            expected_reviewer=reviewer,
+            expected_reviewer_profile_sha256="e" * 64,
+            expected_implementation=implementation,
+        )
+        == []
+    )
+    frozen = build_confirmatory_frozen_stack(
+        frozen_id="confirmatory-frozen-test",
+        promoted_at="2026-08-12T00:00:00+00:00",
+        candidate_bundle_sha256="f" * 64,
+        review_receipt_ref=reference,
+        frozen_artifacts={
+            name: reference
+            for name in (
+                "execution_contract",
+                "offline_orchestrator_report",
+                "offline_execution_journal",
+                "fault_matrix_report",
+                "review_bundle",
+            )
+        },
+        provider_admission={
+            "status": "admitted",
+            "gate_passed": True,
+            "receipt_sha256": "1" * 64,
+            "gate_sha256": "2" * 64,
+        },
+        runtime_inventory={
+            "participant_count": 40,
+            "created_count": 40,
+            "running_count": 0,
+        },
+        confirmatory_method_binding=contract["confirmatory_method_binding"],
+        implementation=implementation,
+    )
+    assert validate_confirmatory_frozen_stack(frozen) == []
+    assert frozen["readiness"] == CONFIRMATORY_PROMOTION_READINESS
+    assert (
+        frozen["confirmatory_method_binding"]["prior_run_reanalysis_allowed"] is False
+    )
 
 
 def test_outcome_preflight_binds_480_scope_and_private_materials(

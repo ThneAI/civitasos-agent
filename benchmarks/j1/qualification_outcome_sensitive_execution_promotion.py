@@ -14,9 +14,7 @@ from .controlled_comparison import canonical_sha256
 from .qualification_outcome_sensitive_execution_review import REVIEW_CHECKLIST
 
 
-RECEIPT_SCHEMA = (
-    "j1-qualification-outcome-sensitive-signed-execution-review-receipt:v1"
-)
+RECEIPT_SCHEMA = "j1-qualification-outcome-sensitive-signed-execution-review-receipt:v1"
 FROZEN_SCHEMA = "j1-qualification-outcome-sensitive-frozen-execution-stack:v1"
 RECEIPT_BOUNDARY = {
     "independent_review_approved": True,
@@ -70,11 +68,17 @@ def build_signed_review_receipt(
     reviewer_profile_sha256: str,
     implementation: dict[str, str],
     signer: ReviewSigner,
+    receipt_schema: str = RECEIPT_SCHEMA,
+    decision: str = "approve_outcome_sensitive_execution_stack",
+    review_checklist: list[str] | None = None,
+    receipt_boundary: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
+    checklist = REVIEW_CHECKLIST if review_checklist is None else review_checklist
+    boundary = RECEIPT_BOUNDARY if receipt_boundary is None else receipt_boundary
     value = {
-        "schema_version": RECEIPT_SCHEMA,
+        "schema_version": receipt_schema,
         "review_id": review_id,
-        "decision": "approve_outcome_sensitive_execution_stack",
+        "decision": decision,
         "reviewed_at": reviewed_at,
         "request": copy.deepcopy(request_ref),
         "bundle": copy.deepcopy(bundle_ref),
@@ -92,9 +96,9 @@ def build_signed_review_receipt(
             "independent_from_candidate_authoring": True,
             "human_review_completed": True,
         },
-        "checklist": {name: True for name in REVIEW_CHECKLIST},
+        "checklist": {name: True for name in checklist},
         "implementation": copy.deepcopy(implementation),
-        "execution_boundary": copy.deepcopy(RECEIPT_BOUNDARY),
+        "execution_boundary": copy.deepcopy(boundary),
     }
     payload = _signature_payload(value)
     signature = signer.sign(payload)
@@ -115,11 +119,13 @@ def build_signed_review_receipt(
         expected_reviewer=reviewer,
         expected_reviewer_profile_sha256=reviewer_profile_sha256,
         expected_implementation=implementation,
+        receipt_schema=receipt_schema,
+        expected_decision=decision,
+        review_checklist=checklist,
+        expected_receipt_boundary=boundary,
     )
     if failures:
-        raise ValueError(
-            f"outcome-sensitive signed review receipt invalid: {failures}"
-        )
+        raise ValueError(f"outcome-sensitive signed review receipt invalid: {failures}")
     return value
 
 
@@ -133,13 +139,22 @@ def validate_signed_review_receipt(
     expected_reviewer: dict[str, Any],
     expected_reviewer_profile_sha256: str,
     expected_implementation: dict[str, str],
+    receipt_schema: str = RECEIPT_SCHEMA,
+    expected_decision: str = "approve_outcome_sensitive_execution_stack",
+    review_checklist: list[str] | None = None,
+    expected_receipt_boundary: dict[str, bool] | None = None,
 ) -> list[str]:
     receipt = value if isinstance(value, dict) else {}
+    checklist = REVIEW_CHECKLIST if review_checklist is None else review_checklist
+    boundary = (
+        RECEIPT_BOUNDARY
+        if expected_receipt_boundary is None
+        else expected_receipt_boundary
+    )
     failures: list[str] = []
     if not (
-        receipt.get("schema_version") == RECEIPT_SCHEMA
-        and receipt.get("decision")
-        == "approve_outcome_sensitive_execution_stack"
+        receipt.get("schema_version") == receipt_schema
+        and receipt.get("decision") == expected_decision
         and receipt.get("request") == expected_request_ref
         and receipt.get("bundle") == expected_bundle_ref
         and receipt.get("execution_contract_sha256") == expected_contract_sha256
@@ -160,15 +175,13 @@ def validate_signed_review_receipt(
         "conflicts_disclosed": True,
         "independent_from_candidate_authoring": True,
         "human_review_completed": True,
-    } or receipt.get("checklist") != {
-        name: True for name in REVIEW_CHECKLIST
-    }:
+    } or receipt.get("checklist") != {name: True for name in checklist}:
         failures.append(
             "outcome_execution_review_receipt_independence_or_checklist_invalid"
         )
     if (
         receipt.get("implementation") != expected_implementation
-        or receipt.get("execution_boundary") != RECEIPT_BOUNDARY
+        or receipt.get("execution_boundary") != boundary
     ):
         failures.append("outcome_execution_review_receipt_boundary_invalid")
     signature = receipt.get("signature")
@@ -191,9 +204,7 @@ def validate_signed_review_receipt(
         and signature.get("signed_payload_sha256")
         == hashlib.sha256(payload).hexdigest()
     ):
-        failures.append(
-            "outcome_execution_review_receipt_signature_binding_invalid"
-        )
+        failures.append("outcome_execution_review_receipt_signature_binding_invalid")
     body = {key: item for key, item in receipt.items() if key != "receipt_sha256"}
     if receipt.get("receipt_sha256") != canonical_sha256(body):
         failures.append("outcome_execution_review_receipt_hash_invalid")
@@ -210,9 +221,17 @@ def build_frozen_stack(
     provider_admission: dict[str, Any],
     runtime_inventory: dict[str, int],
     implementation: dict[str, str],
+    frozen_schema: str = FROZEN_SCHEMA,
+    readiness: dict[str, bool] | None = None,
+    next_blocker: str = "new_single_use_execution_preflight_required",
+    frozen_boundary: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
+    expected_readiness = (
+        _default_readiness() if readiness is None else copy.deepcopy(readiness)
+    )
+    boundary = FROZEN_BOUNDARY if frozen_boundary is None else frozen_boundary
     value = {
-        "schema_version": FROZEN_SCHEMA,
+        "schema_version": frozen_schema,
         "frozen_id": frozen_id,
         "status": "operator_reviewed_frozen",
         "promoted_at": promoted_at,
@@ -222,22 +241,18 @@ def build_frozen_stack(
         "provider_admission": copy.deepcopy(provider_admission),
         "runtime_inventory": copy.deepcopy(runtime_inventory),
         "implementation": copy.deepcopy(implementation),
-        "readiness": {
-            "outcome_sensitive_execution_contract_frozen": True,
-            "offline_480_task_recovery_evidence_frozen": True,
-            "fault_matrix_evidence_frozen": True,
-            "strict_decision_and_observation_contract_frozen": True,
-            "live_provider_admission_refreshed": True,
-            "runtime_inventory_40_created_0_running": True,
-            "execution_preflight_allowed": True,
-            "execution_authorization_issued": False,
-            "controlled_experiment_execution_ready": False,
-        },
-        "next_blocker": "new_single_use_execution_preflight_required",
-        "execution_boundary": copy.deepcopy(FROZEN_BOUNDARY),
+        "readiness": expected_readiness,
+        "next_blocker": next_blocker,
+        "execution_boundary": copy.deepcopy(boundary),
     }
     value["frozen_stack_sha256"] = canonical_sha256(value)
-    failures = validate_frozen_stack(value)
+    failures = validate_frozen_stack(
+        value,
+        frozen_schema=frozen_schema,
+        expected_readiness=expected_readiness,
+        expected_next_blocker=next_blocker,
+        expected_frozen_boundary=boundary,
+    )
     if failures:
         raise ValueError(
             f"outcome-sensitive frozen execution stack invalid: {failures}"
@@ -245,11 +260,26 @@ def build_frozen_stack(
     return value
 
 
-def validate_frozen_stack(value: Any) -> list[str]:
+def validate_frozen_stack(
+    value: Any,
+    *,
+    frozen_schema: str = FROZEN_SCHEMA,
+    expected_readiness: dict[str, bool] | None = None,
+    expected_next_blocker: str = "new_single_use_execution_preflight_required",
+    expected_frozen_boundary: dict[str, bool] | None = None,
+) -> list[str]:
     stack = value if isinstance(value, dict) else {}
+    readiness_contract = (
+        _default_readiness() if expected_readiness is None else expected_readiness
+    )
+    boundary = (
+        FROZEN_BOUNDARY
+        if expected_frozen_boundary is None
+        else expected_frozen_boundary
+    )
     failures: list[str] = []
     if not (
-        stack.get("schema_version") == FROZEN_SCHEMA
+        stack.get("schema_version") == frozen_schema
         and stack.get("status") == "operator_reviewed_frozen"
         and isinstance(stack.get("frozen_id"), str)
         and stack.get("frozen_id")
@@ -286,30 +316,31 @@ def validate_frozen_stack(value: Any) -> list[str]:
         "running_count": 0,
     }:
         failures.append("outcome_execution_frozen_runtime_inventory_invalid")
-    readiness = stack.get("readiness", {})
-    if not (
-        readiness.get("outcome_sensitive_execution_contract_frozen") is True
-        and readiness.get("offline_480_task_recovery_evidence_frozen") is True
-        and readiness.get("fault_matrix_evidence_frozen") is True
-        and readiness.get("live_provider_admission_refreshed") is True
-        and readiness.get("runtime_inventory_40_created_0_running") is True
-        and readiness.get("execution_preflight_allowed") is True
-        and readiness.get("execution_authorization_issued") is False
-        and readiness.get("controlled_experiment_execution_ready") is False
-    ):
+    if stack.get("readiness") != readiness_contract:
         failures.append("outcome_execution_frozen_readiness_invalid")
     if (
-        stack.get("next_blocker")
-        != "new_single_use_execution_preflight_required"
-        or stack.get("execution_boundary") != FROZEN_BOUNDARY
+        stack.get("next_blocker") != expected_next_blocker
+        or stack.get("execution_boundary") != boundary
     ):
         failures.append("outcome_execution_frozen_boundary_invalid")
-    body = {
-        key: item for key, item in stack.items() if key != "frozen_stack_sha256"
-    }
+    body = {key: item for key, item in stack.items() if key != "frozen_stack_sha256"}
     if stack.get("frozen_stack_sha256") != canonical_sha256(body):
         failures.append("outcome_execution_frozen_stack_hash_invalid")
     return list(dict.fromkeys(failures))
+
+
+def _default_readiness() -> dict[str, bool]:
+    return {
+        "outcome_sensitive_execution_contract_frozen": True,
+        "offline_480_task_recovery_evidence_frozen": True,
+        "fault_matrix_evidence_frozen": True,
+        "strict_decision_and_observation_contract_frozen": True,
+        "live_provider_admission_refreshed": True,
+        "runtime_inventory_40_created_0_running": True,
+        "execution_preflight_allowed": True,
+        "execution_authorization_issued": False,
+        "controlled_experiment_execution_ready": False,
+    }
 
 
 def _signature_payload(value: dict[str, Any]) -> bytes:
