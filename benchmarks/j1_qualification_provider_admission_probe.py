@@ -57,6 +57,24 @@ OUTCOME_IMPLEMENTATION_SOURCES = {
     ),
     "transport_domain_source_sha256": TRANSPORT_DOMAIN_SOURCE,
 }
+CONFIRMATORY_IMPLEMENTATION_SOURCES = {
+    "domain_source_sha256": (
+        Path(__file__).parent
+        / "j1"
+        / "qualification_outcome_sensitive_confirmatory_provider_admission.py"
+    ),
+    "operation_source_sha256": (
+        Path(__file__).parent
+        / "j1_qualification_outcome_sensitive_confirmatory_provider_admission.py"
+    ),
+    "probe_domain_source_sha256": DOMAIN_SOURCE,
+    "probe_operation_source_sha256": OPERATION_SOURCE,
+    "confirmatory_probe_operation_source_sha256": (
+        Path(__file__).parent
+        / "j1_qualification_outcome_sensitive_confirmatory_provider_probe.py"
+    ),
+    "transport_domain_source_sha256": TRANSPORT_DOMAIN_SOURCE,
+}
 Transport = Callable[[str, str, dict[str, Any]], tuple[int, bytes]]
 PreparedTransportFactory = Callable[[str], PreparedHTTPSPost]
 SourceValidator = Callable[..., list[str]]
@@ -632,7 +650,21 @@ def _implementation(repository_root: Path, *, plan: dict[str, Any]) -> dict[str,
     if plan.get("schema_version") == (
         "j1-qualification-outcome-sensitive-provider-admission-plan:v2"
     ):
-        _validate_outcome_implementation(plan, revision=revision)
+        _validate_bound_implementation(
+            plan,
+            revision=revision,
+            sources=OUTCOME_IMPLEMENTATION_SOURCES,
+            label="outcome",
+        )
+    if plan.get("schema_version") == (
+        "j1-qualification-outcome-sensitive-confirmatory-provider-admission-plan:v1"
+    ):
+        _validate_bound_implementation(
+            plan,
+            revision=revision,
+            sources=CONFIRMATORY_IMPLEMENTATION_SOURCES,
+            label="confirmatory",
+        )
     return {
         "source_revision": revision,
         "plan_source_revision": planned_revision,
@@ -646,20 +678,22 @@ def _implementation(repository_root: Path, *, plan: dict[str, Any]) -> dict[str,
     }
 
 
-def _validate_outcome_implementation(
+def _validate_bound_implementation(
     plan: dict[str, Any],
     *,
     revision: str,
+    sources: dict[str, Path],
+    label: str,
 ) -> None:
     planned = plan.get("implementation")
     if not isinstance(planned, dict) or planned.get("source_revision") != revision:
-        raise ValueError("outcome provider admission implementation revision drift")
+        raise ValueError(f"{label} provider admission implementation revision drift")
     current = {
         name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for name, path in OUTCOME_IMPLEMENTATION_SOURCES.items()
+        for name, path in sources.items()
     }
     if any(planned.get(name) != digest for name, digest in current.items()):
-        raise ValueError("outcome provider admission implementation source drift")
+        raise ValueError(f"{label} provider admission implementation source drift")
 
 
 def _canonical_source_sha256(name: str, value: dict[str, Any]) -> str:
