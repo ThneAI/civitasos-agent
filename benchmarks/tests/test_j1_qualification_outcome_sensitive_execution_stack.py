@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,12 @@ from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_contra
     SOURCE_NAMES as CONFIRMATORY_SOURCE_NAMES,
     build_confirmatory_execution_contract,
     validate_confirmatory_execution_contract,
+)
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_authorization import (
+    build_confirmatory_authorization,
+    build_confirmatory_claim_preflight,
+    build_confirmatory_issuance_gate,
+    validate_confirmatory_authorization,
 )
 from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_review import (
     REVIEW_CHECKLIST as CONFIRMATORY_REVIEW_CHECKLIST,
@@ -1029,3 +1036,110 @@ def test_confirmatory_preflight_binds_exact_method_and_forbids_reanalysis(
     assert "all 1048576 assignments" in statement
     assert "r4 remains immutable" in statement
     assert "advice adherence remains unobserved" in statement
+
+    signer = _Signer()
+    reviewer = {
+        "did": "did:civ:reviewer:confirmatory-authorization-test",
+        "public_key_hex": signer.public_key_hex,
+        "credential_version": 1,
+        "signer_kind": "pkcs11_ed25519",
+    }
+    plan_ref = {
+        "path": "/private/confirmatory-plan.json",
+        "sha256": "b" * 64,
+        "canonical_sha256": plan["plan_sha256"],
+    }
+    preflight_ref = {
+        "path": "/private/confirmatory-preflight.json",
+        "sha256": "c" * 64,
+        "canonical_sha256": preflight["preflight_sha256"],
+    }
+    implementation = {
+        "source_revision": "d" * 40,
+        "domain_source_sha256": "e" * 64,
+        "operation_source_sha256": "f" * 64,
+    }
+    authorization = build_confirmatory_authorization(
+        authorization_id="confirmatory-authorization-test",
+        owner_authorization_id="confirmatory-owner-authorization-test",
+        owner_statement_sha256=preflight["owner_authorization"][
+            "statement_sha256"
+        ],
+        issued_at="2026-08-12T00:00:00+00:00",
+        plan_ref=plan_ref,
+        preflight_ref=preflight_ref,
+        plan=plan,
+        execution_manifest_sha256="1" * 64,
+        reviewer=reviewer,
+        reviewer_profile_sha256="2" * 64,
+        implementation=implementation,
+        signer=signer,
+    )
+    validation_args = {
+        "plan_ref": plan_ref,
+        "preflight_ref": preflight_ref,
+        "plan": plan,
+        "expected_owner_authorization_id": (
+            "confirmatory-owner-authorization-test"
+        ),
+        "expected_owner_statement_sha256": preflight["owner_authorization"][
+            "statement_sha256"
+        ],
+        "expected_execution_manifest_sha256": "1" * 64,
+        "expected_reviewer": reviewer,
+        "expected_reviewer_profile_sha256": "2" * 64,
+        "expected_implementation": implementation,
+        "require_current": False,
+    }
+    assert validate_confirmatory_authorization(authorization, **validation_args) == []
+    tampered = copy.deepcopy(authorization)
+    tampered["confirmatory_inference_contract"]["test"][
+        "assignment_count"
+    ] = 1
+    assert "confirmatory_authorization_scope_or_binding_invalid" in (
+        validate_confirmatory_authorization(tampered, **validation_args)
+    )
+    assert "confirmatory_authorization_signature_invalid" in (
+        validate_confirmatory_authorization(tampered, **validation_args)
+    )
+
+    authorization_ref = {
+        "path": "/private/confirmatory-authorization.json",
+        "sha256": "3" * 64,
+        "canonical_sha256": authorization["signature"]["signed_payload_sha256"],
+    }
+    inventory = {
+        "participant_container_count": 40,
+        "created_count": 40,
+        "running_count": 0,
+    }
+    gate = build_confirmatory_issuance_gate(
+        checked_at="2026-08-12T00:00:01+00:00",
+        authorization_ref=authorization_ref,
+        authorization=authorization,
+        plan_ref=plan_ref,
+        preflight_ref=preflight_ref,
+        inventory_snapshot=inventory,
+    )
+    gate_ref = {
+        "path": "/private/confirmatory-gate.json",
+        "sha256": "4" * 64,
+        "canonical_sha256": gate["report_sha256"],
+    }
+    claim = build_confirmatory_claim_preflight(
+        authorization_ref=authorization_ref,
+        authorization=authorization,
+        issuance_gate_ref=gate_ref,
+        claim_path="/private/confirmatory-claim.json",
+        checked_at="2026-08-12T00:00:02+00:00",
+        inventory_snapshot=inventory,
+        implementation=implementation,
+    )
+    claim_statement = claim["owner_authorization"]["required_exact_statement"]
+    assert gate["checks"]["exact_paired_method_and_holm_order_bound"] is True
+    assert claim["readiness"]["atomic_claim_created"] is False
+    assert claim["execution_boundary"]["prior_run_reanalysis_performed"] is False
+    assert claim["execution_boundary"]["advice_adherence_inferred"] is False
+    assert "all 1048576 assignments" in claim_statement
+    assert "all 20 complete pairs" in claim_statement
+    assert "r4 remains immutable" in claim_statement
