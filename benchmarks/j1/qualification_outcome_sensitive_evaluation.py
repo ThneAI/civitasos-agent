@@ -4,17 +4,31 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
+from fractions import Fraction
 from statistics import fmean
 from typing import Any
 
 from .controlled_comparison import canonical_sha256
+from .qualification_outcome_sensitive_confirmatory import (
+    METHOD_VERSION as CONFIRMATORY_METHOD_VERSION,
+    evaluate_confirmatory_effects,
+)
 
 
 REPORT_SCHEMA = "j1-qualification-outcome-sensitive-evaluation:v1"
+CONFIRMATORY_REPORT_SCHEMA = (
+    "j1-qualification-outcome-sensitive-prospective-confirmatory-evaluation:v1"
+)
 PARTICIPANT_SCHEMA = "j1-qualification-outcome-sensitive-participant-outcome:v1"
 ANALYSIS_VERSION = "j1-outcome-sensitive-analysis:v1"
 CONFIRMATORY_LIMITATION = (
     "holm_multiplicity_frozen_without_pre_execution_paired_test_algorithm"
+)
+REVIEWED_ASSIGNMENT_SHA256 = (
+    "2fcb9bca06504dd855930f912b7dffa7e13d67db775bd1d5689de0db8d6df81f"
+)
+CONFIRMATORY_ASSIGNMENT_SHA256 = (
+    "63624bb5503a6c636874f15117a1857b28d20741aa2bbef4d0ad2d9ade79087c"
 )
 
 
@@ -114,6 +128,110 @@ def evaluate_outcomes(
     return report
 
 
+def evaluate_prospective_confirmatory_outcomes(
+    *,
+    run_id: str,
+    authorization_sha256: str,
+    protocol: dict[str, Any],
+    evaluator: dict[str, Any],
+    statistical_plan: dict[str, Any],
+    fixture: dict[str, Any],
+    assignment: dict[str, Any],
+    participant_records: list[dict[str, Any]],
+    confirmatory_method: dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate a future run against the prospectively frozen exact method."""
+    report = evaluate_outcomes(
+        run_id=run_id,
+        authorization_sha256=authorization_sha256,
+        protocol=protocol,
+        evaluator=evaluator,
+        statistical_plan=statistical_plan,
+        fixture=fixture,
+        assignment=assignment,
+        participant_records=participant_records,
+    )
+    failures = list(report["failure_reasons"])
+    if not _valid_confirmatory_method(confirmatory_method):
+        failures.append("prospective_confirmatory_method_invalid")
+
+    expected = _assignment_index(assignment, failures)
+    observed = _participant_index(participant_records, expected, failures)
+    pairs = _pair_records(expected, observed, failures)
+    structural_passed = not failures
+    maturity_effects: list[Fraction] = []
+    repeated_error_effects: list[Fraction] = []
+    if structural_passed:
+        maturity_effects = [
+            Fraction(
+                pair["control"]["maturity_ordinal"] - pair["mentor"]["maturity_ordinal"]
+            )
+            for pair in pairs
+        ]
+        repeated_error_effects = [
+            _error_rate_fraction(pair["control"]) - _error_rate_fraction(pair["mentor"])
+            for pair in pairs
+        ]
+    confirmatory = evaluate_confirmatory_effects(
+        maturity_effects=maturity_effects,
+        repeated_error_effects=repeated_error_effects,
+        structural_passed=structural_passed,
+    )
+    descriptive_gate = report.get("descriptive_gate", {})
+    descriptive_and_safeguards_passed = bool(descriptive_gate) and all(
+        value is True for value in descriptive_gate.values()
+    )
+    thresholds_met = bool(
+        structural_passed
+        and confirmatory.get("confirmatory_endpoints_rejected") is True
+        and descriptive_and_safeguards_passed
+    )
+    report.update(
+        {
+            "schema_version": CONFIRMATORY_REPORT_SCHEMA,
+            "structural_passed": structural_passed,
+            "failure_reasons": list(dict.fromkeys(failures)),
+            "valid_for_qualification": structural_passed,
+            "confirmatory_inference": {
+                **confirmatory,
+                "method_sha256": confirmatory_method.get("method_sha256"),
+                "prospectively_frozen": True,
+                "prior_run_reanalysis_performed": False,
+                "pair_effects": {
+                    "strategy_maturity_time": [
+                        _rational(value) for value in maturity_effects
+                    ],
+                    "repeated_error_rate": [
+                        _rational(value) for value in repeated_error_effects
+                    ],
+                },
+            },
+            "claim_gate": {
+                "structural_gate_passed": structural_passed,
+                "both_holm_adjusted_endpoints_rejected": (
+                    confirmatory.get("confirmatory_endpoints_rejected") is True
+                ),
+                "all_existing_descriptive_and_safeguard_thresholds_passed": (
+                    descriptive_and_safeguards_passed
+                ),
+                "signed_closeout_required": True,
+            },
+            "effectiveness_thresholds_met": thresholds_met,
+            "effectiveness_claim_authorized": False,
+            "si13_maturity_review_authorized": False,
+            "state": (
+                "prospective_confirmatory_evaluation_complete_closeout_required"
+                if structural_passed
+                else "prospective_confirmatory_structural_failure_closeout_required"
+            ),
+        }
+    )
+    report["report_sha256"] = canonical_sha256(
+        {key: item for key, item in report.items() if key != "report_sha256"}
+    )
+    return report
+
+
 def build_participant_outcome(
     *,
     run_id: str,
@@ -206,6 +324,64 @@ def validate_evaluation_report(value: Any) -> list[str]:
     return failures
 
 
+def validate_prospective_confirmatory_evaluation_report(
+    value: Any,
+) -> list[str]:
+    report = value if isinstance(value, dict) else {}
+    failures: list[str] = []
+    inference = report.get("confirmatory_inference", {})
+    gate = report.get("claim_gate", {})
+    recomputed: dict[str, Any] = {}
+    try:
+        effects = inference["pair_effects"]
+        recomputed = evaluate_confirmatory_effects(
+            maturity_effects=[
+                _fraction_from_rational(value)
+                for value in effects["strategy_maturity_time"]
+            ],
+            repeated_error_effects=[
+                _fraction_from_rational(value)
+                for value in effects["repeated_error_rate"]
+            ],
+            structural_passed=report.get("structural_passed") is True,
+        )
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        failures.append("prospective_confirmatory_pair_effects_invalid")
+    recomputed_matches = bool(recomputed) and all(
+        inference.get(key) == item for key, item in recomputed.items()
+    )
+    expected_thresholds = bool(
+        report.get("structural_passed") is True
+        and inference.get("confirmatory_endpoints_rejected") is True
+        and gate.get("all_existing_descriptive_and_safeguard_thresholds_passed") is True
+    )
+    if not (
+        report.get("schema_version") == CONFIRMATORY_REPORT_SCHEMA
+        and report.get("participant_count") == 40
+        and report.get("matched_pair_count") == 20
+        and report.get("structural_passed") is True
+        and report.get("valid_for_qualification") is True
+        and inference.get("valid") is True
+        and inference.get("method_version") == CONFIRMATORY_METHOD_VERSION
+        and inference.get("pair_count") == 20
+        and inference.get("prospectively_frozen") is True
+        and inference.get("prior_run_reanalysis_performed") is False
+        and recomputed_matches
+        and gate.get("structural_gate_passed") is True
+        and gate.get("both_holm_adjusted_endpoints_rejected")
+        is inference.get("confirmatory_endpoints_rejected")
+        and gate.get("signed_closeout_required") is True
+        and report.get("effectiveness_thresholds_met") is expected_thresholds
+        and report.get("effectiveness_claim_authorized") is False
+        and report.get("si13_maturity_review_authorized") is False
+    ):
+        failures.append("prospective_confirmatory_evaluation_contract_invalid")
+    body = {key: item for key, item in report.items() if key != "report_sha256"}
+    if report.get("report_sha256") != canonical_sha256(body):
+        failures.append("prospective_confirmatory_evaluation_hash_invalid")
+    return failures
+
+
 def _validate_frozen_inputs(
     *,
     protocol: dict[str, Any],
@@ -251,7 +427,7 @@ def _validate_frozen_inputs(
             "assignment_sha256",
             assignment.get("reviewed_rebound_assignment_sha256"),
         )
-        == "2fcb9bca06504dd855930f912b7dffa7e13d67db775bd1d5689de0db8d6df81f"
+        in {REVIEWED_ASSIGNMENT_SHA256, CONFIRMATORY_ASSIGNMENT_SHA256}
     ):
         failures.append("outcome_sensitive_assignment_invalid")
     return failures
@@ -460,3 +636,52 @@ def _maturity_ordinal(
 def _error_rate(record: dict[str, Any]) -> float:
     opportunities = record["repeated_error_opportunity_count"]
     return record["repeated_error_count"] / opportunities if opportunities else 0.0
+
+
+def _error_rate_fraction(record: dict[str, Any]) -> Fraction:
+    opportunities = record["repeated_error_opportunity_count"]
+    return (
+        Fraction(record["repeated_error_count"], opportunities)
+        if opportunities
+        else Fraction(0)
+    )
+
+
+def _valid_confirmatory_method(method: Any) -> bool:
+    value = method if isinstance(method, dict) else {}
+    body = {key: item for key, item in value.items() if key != "method_sha256"}
+    return bool(
+        value.get("schema_version") == "j1-outcome-sensitive-confirmatory-method:v1"
+        and value.get("method_version") == CONFIRMATORY_METHOD_VERSION
+        and value.get("population")
+        == {
+            "unit": "matched_pair",
+            "pair_count": 20,
+            "all_pairs_required": True,
+            "outcome_based_exclusion_allowed": False,
+        }
+        and value.get("test", {}).get("assignment_count") == 1 << 20
+        and value.get("test", {}).get("numeric_representation")
+        == "exact_rational_no_binary_float"
+        and value.get("multiplicity", {}).get(
+            "both_endpoints_must_reject_for_effectiveness"
+        )
+        is True
+        and value.get("claim_gate", {}).get(
+            "all_existing_descriptive_and_safeguard_thresholds_must_pass"
+        )
+        is True
+        and value.get("method_sha256") == canonical_sha256(body)
+    )
+
+
+def _rational(value: Fraction) -> dict[str, int]:
+    return {"numerator": value.numerator, "denominator": value.denominator}
+
+
+def _fraction_from_rational(value: Any) -> Fraction:
+    if not isinstance(value, dict) or set(value) != {"numerator", "denominator"}:
+        raise ValueError("invalid exact rational effect")
+    if type(value["numerator"]) is not int or type(value["denominator"]) is not int:
+        raise ValueError("invalid exact rational effect")
+    return Fraction(value["numerator"], value["denominator"])

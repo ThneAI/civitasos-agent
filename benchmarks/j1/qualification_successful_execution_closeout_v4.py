@@ -50,6 +50,22 @@ OUTCOME_SENSITIVE_CHECKLIST = [
     "successful_closeout_signature_and_copy_on_write_boundary_reviewed",
     "source_revision_ruff_and_full_pytest_evidence_reviewed",
 ]
+PROSPECTIVE_CONFIRMATORY_CHECKLIST = [
+    "complete_480_task_journal_and_artifact_refs_reviewed",
+    "provider_receipt_and_budget_reconciliation_reviewed",
+    "participant_signature_verification_reviewed",
+    "structured_decision_and_direct_observation_replay_reviewed",
+    "hidden_fixture_commitment_and_ground_truth_scoring_reviewed",
+    "complete_40_participant_20_pair_outcome_mapping_reviewed",
+    "prospectively_frozen_exact_sign_flip_method_reviewed",
+    "exact_rational_p_values_and_holm_tie_order_reviewed",
+    "descriptive_and_safeguard_gate_conjunction_reviewed",
+    "terminal_40_container_0_running_inventory_reviewed",
+    "confirmatory_authorization_claim_and_no_retry_boundary_reviewed",
+    "successful_closeout_signature_and_copy_on_write_boundary_reviewed",
+    "prior_run_non_reanalysis_and_advice_adherence_boundary_reviewed",
+    "source_revision_ruff_and_full_pytest_evidence_reviewed",
+]
 REVIEW_BOUNDARY = {
     "successful_closeout_implementation_review_only": True,
     "participant_container_started": False,
@@ -389,7 +405,15 @@ def reviewer_statement(
     checklist = _checklist(profile)
     task_count = _scope(profile)["task_count"]
     observation_note = (
-        "I acknowledge that all structured decisions and direct behavior observations "
+        "I acknowledge that all 480 terminal task Evidence and all 20 complete "
+        "pairs were replayed against hidden fixture commitments and evaluated "
+        "with the prospectively frozen one-sided exact sign-flip tests, exact "
+        "rational p-values, and primary-before-secondary Holm order. I confirm "
+        "that effectiveness_thresholds_met also requires every frozen descriptive "
+        "and safeguard condition; prior runs were not reanalyzed and advice "
+        "adherence remains unobserved and may not be inferred."
+        if profile == "prospective_confirmatory"
+        else "I acknowledge that all structured decisions and direct behavior observations "
         "were replayed against hidden fixture commitments, while the preregistered "
         "Holm multiplicity rule did not freeze a paired test algorithm before "
         "execution; confirmatory_inference_valid=false and this promotion cannot "
@@ -400,7 +424,7 @@ def reviewer_statement(
     )
     return (
         "I have independently reviewed J1-D "
-        f"{'outcome-sensitive ' if profile == 'outcome_sensitive' else 'r4 '}"
+        f"{_profile_label(profile)}"
         "successful-closeout implementation "
         f"review request raw SHA-256 {request_raw_sha256} and choose "
         "approve_successful_closeout_implementation. I confirm all "
@@ -543,7 +567,7 @@ def closeout_authorization_statement(
     )
     return (
         "I authorize exactly one signed J1-D "
-        f"{'outcome-sensitive ' if profile == 'outcome_sensitive' else 'r4 '}"
+        f"{_profile_label(profile)}"
         "successful-run closeout for run "
         f"{preflight['run_id']} and consumed authorization "
         f"{preflight['authorization_id']} from preflight raw SHA-256 "
@@ -772,7 +796,7 @@ def build_closeout_gate(
 
 
 def _scope(profile: Any) -> dict[str, Any]:
-    if profile == "outcome_sensitive":
+    if profile in {"outcome_sensitive", "prospective_confirmatory"}:
         return {
             "task_count": 480,
             "event_count": 5760,
@@ -790,7 +814,17 @@ def _scope(profile: Any) -> dict[str, Any]:
 
 
 def _checklist(profile: Any) -> list[str]:
+    if profile == "prospective_confirmatory":
+        return PROSPECTIVE_CONFIRMATORY_CHECKLIST
     return OUTCOME_SENSITIVE_CHECKLIST if profile == "outcome_sensitive" else CHECKLIST
+
+
+def _profile_label(profile: Any) -> str:
+    if profile == "prospective_confirmatory":
+        return "outcome-sensitive prospective-confirmatory "
+    if profile == "outcome_sensitive":
+        return "outcome-sensitive "
+    return "r4 "
 
 
 def _validate_signature(

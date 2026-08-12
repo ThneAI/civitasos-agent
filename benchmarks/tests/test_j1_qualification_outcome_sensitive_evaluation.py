@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import copy
+
 from benchmarks.j1.controlled_comparison import canonical_sha256
 from benchmarks.j1.qualification_outcome_sensitive_evaluation import (
     CONFIRMATORY_LIMITATION,
     build_participant_outcome,
     evaluate_outcomes,
+    evaluate_prospective_confirmatory_outcomes,
     validate_evaluation_report,
+    validate_prospective_confirmatory_evaluation_report,
 )
 from benchmarks.j1.qualification_successful_execution_closeout_v4 import (
     build_preflight,
@@ -113,6 +117,31 @@ def _inputs() -> tuple[dict[str, object], ...]:
     return protocol, evaluator, statistical, fixture, _assignment()
 
 
+def _confirmatory_method() -> dict[str, object]:
+    method = {
+        "schema_version": "j1-outcome-sensitive-confirmatory-method:v1",
+        "method_version": "j1-outcome-sensitive-confirmatory-analysis:v2",
+        "population": {
+            "unit": "matched_pair",
+            "pair_count": 20,
+            "all_pairs_required": True,
+            "outcome_based_exclusion_allowed": False,
+        },
+        "test": {
+            "assignment_count": 1_048_576,
+            "numeric_representation": "exact_rational_no_binary_float",
+        },
+        "multiplicity": {
+            "both_endpoints_must_reject_for_effectiveness": True,
+        },
+        "claim_gate": {
+            "all_existing_descriptive_and_safeguard_thresholds_must_pass": True,
+        },
+    }
+    method["method_sha256"] = canonical_sha256(method)
+    return method
+
+
 def test_outcome_evaluation_keeps_post_execution_inference_blocked() -> None:
     protocol, evaluator, statistical, fixture, assignment = _inputs()
     participants = []
@@ -156,6 +185,110 @@ def test_outcome_evaluation_keeps_post_execution_inference_blocked() -> None:
     assert report["effectiveness_claim_authorized"] is False
     assert report["report_sha256"] == canonical_sha256(
         {key: value for key, value in report.items() if key != "report_sha256"}
+    )
+
+
+def test_prospective_confirmatory_evaluation_applies_exact_joint_gate() -> None:
+    protocol, evaluator, statistical, fixture, assignment = _inputs()
+    statistical["effectiveness_gate"]["mentor_pattern_false_positive_rate_maximum"] = (
+        1.0
+    )
+    participants = []
+    for pair in assignment["assignments"]:
+        for cohort in ("mentor", "control"):
+            member = pair[cohort]
+            participants.append(
+                build_participant_outcome(
+                    run_id="run-confirmatory",
+                    authorization_sha256="a" * 64,
+                    participant={
+                        "participant_id": member["participant_id"],
+                        "participant_did": member["execution_did"],
+                        "pair_id": pair["pair_id"],
+                        "cohort": cohort,
+                    },
+                    observations=_observations(cohort=cohort),
+                )
+            )
+
+    report = evaluate_prospective_confirmatory_outcomes(
+        run_id="run-confirmatory",
+        authorization_sha256="a" * 64,
+        protocol=protocol,
+        evaluator=evaluator,
+        statistical_plan=statistical,
+        fixture=fixture,
+        assignment=assignment,
+        participant_records=participants,
+        confirmatory_method=_confirmatory_method(),
+    )
+
+    assert validate_prospective_confirmatory_evaluation_report(report) == []
+    assert report["confirmatory_inference"]["tests"]["strategy_maturity_time"][
+        "p_value"
+    ] == {"numerator": 1, "denominator": 1_048_576}
+    assert report["confirmatory_inference"]["tests"]["repeated_error_rate"][
+        "p_value"
+    ] == {"numerator": 1, "denominator": 1_048_576}
+    assert report["confirmatory_inference"]["confirmatory_endpoints_rejected"] is True
+    assert (
+        report["claim_gate"]["all_existing_descriptive_and_safeguard_thresholds_passed"]
+        is True
+    )
+    assert report["effectiveness_thresholds_met"] is True
+    assert report["effectiveness_claim_authorized"] is False
+
+
+def test_prospective_confirmatory_rejection_cannot_bypass_descriptive_gate() -> None:
+    protocol, evaluator, statistical, fixture, assignment = _inputs()
+    participants = []
+    for pair in assignment["assignments"]:
+        for cohort in ("mentor", "control"):
+            member = pair[cohort]
+            participants.append(
+                build_participant_outcome(
+                    run_id="run-confirmatory",
+                    authorization_sha256="a" * 64,
+                    participant={
+                        "participant_id": member["participant_id"],
+                        "participant_did": member["execution_did"],
+                        "pair_id": pair["pair_id"],
+                        "cohort": cohort,
+                    },
+                    observations=_observations(cohort=cohort),
+                )
+            )
+
+    report = evaluate_prospective_confirmatory_outcomes(
+        run_id="run-confirmatory",
+        authorization_sha256="a" * 64,
+        protocol=protocol,
+        evaluator=evaluator,
+        statistical_plan=statistical,
+        fixture=fixture,
+        assignment=assignment,
+        participant_records=participants,
+        confirmatory_method=_confirmatory_method(),
+    )
+
+    assert report["confirmatory_inference"]["confirmatory_endpoints_rejected"] is True
+    assert (
+        report["claim_gate"]["all_existing_descriptive_and_safeguard_thresholds_passed"]
+        is False
+    )
+    assert report["effectiveness_thresholds_met"] is False
+
+    tampered = copy.deepcopy(report)
+    tampered["confirmatory_inference"]["pair_effects"]["strategy_maturity_time"][0] = {
+        "numerator": 0,
+        "denominator": 1,
+    }
+    tampered["report_sha256"] = canonical_sha256(
+        {key: value for key, value in tampered.items() if key != "report_sha256"}
+    )
+    assert (
+        "prospective_confirmatory_evaluation_contract_invalid"
+        in validate_prospective_confirmatory_evaluation_report(tampered)
     )
 
 

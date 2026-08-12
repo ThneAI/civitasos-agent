@@ -19,14 +19,23 @@ from nacl.signing import VerifyKey
 from benchmarks.j1.controlled_comparison import canonical_sha256, write_private_json
 from benchmarks.j1.qualification_outcome_sensitive_evaluation import (
     build_participant_outcome,
-    evaluate_outcomes,
-    validate_evaluation_report,
+    evaluate_prospective_confirmatory_outcomes,
+    validate_prospective_confirmatory_evaluation_report,
+)
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_authorization import (
+    AUTH_SCHEMA as CONFIRMATORY_AUTHORIZATION_SCHEMA,
+    GATE_SCHEMA as CONFIRMATORY_AUTHORIZATION_GATE_SCHEMA,
+    validate_confirmatory_authorization,
+)
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_preflight import (
+    validate_confirmatory_execution_plan,
 )
 from benchmarks.j1.qualification_outcome_sensitive_execution_authorization import (
     GATE_SCHEMA as AUTHORIZATION_GATE_SCHEMA,
     validate_authorization,
 )
 from benchmarks.j1.qualification_outcome_sensitive_execution_entry import (
+    CONFIRMATORY_ENTRY_GATE_SCHEMA,
     ENTRY_GATE_SCHEMA,
     validate_claim,
 )
@@ -59,6 +68,7 @@ EVIDENCE_NAMES = {
     "task-verification",
 }
 SOURCE_PATHS = [
+    "benchmarks/j1/qualification_outcome_sensitive_confirmatory.py",
     "benchmarks/j1/qualification_outcome_sensitive_evaluation.py",
     "benchmarks/j1/qualification_successful_execution_closeout_v4.py",
     "benchmarks/j1_qualification_outcome_sensitive_successful_closeout.py",
@@ -103,7 +113,7 @@ def prepare_review(
         repository_root=repository_root,
         source_revision=revision,
     )
-    preflight = build_preflight(**context, profile="outcome_sensitive")
+    preflight = build_preflight(**context, profile="prospective_confirmatory")
     output_root.mkdir(parents=True, mode=0o700)
     output_root.chmod(0o700)
     preflight_path = output_root / "successful-closeout-preflight.json"
@@ -226,6 +236,7 @@ def _collect(
     statistical_plan = _read_bound(
         sources["statistical_plan"], "statistical_plan_sha256"
     )
+    confirmatory_method = _read_bound(sources["confirmatory_method"], "method_sha256")
     fixture = _read_bound(sources["task_fixture"], "fixture_sha256")
     assignment = _read_bound(sources["assignment"], "assignment_sha256")
     activation = _read_bound(sources["activation"], "activation_sha256")
@@ -255,7 +266,7 @@ def _collect(
         run_id=authorization["run_id"],
         authorization_sha256=hashlib.sha256(authorization_raw).hexdigest(),
     )
-    evaluation = evaluate_outcomes(
+    evaluation = evaluate_prospective_confirmatory_outcomes(
         run_id=authorization["run_id"],
         authorization_sha256=hashlib.sha256(authorization_raw).hexdigest(),
         protocol=protocol,
@@ -264,8 +275,11 @@ def _collect(
         fixture=fixture,
         assignment=assignment,
         participant_records=participants,
+        confirmatory_method=confirmatory_method,
     )
-    evaluation_failures = validate_evaluation_report(evaluation)
+    evaluation_failures = validate_prospective_confirmatory_evaluation_report(
+        evaluation
+    )
     if evaluation_failures:
         raise ValueError(
             "outcome-sensitive successful evaluation invalid: "
@@ -280,19 +294,7 @@ def _collect(
             canonical_sha256(reviewer_profile),
             raw=reviewer_profile_raw,
         ),
-        **{
-            name: sources[name]
-            for name in (
-                "activation",
-                "assignment",
-                "evaluator",
-                "execution_contract",
-                "frozen_execution_stack",
-                "protocol",
-                "statistical_plan",
-                "task_fixture",
-            )
-        },
+        **sources,
         "execution_journal": _ref(
             execution_root / "execution-journal.sqlite3",
             journal["logical"]["journal_sha256"],
@@ -344,7 +346,9 @@ def _collect(
                 ).hexdigest()
                 for relative in SOURCE_PATHS
             },
-            "confirmatory_inference_limitation_locked": True,
+            "prospective_confirmatory_inference_implemented": True,
+            "prior_run_reanalysis_performed": False,
+            "advice_adherence_inferred": False,
         },
     }
 
@@ -367,34 +371,65 @@ def _validate_upstream(
     execution_root: Path,
 ) -> None:
     failures = validate_reviewer_identity_profile(reviewer_profile)
-    failures += validate_execution_plan(plan)
-    failures += validate_authorization(
-        authorization,
-        plan_ref=_ref(
-            Path(authorization["source_binding"]["plan"]["path"]),
-            plan["plan_sha256"],
-            raw=plan_raw,
-        ),
-        preflight_ref=_ref(
-            Path(authorization["source_binding"]["preflight"]["path"]),
-            execution_preflight["preflight_sha256"],
-            raw=execution_preflight_raw,
-        ),
-        plan=plan,
-        expected_owner_authorization_id=authorization["owner_authorization"][
-            "authorization_id"
-        ],
-        expected_owner_statement_sha256=authorization["owner_authorization"][
-            "statement_sha256"
-        ],
-        expected_execution_manifest_sha256=authorization["execution_manifest_sha256"],
-        expected_reviewer=reviewer_profile["reviewer"],
-        expected_reviewer_profile_sha256=hashlib.sha256(
-            reviewer_profile_raw
-        ).hexdigest(),
-        expected_implementation=authorization["implementation"],
-        require_current=False,
+    confirmatory = (
+        authorization.get("schema_version") == CONFIRMATORY_AUTHORIZATION_SCHEMA
     )
+    plan_ref = _ref(
+        Path(authorization["source_binding"]["plan"]["path"]),
+        plan["plan_sha256"],
+        raw=plan_raw,
+    )
+    preflight_ref = _ref(
+        Path(authorization["source_binding"]["preflight"]["path"]),
+        execution_preflight["preflight_sha256"],
+        raw=execution_preflight_raw,
+    )
+    if confirmatory:
+        failures += validate_confirmatory_execution_plan(plan)
+        failures += validate_confirmatory_authorization(
+            authorization,
+            plan_ref=plan_ref,
+            preflight_ref=preflight_ref,
+            plan=plan,
+            expected_owner_authorization_id=authorization["owner_authorization"][
+                "authorization_id"
+            ],
+            expected_owner_statement_sha256=authorization["owner_authorization"][
+                "statement_sha256"
+            ],
+            expected_execution_manifest_sha256=authorization[
+                "execution_manifest_sha256"
+            ],
+            expected_reviewer=reviewer_profile["reviewer"],
+            expected_reviewer_profile_sha256=hashlib.sha256(
+                reviewer_profile_raw
+            ).hexdigest(),
+            expected_implementation=authorization["implementation"],
+            require_current=False,
+        )
+    else:
+        failures += validate_execution_plan(plan)
+        failures += validate_authorization(
+            authorization,
+            plan_ref=plan_ref,
+            preflight_ref=preflight_ref,
+            plan=plan,
+            expected_owner_authorization_id=authorization["owner_authorization"][
+                "authorization_id"
+            ],
+            expected_owner_statement_sha256=authorization["owner_authorization"][
+                "statement_sha256"
+            ],
+            expected_execution_manifest_sha256=authorization[
+                "execution_manifest_sha256"
+            ],
+            expected_reviewer=reviewer_profile["reviewer"],
+            expected_reviewer_profile_sha256=hashlib.sha256(
+                reviewer_profile_raw
+            ).hexdigest(),
+            expected_implementation=authorization["implementation"],
+            require_current=False,
+        )
     failures += validate_claim(
         claim,
         claim_path=str(Path(refs["claim"]["path"]).resolve()),
@@ -408,14 +443,20 @@ def _validate_upstream(
     )
     valid = (
         not failures
-        and issuance_gate.get("schema_version") == AUTHORIZATION_GATE_SCHEMA
+        and issuance_gate.get("schema_version")
+        == (
+            CONFIRMATORY_AUTHORIZATION_GATE_SCHEMA
+            if confirmatory
+            else AUTHORIZATION_GATE_SCHEMA
+        )
         and issuance_gate.get("passed") is True
         and issuance_gate.get("authorization") == refs["authorization"]
         and issuance_gate.get("report_sha256")
         == canonical_sha256(
             {key: item for key, item in issuance_gate.items() if key != "report_sha256"}
         )
-        and entry_gate.get("schema_version") == ENTRY_GATE_SCHEMA
+        and entry_gate.get("schema_version")
+        == (CONFIRMATORY_ENTRY_GATE_SCHEMA if confirmatory else ENTRY_GATE_SCHEMA)
         and entry_gate.get("passed") is True
         and entry_gate.get("claim") == refs["claim"]
         and entry_gate.get("report_sha256")

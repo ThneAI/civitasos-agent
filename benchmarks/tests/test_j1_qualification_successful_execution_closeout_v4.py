@@ -13,6 +13,7 @@ from benchmarks.j1.controlled_comparison import (
 )
 from benchmarks.j1.qualification_successful_execution_closeout_v4 import (
     CHECKLIST,
+    PROSPECTIVE_CONFIRMATORY_CHECKLIST,
     build_closeout_artifacts,
     build_closeout_gate,
     build_preflight,
@@ -76,7 +77,9 @@ def _records() -> list[dict[str, object]]:
     return [
         {
             "participant_id": f"participant-{index:02d}",
-            "task_evidence_sha256": [f"{index * 8 + task + 1:064x}" for task in range(8)],
+            "task_evidence_sha256": [
+                f"{index * 8 + task + 1:064x}" for task in range(8)
+            ],
         }
         for index in range(40)
     ]
@@ -141,6 +144,68 @@ def _reviewer(public_key_hex: str) -> dict[str, object]:
         "credential_version": 1,
         "signer_kind": "pkcs11",
     }
+
+
+def _prospective_confirmatory_preflight() -> dict[str, object]:
+    records = _records()
+    evaluation = {
+        "structural_passed": True,
+        "participant_count": 40,
+        "matched_pair_count": 20,
+        "valid_for_qualification": True,
+        "effectiveness_thresholds_met": False,
+        "effectiveness_claim_authorized": False,
+        "report_sha256": "f" * 64,
+    }
+    return build_preflight(
+        run_id="j1d-prospective-confirmatory-run",
+        authorization_id="j1d-prospective-confirmatory-authorization",
+        execution_summary={
+            "status": "complete",
+            "task_execution_count": 480,
+            "committed_task_count": 480,
+            "provider_call_count": 480,
+            "participant_signature_count": 480,
+            "journal_event_count": 5760,
+            "validation_failures": [],
+        },
+        budget_summary={
+            "reservation_count": 480,
+            "reconciled_count": 480,
+            "non_reconciled_count": 0,
+            "actual_tokens": 148869,
+            "actual_cost_microunits": 22304,
+            "reserved_tokens": 1200000,
+            "reserved_cost_microunits": 731040,
+        },
+        terminal_inventory={
+            "participant_container_count": 40,
+            "created_count": 0,
+            "exited_count": 40,
+            "running_count": 0,
+            "container_set_sha256": "a" * 64,
+        },
+        outcome_inventory={
+            "participant_count": 40,
+            "matched_pair_count": 20,
+            "task_evidence_count": 480,
+            "verified_task_count": 480,
+            "participant_outcome_count": 40,
+            "task_evidence_set_sha256": "b" * 64,
+            "participant_outcome_set_sha256": canonical_sha256(records),
+            "pattern_prediction_observation_policy": (
+                "direct_signed_observation_exact_set_scoring"
+            ),
+        },
+        participant_outcomes=records,
+        evaluation_report=evaluation,
+        source_binding={f"source_{index}": _ref(index) for index in range(13)},
+        implementation={
+            "source_revision": "c" * 40,
+            "source_files": {"domain.py": "d" * 64, "operation.py": "e" * 64},
+        },
+        profile="prospective_confirmatory",
+    )
 
 
 def test_successful_preflight_accepts_stopped_exited_terminal_inventory() -> None:
@@ -269,6 +334,41 @@ def test_successful_review_and_closeout_signatures_round_trip() -> None:
         == "successful_run_closed_structural_pass_thresholds_not_met_no_maturity_upgrade"
     )
     assert gate["terminal_summary"]["effectiveness_claim_authorized"] is False
+
+
+def test_prospective_confirmatory_review_uses_distinct_frozen_checklist() -> None:
+    preflight = _prospective_confirmatory_preflight()
+    bundle = build_review_bundle(
+        bundle_id="prospective-confirmatory-closeout-review",
+        created_at="2026-08-13T08:00:00+00:00",
+        preflight_ref=_ref(50),
+        preflight=preflight,
+        verification={
+            "ruff_all_passed": True,
+            "pytest_all_passed": True,
+            "pytest_passed_count": 1710,
+            "remote_revision_verified": True,
+            "external_effect_performed": False,
+        },
+    )
+    statement = reviewer_statement(
+        request_raw_sha256="1" * 64,
+        bundle_raw_sha256="2" * 64,
+        bundle=bundle,
+    )
+    closeout_statement = closeout_authorization_statement(
+        preflight_raw_sha256="3" * 64,
+        preflight=preflight,
+        review_gate_raw_sha256="4" * 64,
+        review_gate_canonical_sha256="5" * 64,
+    )
+
+    assert validate_preflight(preflight) == []
+    assert len(PROSPECTIVE_CONFIRMATORY_CHECKLIST) == 14
+    assert bundle["review_checklist"] == PROSPECTIVE_CONFIRMATORY_CHECKLIST
+    assert "prospectively frozen one-sided exact sign-flip tests" in statement
+    assert "prior runs were not reanalyzed" in statement
+    assert "does not authorize an effectiveness claim" in closeout_statement
 
 
 def test_outcome_mapping_does_not_infer_unobserved_predictions() -> None:
