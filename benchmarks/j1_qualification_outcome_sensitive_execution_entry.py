@@ -17,6 +17,11 @@ from benchmarks.j1.qualification_outcome_sensitive_execution_authorization impor
     claim_authorization_statement,
     validate_authorization,
 )
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_authorization import (
+    AUTH_BOUNDARY as CONFIRMATORY_AUTH_BOUNDARY,
+    confirmatory_claim_authorization_statement,
+    validate_confirmatory_authorization,
+)
 from benchmarks.j1.qualification_outcome_sensitive_execution_entry import (
     build_claim,
     build_entry_gate,
@@ -27,6 +32,11 @@ from benchmarks.j1.qualification_outcome_sensitive_execution_materials import (
 )
 from benchmarks.j1.qualification_outcome_sensitive_execution_preflight import (
     validate_execution_plan,
+)
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_preflight import (
+    PLAN_SCHEMA as CONFIRMATORY_PLAN_SCHEMA,
+    validate_confirmatory_execution_plan,
+    validate_confirmatory_preflight,
 )
 from benchmarks.j1.qualification_outcome_sensitive_participant_runner_image import (
     MANIFEST_SCHEMA as OUTCOME_RUNNER_MANIFEST_SCHEMA,
@@ -52,6 +62,14 @@ REQUIRED_LIVE_SOURCES = {
     "benchmarks/j1_qualification_outcome_sensitive_live_execute.py",
     "benchmarks/j1_qualification_outcome_sensitive_participant_runner.py",
     "benchmarks/j1_qualification_outcome_sensitive_participant_runner_image.py",
+}
+REQUIRED_CONFIRMATORY_SOURCES = {
+    "benchmarks/j1/qualification_outcome_sensitive_confirmatory_execution_authorization.py",
+    "benchmarks/j1/qualification_outcome_sensitive_confirmatory_execution_preflight.py",
+    "benchmarks/j1/qualification_outcome_sensitive_execution_entry.py",
+    "benchmarks/j1_qualification_outcome_sensitive_confirmatory_execution_authorization.py",
+    "benchmarks/j1_qualification_outcome_sensitive_confirmatory_execution_preflight.py",
+    "benchmarks/j1_qualification_outcome_sensitive_execution_entry.py",
 }
 
 
@@ -129,13 +147,17 @@ def claim_and_build_entry_gate(
     execution_manifest_sha256 = canonical_sha256(
         contract["task_executions"]
     )
+    confirmatory = plan.get("schema_version") == CONFIRMATORY_PLAN_SCHEMA
+    expected_claim_preflight_state = (
+        "prospective_confirmatory_claim_preflight_passed_"
+        "owner_authorization_required"
+        if confirmatory
+        else "outcome_sensitive_claim_preflight_passed_owner_authorization_required"
+    )
     if not (
         gate.get("authorization") == authorization_ref
         and preflight.get("state")
-        == (
-            "outcome_sensitive_claim_preflight_passed_"
-            "owner_authorization_required"
-        )
+        == expected_claim_preflight_state
         and preflight.get("source_binding")
         == {
             "authorization": authorization_ref,
@@ -149,11 +171,21 @@ def claim_and_build_entry_gate(
         == authorization["execution_scope"]
         and preflight.get("budget") == authorization["budget"]
         and preflight.get("controls") == authorization["controls"]
+        and (
+            not confirmatory
+            or preflight.get("confirmatory_inference_contract")
+            == authorization.get("confirmatory_inference_contract")
+        )
     ):
         raise ValueError(
             "outcome-sensitive claim preflight source or scope invalid"
         )
-    expected_statement = claim_authorization_statement(
+    statement_builder = (
+        confirmatory_claim_authorization_statement
+        if confirmatory
+        else claim_authorization_statement
+    )
+    expected_statement = statement_builder(
         authorization_ref=authorization_ref,
         issuance_gate_ref=gate_ref,
         authorization=authorization,
@@ -242,9 +274,10 @@ def claim_and_build_entry_gate(
             inventory_snapshot=inventory,
             execution_manifest_sha256=execution_manifest_sha256,
         )
-        entry_path = (
-            authorization_path.parent
-            / "outcome-sensitive-execution-entry-gate.json"
+        entry_path = authorization_path.parent / (
+            "confirmatory-execution-entry-gate.json"
+            if confirmatory
+            else "outcome-sensitive-execution-entry-gate.json"
         )
         _write_exclusive(entry_path, entry_gate)
     except Exception as error:
@@ -295,7 +328,13 @@ def _validate_upstream(
     implementation: dict[str, str],
     repository_root: Path,
 ) -> None:
-    if validate_execution_plan(plan):
+    confirmatory = plan.get("schema_version") == CONFIRMATORY_PLAN_SCHEMA
+    plan_failures = (
+        validate_confirmatory_execution_plan(plan)
+        if confirmatory
+        else validate_execution_plan(plan)
+    )
+    if plan_failures:
         raise ValueError("outcome-sensitive claim execution plan invalid")
     plan_expected = _ref(plan_path, plan["plan_sha256"])
     execution_preflight_expected = _ref(
@@ -303,26 +342,38 @@ def _validate_upstream(
         execution_preflight["preflight_sha256"],
     )
     profile_failures = validate_reviewer_identity_profile(profile)
-    authorization_failures = validate_authorization(
+    authorization_validator = (
+        validate_confirmatory_authorization
+        if confirmatory
+        else validate_authorization
+    )
+    authorization_failures = authorization_validator(
         authorization,
         plan_ref=plan_expected,
         preflight_ref=execution_preflight_expected,
         plan=plan,
-        expected_owner_authorization_id=authorization[
-            "owner_authorization"
-        ]["authorization_id"],
-        expected_owner_statement_sha256=authorization[
-            "owner_authorization"
-        ]["statement_sha256"],
+        expected_owner_authorization_id=authorization["owner_authorization"][
+            "authorization_id"
+        ],
+        expected_owner_statement_sha256=authorization["owner_authorization"][
+            "statement_sha256"
+        ],
         expected_execution_manifest_sha256=authorization[
             "execution_manifest_sha256"
         ],
         expected_reviewer=profile["reviewer"],
-        expected_reviewer_profile_sha256=hashlib.sha256(
-            profile_raw
-        ).hexdigest(),
+        expected_reviewer_profile_sha256=hashlib.sha256(profile_raw).hexdigest(),
         expected_implementation=authorization["implementation"],
         require_current=True,
+    )
+    execution_preflight_failures = (
+        validate_confirmatory_preflight(
+            execution_preflight,
+            expected_plan=plan,
+            expected_plan_raw_sha256=hashlib.sha256(plan_raw).hexdigest(),
+        )
+        if confirmatory
+        else []
     )
     gate_body = {
         key: item for key, item in gate.items() if key != "report_sha256"
@@ -332,20 +383,28 @@ def _validate_upstream(
         for key, item in preflight.items()
         if key != "preflight_sha256"
     }
-    if profile_failures or authorization_failures or not (
+    expected_auth_boundary = (
+        CONFIRMATORY_AUTH_BOUNDARY if confirmatory else AUTH_BOUNDARY
+    )
+    if (
+        profile_failures
+        or authorization_failures
+        or execution_preflight_failures
+        or not (
         hashlib.sha256(authorization_raw).hexdigest()
         == gate.get("authorization", {}).get("sha256")
         and authorization_path.resolve()
         == Path(gate["authorization"]["path"]).resolve()
         and gate.get("report_sha256") == canonical_sha256(gate_body)
         and gate.get("passed") is True
-        and gate.get("execution_boundary") == AUTH_BOUNDARY
+        and gate.get("execution_boundary") == expected_auth_boundary
         and preflight.get("preflight_sha256")
         == canonical_sha256(preflight_body)
         and hashlib.sha256(gate_path.read_bytes()).hexdigest()
         == preflight["source_binding"]["issuance_gate"]["sha256"]
         and hashlib.sha256(preflight_path.read_bytes()).hexdigest()
         == _ref(preflight_path, preflight["preflight_sha256"])["sha256"]
+        )
     ):
         raise ValueError(
             "outcome authorization, Gate, or claim preflight invalid"
@@ -398,12 +457,15 @@ def _validate_reviewed_live_stack(
         "source_files",
         {},
     )
+    required_sources = set(REQUIRED_LIVE_SOURCES)
+    if contract.get("confirmatory_method_binding"):
+        required_sources.update(REQUIRED_CONFIRMATORY_SOURCES)
     if not (
-        REQUIRED_LIVE_SOURCES <= set(source_files)
+        required_sources <= set(source_files)
         and all(
             hashlib.sha256((repository_root / path).read_bytes()).hexdigest()
             == source_files[path]
-            for path in REQUIRED_LIVE_SOURCES
+            for path in required_sources
         )
     ):
         raise ValueError(

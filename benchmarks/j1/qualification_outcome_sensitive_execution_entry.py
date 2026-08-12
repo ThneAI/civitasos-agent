@@ -9,11 +9,22 @@ from typing import Any
 
 from .controlled_comparison import canonical_sha256
 from .qualification_outcome_sensitive_execution_authorization import AUTH_SCHEMA
+from .qualification_outcome_sensitive_confirmatory_execution_authorization import (
+    AUTH_SCHEMA as CONFIRMATORY_AUTH_SCHEMA,
+)
 
 
 CLAIM_SCHEMA = "j1-qualification-outcome-sensitive-execution-claim:v1"
+CONFIRMATORY_CLAIM_SCHEMA = (
+    "j1-qualification-outcome-sensitive-prospective-confirmatory-"
+    "execution-claim:v1"
+)
 ENTRY_GATE_SCHEMA = (
     "j1-qualification-outcome-sensitive-execution-entry-gate:v1"
+)
+CONFIRMATORY_ENTRY_GATE_SCHEMA = (
+    "j1-qualification-outcome-sensitive-prospective-confirmatory-"
+    "execution-entry-gate:v1"
 )
 CLAIM_BOUNDARY = {
     "atomic_claim_create_exclusive": True,
@@ -34,6 +45,16 @@ ENTRY_BOUNDARY = {
     **CLAIM_BOUNDARY,
     "bounded_execution_entry_allowed": True,
 }
+CONFIRMATORY_CLAIM_BOUNDARY = {
+    **CLAIM_BOUNDARY,
+    "prior_run_reanalysis_performed": False,
+    "advice_adherence_inferred": False,
+    "effectiveness_or_causal_claim_authorized": False,
+}
+CONFIRMATORY_ENTRY_BOUNDARY = {
+    **CONFIRMATORY_CLAIM_BOUNDARY,
+    "bounded_execution_entry_allowed": True,
+}
 
 
 def build_claim(
@@ -51,10 +72,14 @@ def build_claim(
 ) -> dict[str, Any]:
     if _timestamp(claimed_at) is None:
         raise ValueError("outcome-sensitive claim timestamp invalid")
-    if authorization.get("schema_version") != AUTH_SCHEMA:
+    authorization_schema = authorization.get("schema_version")
+    if authorization_schema not in {AUTH_SCHEMA, CONFIRMATORY_AUTH_SCHEMA}:
         raise ValueError("outcome-sensitive claim authorization schema invalid")
+    confirmatory = authorization_schema == CONFIRMATORY_AUTH_SCHEMA
     value = {
-        "schema_version": CLAIM_SCHEMA,
+        "schema_version": (
+            CONFIRMATORY_CLAIM_SCHEMA if confirmatory else CLAIM_SCHEMA
+        ),
         "state": "authorization_claimed_execution_must_close_out",
         "claimed_at": claimed_at,
         "claim_path": str(Path(claim_path).resolve()),
@@ -82,8 +107,14 @@ def build_claim(
         "single_use": True,
         "reusable": False,
         "implementation": copy.deepcopy(implementation),
-        "execution_boundary": copy.deepcopy(CLAIM_BOUNDARY),
+        "execution_boundary": copy.deepcopy(
+            CONFIRMATORY_CLAIM_BOUNDARY if confirmatory else CLAIM_BOUNDARY
+        ),
     }
+    if confirmatory:
+        value["confirmatory_inference_contract"] = copy.deepcopy(
+            authorization["confirmatory_inference_contract"]
+        )
     value["claim_sha256"] = canonical_sha256(value)
     return value
 
@@ -102,8 +133,13 @@ def validate_claim(
 ) -> list[str]:
     claim = value if isinstance(value, dict) else {}
     failures: list[str] = []
+    confirmatory = authorization.get("schema_version") == CONFIRMATORY_AUTH_SCHEMA
+    expected_schema = CONFIRMATORY_CLAIM_SCHEMA if confirmatory else CLAIM_SCHEMA
+    expected_boundary = (
+        CONFIRMATORY_CLAIM_BOUNDARY if confirmatory else CLAIM_BOUNDARY
+    )
     if not (
-        claim.get("schema_version") == CLAIM_SCHEMA
+        claim.get("schema_version") == expected_schema
         and claim.get("state")
         == "authorization_claimed_execution_must_close_out"
         and _timestamp(claim.get("claimed_at")) is not None
@@ -144,9 +180,13 @@ def validate_claim(
         and claim.get("single_use") is True
         and claim.get("reusable") is False
         and claim.get("implementation") == expected_implementation
-        and claim.get("execution_boundary") == CLAIM_BOUNDARY
+        and claim.get("execution_boundary") == expected_boundary
     ):
         failures.append("outcome_claim_scope_or_boundary_invalid")
+    if confirmatory and claim.get("confirmatory_inference_contract") != (
+        authorization.get("confirmatory_inference_contract")
+    ):
+        failures.append("confirmatory_claim_inference_contract_invalid")
     body = {
         key: item for key, item in claim.items() if key != "claim_sha256"
     }
@@ -165,8 +205,11 @@ def build_entry_gate(
 ) -> dict[str, Any]:
     if _timestamp(checked_at) is None:
         raise ValueError("outcome-sensitive entry Gate timestamp invalid")
+    confirmatory = claim.get("schema_version") == CONFIRMATORY_CLAIM_SCHEMA
     value = {
-        "schema_version": ENTRY_GATE_SCHEMA,
+        "schema_version": (
+            CONFIRMATORY_ENTRY_GATE_SCHEMA if confirmatory else ENTRY_GATE_SCHEMA
+        ),
         "passed": True,
         "failure_reasons": [],
         "state": "atomic_claim_validated_bounded_execution_entry_allowed",
@@ -187,14 +230,29 @@ def build_entry_gate(
             "provider_credential_not_read": True,
             "participant_container_not_started": True,
             "fixture_ground_truth_not_projected": True,
+            **(
+                {
+                    "exact_paired_method_and_holm_order_bound": True,
+                    "all_480_terminal_evidence_and_20_pairs_required": True,
+                    "prior_run_reanalysis_and_adherence_inference_forbidden": True,
+                }
+                if confirmatory
+                else {}
+            ),
         },
         "readiness": {
             "single_use_authorization_consumed": True,
             "bounded_execution_entry_allowed": True,
             "signed_closeout_required": True,
         },
-        "execution_boundary": copy.deepcopy(ENTRY_BOUNDARY),
+        "execution_boundary": copy.deepcopy(
+            CONFIRMATORY_ENTRY_BOUNDARY if confirmatory else ENTRY_BOUNDARY
+        ),
     }
+    if confirmatory:
+        value["confirmatory_inference_contract"] = copy.deepcopy(
+            claim["confirmatory_inference_contract"]
+        )
     value["report_sha256"] = canonical_sha256(value)
     return value
 

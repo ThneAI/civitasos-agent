@@ -18,6 +18,13 @@ from benchmarks.j1.qualification_outcome_sensitive_execution_authorization impor
     build_issuance_gate,
     validate_authorization,
 )
+from benchmarks.j1.qualification_outcome_sensitive_execution_entry import (
+    CONFIRMATORY_CLAIM_SCHEMA,
+    CONFIRMATORY_ENTRY_GATE_SCHEMA,
+    build_claim as build_execution_claim,
+    build_entry_gate,
+    validate_claim as validate_execution_claim,
+)
 from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_contract import (
     SOURCE_NAMES as CONFIRMATORY_SOURCE_NAMES,
     build_confirmatory_execution_contract,
@@ -1143,3 +1150,66 @@ def test_confirmatory_preflight_binds_exact_method_and_forbids_reanalysis(
     assert "all 1048576 assignments" in claim_statement
     assert "all 20 complete pairs" in claim_statement
     assert "r4 remains immutable" in claim_statement
+
+    execution_claim = build_execution_claim(
+        claimed_at="2026-08-12T00:00:03+00:00",
+        claim_path="/private/confirmatory-claim.json",
+        owner_authorization_id="confirmatory-claim-owner-test",
+        owner_statement_sha256=claim["owner_authorization"]["statement_sha256"],
+        authorization_ref=authorization_ref,
+        issuance_gate_ref=gate_ref,
+        claim_preflight_ref={
+            "path": "/private/confirmatory-claim-preflight.json",
+            "sha256": "5" * 64,
+            "canonical_sha256": claim["preflight_sha256"],
+        },
+        authorization=authorization,
+        claim_preflight=claim,
+        implementation=implementation,
+    )
+    execution_claim_validation = {
+        "claim_path": "/private/confirmatory-claim.json",
+        "authorization_ref": authorization_ref,
+        "issuance_gate_ref": gate_ref,
+        "claim_preflight_ref": execution_claim["source_binding"][
+            "claim_preflight"
+        ],
+        "authorization": authorization,
+        "claim_preflight": claim,
+        "owner_statement_sha256": claim["owner_authorization"][
+            "statement_sha256"
+        ],
+        "expected_implementation": implementation,
+    }
+    assert execution_claim["schema_version"] == CONFIRMATORY_CLAIM_SCHEMA
+    assert (
+        validate_execution_claim(
+            execution_claim,
+            **execution_claim_validation,
+        )
+        == []
+    )
+    tampered_claim = copy.deepcopy(execution_claim)
+    tampered_claim["confirmatory_inference_contract"]["test"][
+        "assignment_count"
+    ] = 1
+    assert "confirmatory_claim_inference_contract_invalid" in (
+        validate_execution_claim(
+            tampered_claim,
+            **execution_claim_validation,
+        )
+    )
+    entry_gate = build_entry_gate(
+        checked_at="2026-08-12T00:00:04+00:00",
+        claim_ref={
+            "path": "/private/confirmatory-claim.json",
+            "sha256": "6" * 64,
+            "canonical_sha256": execution_claim["claim_sha256"],
+        },
+        claim=execution_claim,
+        inventory_snapshot=inventory,
+        execution_manifest_sha256="1" * 64,
+    )
+    assert entry_gate["schema_version"] == CONFIRMATORY_ENTRY_GATE_SCHEMA
+    assert entry_gate["checks"]["exact_paired_method_and_holm_order_bound"] is True
+    assert entry_gate["execution_boundary"]["prior_run_reanalysis_performed"] is False
