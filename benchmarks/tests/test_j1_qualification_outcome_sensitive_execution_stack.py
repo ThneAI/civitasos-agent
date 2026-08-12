@@ -35,6 +35,14 @@ from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_promot
     validate_confirmatory_frozen_stack,
     validate_signed_confirmatory_review_receipt,
 )
+from benchmarks.j1.qualification_outcome_sensitive_confirmatory_execution_preflight import (
+    SOURCE_NAMES as CONFIRMATORY_PREFLIGHT_SOURCE_NAMES,
+    build_confirmatory_execution_plan,
+    build_confirmatory_preflight,
+    confirmatory_issuance_authorization_statement,
+    validate_confirmatory_execution_plan,
+    validate_confirmatory_preflight,
+)
 from benchmarks.j1.qualification_outcome_sensitive_confirmatory_fault_matrix import (
     REPORT_SCHEMA as CONFIRMATORY_FAULT_SCHEMA,
     run_fault_matrix as run_confirmatory_fault_matrix,
@@ -936,3 +944,88 @@ def test_outcome_preflight_binds_480_scope_and_private_materials(
         materials["material_binding_sha256"]
         in claim["owner_authorization"]["required_exact_statement"]
     )
+
+
+def test_confirmatory_preflight_binds_exact_method_and_forbids_reanalysis(
+    tmp_path: Path,
+) -> None:
+    contract, _ = _confirmatory_contract()
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text('{"fixture":"confirmatory-test"}', encoding="utf-8")
+    fixture.chmod(0o600)
+    advice = tmp_path / "advice"
+    profiles = tmp_path / "profiles"
+    advice.mkdir(mode=0o700)
+    profiles.mkdir(mode=0o700)
+    for index in range(180):
+        path = advice / f"advice-{index:03d}.json"
+        path.write_text(f'{{"index":{index}}}', encoding="utf-8")
+        path.chmod(0o600)
+    for index in range(40):
+        path = profiles / f"profile-{index:02d}.json"
+        path.write_text(f'{{"index":{index}}}', encoding="utf-8")
+        path.chmod(0o600)
+    materials = build_material_bindings(
+        task_fixture_path=fixture,
+        signed_advice_root=advice,
+        participant_profiles_root=profiles,
+    )
+    reference = {
+        "path": "/private/confirmatory-source.json",
+        "sha256": "1" * 64,
+        "canonical_sha256": "2" * 64,
+    }
+    method = contract["confirmatory_method_binding"]
+    plan = build_confirmatory_execution_plan(
+        run_id="confirmatory-run-test",
+        created_at="2026-08-12T00:00:00+00:00",
+        source_artifacts={
+            name: reference for name in CONFIRMATORY_PREFLIGHT_SOURCE_NAMES
+        },
+        frozen_stack_sha256="3" * 64,
+        contract_sha256=contract["contract_sha256"],
+        provider_receipt_sha256="4" * 64,
+        evaluator_sha256="5" * 64,
+        statistical_plan_sha256="6" * 64,
+        confirmatory_method_binding=method,
+        execution_promotion_gate_sha256="7" * 64,
+        material_bindings=materials,
+        paths={
+            "execution_root": "/private/confirmatory-execution",
+            "authorization_output_root": "/private/confirmatory-authorization",
+            "authorization_claim_path": "/private/confirmatory-claim.json",
+            "post_run_output_root": "/private/confirmatory-post-run",
+        },
+        implementation={
+            "source_revision": "8" * 40,
+            "domain_source_sha256": "9" * 64,
+            "operation_source_sha256": "a" * 64,
+        },
+    )
+    assert validate_confirmatory_execution_plan(plan) == []
+    preflight = build_confirmatory_preflight(
+        plan_path="/private/confirmatory-plan.json",
+        plan_raw_sha256="b" * 64,
+        plan=plan,
+        created_at="2026-08-12T00:00:00+00:00",
+        inventory_snapshot={
+            "participant_container_count": 40,
+            "created_count": 40,
+            "running_count": 0,
+        },
+    )
+    assert (
+        validate_confirmatory_preflight(
+            preflight,
+            expected_plan=plan,
+            expected_plan_raw_sha256="b" * 64,
+        )
+        == []
+    )
+    statement = confirmatory_issuance_authorization_statement(
+        plan_raw_sha256="b" * 64,
+        plan=plan,
+    )
+    assert "all 1048576 assignments" in statement
+    assert "r4 remains immutable" in statement
+    assert "advice adherence remains unobserved" in statement
