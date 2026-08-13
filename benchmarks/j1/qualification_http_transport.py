@@ -88,6 +88,8 @@ class PreparedHTTPSPost:
         self._connection: HTTPSConnectionLike | None = None
         self.connect_attempt_count = 0
         self.http_request_count = 0
+        self.request_body_bytes: int | None = None
+        self.response_body_bytes: int | None = None
         self._consumed = False
 
     @property
@@ -159,6 +161,7 @@ class PreparedHTTPSPost:
         self._connection = None
         self._consumed = True
         self.http_request_count = 1
+        self.request_body_bytes = len(encoded)
         try:
             connection.request(
                 "POST",
@@ -169,6 +172,7 @@ class PreparedHTTPSPost:
             response = connection.getresponse()
             status = int(response.status)
             result = response.read(self.policy.max_response_bytes + 1)
+            self.response_body_bytes = len(result)
         except Exception as error:
             raise sanitized_provider_failure(
                 category="http",

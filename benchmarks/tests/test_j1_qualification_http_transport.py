@@ -119,6 +119,8 @@ def test_transport_retries_only_pre_dispatch_connect_and_posts_once() -> None:
     assert (status, body) == (200, b'{"ok":true}')
     assert transport.connect_attempt_count == 3
     assert transport.http_request_count == 1
+    assert transport.request_body_bytes == len(b'{"synthetic":true}')
+    assert transport.response_body_bytes == len(body)
     assert sleeps == [0.25, 1.0]
     assert first.request_count == second.request_count == 0
     assert third.request_count == 1
@@ -192,6 +194,8 @@ def test_transport_never_retries_after_request_start() -> None:
     assert raised.value.source_exception_type == "TimeoutError"
     assert transport.connect_attempt_count == 1
     assert transport.http_request_count == 1
+    assert transport.request_body_bytes == len(b'{"synthetic":true}')
+    assert transport.response_body_bytes is None
     assert connection.request_count == 1
     assert connection.closed is True
     assert "private-write-detail" not in str(raised.value)
