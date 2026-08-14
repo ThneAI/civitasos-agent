@@ -102,6 +102,21 @@ P4-EA 至 P4-EE 本地聚合门禁：
 门禁通过只允许进入 private TLS multi-VM candidate；不授权公网、生产数据、
 实体认证器/HSM provenance 或 software identity fallback。
 
+V1-A/V1-B 提供 append-disabled 的真实成本摄取和外部价值 Receipt 准备边界：
+
+```bash
+.venv/bin/python -m benchmarks.v1a_cost.offline fixture \
+  --output-root ~/.civitasos/private/v1a-cost-dry-run
+
+.venv/bin/python -m benchmarks.v1b_value.offline fixture \
+  --output-root ~/.civitasos/private/v1b-value-dry-run
+```
+
+Fixture Gate 只证明 schema、lineage、算术和 claim boundary；自付、关联方、
+测试资金、internal CIV、退款或未验证 Evidence 不能成为外部收入，也不能证明
+市场需求或可持续单位经济。真实任务、付款及 Backend Fact/Ledger append 均需要
+独立审查和单独授权。
+
 ## 目录结构
 
 ```
